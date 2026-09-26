@@ -22,7 +22,7 @@ on:
   release:
     types: [published]
   schedule:
-    - cron: " * * *"
+    - cron: "23 9 * * *"
   workflow_dispatch:
     inputs:
       version:

@@ -10,10 +10,12 @@ capped JSON reply verbatim. Busbar's own `hooks::wire` normalizers parse
 that reply, so this plugin is a pure network relay — it adds a hop, never
 a second copy of the hook wire semantics.
 
-It is a `cdylib` that implements busbar's `HookHandler` trait (via
-[`busbar-plugin-sdk`](https://github.com/GetBusbar/busbar/tree/main/crates/plugin-sdk))
-and is loaded in-process by busbar over the signed hybrid plugin ABI —
-`dlopen`'d, not spawned as a separate process.
+It implements busbar's `HookHandler` trait (via
+[`busbar-contract`](https://github.com/GetBusbar/busbar/tree/main/crates/busbar-contract)'s
+`abi::sdk`) and has both doors: built as a `cdylib` it is a signed tarball
+busbar `dlopen`s in-process (never spawned as a separate process), and as
+an `rlib` a busbar build can link it (`linked::HOOK`) — the same boundary
+either way. `tests/conformance.rs` proves the two doors are one hook.
 
 ## What it is for
 
@@ -51,43 +53,42 @@ See the doc comments at the top of [`src/lib.rs`](src/lib.rs) and
 
 ## Build
 
-Needs a Rust toolchain ([rustup](https://rustup.rs)), and — interim,
-until [busbarAI](https://github.com/GetBusbar/busbar) ships publicly —
-a sibling checkout of `busbarAI` at `../busbarAI` (see
-[Dependencies](#dependencies) below).
+Needs a Rust toolchain ([rustup](https://rustup.rs); `rust-toolchain.toml`
+pins the version CI uses).
 
 ```sh
 cargo build --release      # cdylib: target/release/libbusbar_webrequest_hook_plugin.{so,dylib}
-cargo test                 # unit tests + the end-to-end loader test (see tests/e2e.rs)
+cargo test                 # unit tests, the loader-seam e2e, the linked/dropped-in conformance,
+                           # and the full-stack e2e (needs a busbar checkout, below)
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
 ## Dependencies
 
-This crate depends on `busbar-plugin-sdk` (and, as dev-dependencies for
-the end-to-end test, `busbar-plugin-loader` and `busbar-api`) from the
-[busbarAI](https://github.com/GetBusbar/busbar) monorepo. Because
-busbarAI is not yet public, `Cargo.toml` points at these as **local path
-dependencies** (`../busbarAI/crates/...`), which means this repo expects
-to be checked out as a sibling of `busbarAI`:
+The one busbar crate this plugin names is `busbar-contract` (plus
+`busbar-plugin-loader`, dev-only, for the conformance and e2e tests) — a
+`git` dependency on [GetBusbar/busbar](https://github.com/GetBusbar/busbar)
+pinned to the rev in field 1 of `.busbar-ref`. CI checks that every
+manifest rev and the lockfile agree with that pin.
+
+`tests/full_stack_e2e.rs` builds and boots the real `busbar` binary, so it
+needs a busbar checkout at that same rev: `BUSBAR_CHECKOUT=<path>`, or a
+sibling checkout beside this repo:
 
 ```
 some-parent-dir/
-├── busbarAI/
+├── busbar/            # at the .busbar-ref rev
 └── webrequest-hook/
 ```
-
-This is an interim measure — once busbarAI ships publicly, these should
-become git (pinned rev/tag) or crates.io dependencies instead. Grep
-`Cargo.toml` for the `INTERIM` comments when doing that migration.
 
 ## Pack and sign
 
 Once built, the cdylib is packed and signed like any other busbar plugin
 — see
 [`docs/plugins.md`](https://github.com/GetBusbar/busbar/blob/main/docs/plugins.md#signing-and-packaging)
-in busbarAI for the full reference. In short:
+in busbar for the full reference (`busbar-plugin-pack` is built with
+`cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack`). In short:
 
 ```sh
 BUSBAR_SIGN_KEY=<signing key> busbar-plugin-pack pack \

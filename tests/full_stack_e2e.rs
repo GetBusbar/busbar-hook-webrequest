@@ -16,9 +16,9 @@
 //! hooks at all, so the hook-shaped equivalent lives here, in this repo's own `cargo test`).
 //!
 //! The proof chain, all real:
-//!   1. Build a genuinely SIGNED plugin tarball (ed25519, `busbar_plugin_sign::sign`, the exact
+//!   1. Build a genuinely SIGNED plugin tarball (ed25519, `busbar_plugin_loader::sign::sign`, the exact
 //!      function the release pipeline / `busbar-plugin-pack` uses) around the actual built cdylib.
-//!   2. Boot a real `busbar` binary (built from the sibling `../busbarAI` checkout) against a
+//!   2. Boot a real `busbar` binary (built from the busbar checkout at `.busbar-ref`) against a
 //!      generated `config.yaml`/`providers.yaml`, admin listener up, WITHOUT the plugin present.
 //!   3. `POST /api/v1/admin/plugins` the signed tarball — confirm `201` + `trust: "trusted"`.
 //!   4. `POST /api/v1/admin/plugins/reload` — confirm the plugin registry picks it up.
@@ -35,14 +35,13 @@
 //!      routing, response), so ONE request produces FOUR calls sharing one `request.request_id`;
 //!      the prompt text rides the REQUEST-stage payload.
 //!
-//! Requires the sibling `../busbarAI` checkout (same interim path-dependency convention as
-//! `Cargo.toml`). The `busbar` binary is built on demand (cached under its own `target/`) the first
-//! time this test runs; under CI this is a hard failure, not a silent skip — mirroring `tests/e2e.rs`'s
-//! own `plugin_path()` CI-hard-fail discipline for the cdylib.
+//! Requires a busbar checkout at the rev `.busbar-ref` pins — `BUSBAR_CHECKOUT`, or a sibling
+//! `../busbar` (where CI checks it out). The `busbar` binary is built from it on every run (cargo
+//! caches it); a missing checkout or a failed build is a hard failure, never a silent skip.
 
 use axum::routing::post;
 use axum::Router;
-use busbar_plugin_sign::{HookNeeds, Manifest, NeedLevel, SigningKey};
+use busbar_plugin_loader::sign::{HookNeeds, Manifest, NeedLevel, SigningKey};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -52,51 +51,52 @@ use std::time::Duration;
 /// explicit signing key to mint virtual keys; busbar no longer auto-generates one.
 const TEST_SIGNING_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-/// The sibling `busbarAI` monorepo checkout — same interim path convention as `Cargo.toml`'s
-/// `busbar-plugin-sdk` dependency.
-fn busbarai_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../busbarAI")
+/// The busbar checkout the real binary is built from: `BUSBAR_CHECKOUT` if set, else a sibling
+/// `../busbar` beside this repo. It must be the rev `.busbar-ref` pins (CI checks it out there), so the
+/// binary under test is the one this plugin's busbar-contract dependency names. A missing checkout is
+/// a failure, never a skip: this is the only proof in this repo that the plugin installs and runs
+/// inside a real busbar process.
+fn busbar_root() -> PathBuf {
+    let root = std::env::var_os("BUSBAR_CHECKOUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../busbar"));
+    assert!(
+        root.join("Cargo.toml").exists(),
+        "full_stack_e2e: no busbar checkout at {} — set BUSBAR_CHECKOUT, or check busbar out beside \
+         this repo at the rev in .busbar-ref (CI does)",
+        root.display()
+    );
+    root
 }
 
-/// Locate (building on demand) the real `busbar` engine binary from the sibling checkout. This is a
-/// SEPARATE Cargo workspace from this plugin repo — `cargo test` here has no automatic knowledge of
-/// it — so unlike the cdylib (built as a byproduct of THIS crate's own `cargo test`), the binary is
-/// built explicitly here, cached under the sibling's own `target/debug/`. Under CI a failed/missing
-/// build is a hard panic, never a silent skip: this is the only proof in this repo that the plugin
-/// actually installs and runs inside a real busbar process, so it must never quietly no-op.
-fn busbar_bin() -> Option<PathBuf> {
-    let root = busbarai_root();
-    if !root.join("Cargo.toml").exists() {
-        if std::env::var_os("CI").is_some() {
-            panic!(
-                "full_stack_e2e: sibling busbarAI checkout not found at {} under CI; refusing to \
-                 silently skip the only real admin-API-install + real-hook-invocation coverage",
-                root.display()
-            );
-        }
-        eprintln!(
-            "skip: sibling busbarAI checkout not found at {} (run under the plugin-ci layout)",
-            root.display()
-        );
-        return None;
-    }
-    let bin = root.join("target").join("debug").join("busbar");
-    if !bin.exists() {
-        eprintln!("full_stack_e2e: building the busbar binary from the sibling checkout (first run only)...");
-        let status = Command::new("cargo")
-            .args(["build", "--bin", "busbar"])
-            .current_dir(&root)
-            .status()
-            .expect("run `cargo build --bin busbar` in the sibling checkout");
-        if !status.success() || !bin.exists() {
-            if std::env::var_os("CI").is_some() {
-                panic!("full_stack_e2e: failed to build the busbar binary from the sibling checkout under CI");
-            }
-            eprintln!("skip: failed to build the busbar binary locally");
-            return None;
-        }
-    }
-    Some(bin)
+/// Build (cargo caches it) and return the real `busbar` engine binary from [`busbar_root`]. This is a
+/// SEPARATE Cargo workspace from this plugin repo, so unlike the cdylib (built as a byproduct of THIS
+/// crate's own `cargo test`) the binary is built explicitly here — every run, so it is never a stale
+/// binary from another rev. The nested `cargo build` inherits `CARGO_TARGET_DIR`, so the binary is
+/// looked for where it actually lands.
+fn busbar_bin() -> PathBuf {
+    let root = busbar_root();
+    let status = Command::new("cargo")
+        .args(["build", "-p", "busbar", "--bin", "busbar"])
+        .current_dir(&root)
+        .status()
+        .expect("run `cargo build --bin busbar` in the busbar checkout");
+    assert!(
+        status.success(),
+        "full_stack_e2e: building the busbar binary in {} failed",
+        root.display()
+    );
+    let target = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => root.join(dir),
+        None => root.join("target"),
+    };
+    let bin = target.join("debug").join("busbar");
+    assert!(
+        bin.exists(),
+        "full_stack_e2e: no busbar binary at {}",
+        bin.display()
+    );
+    bin
 }
 
 /// Locate the built `webrequest` cdylib — identical logic to `tests/e2e.rs`'s `plugin_path()` (kept
@@ -204,7 +204,7 @@ async fn mock_upstream() -> String {
 }
 
 /// Build a GENUINELY signed plugin tarball around `lib_bytes`, the exact way the release pipeline /
-/// `busbar-plugin-pack` does (`busbar_plugin_sign::sign` + `busbar_plugin_loader::tarball::package`).
+/// `busbar-plugin-pack` does (`busbar_plugin_loader::sign::sign` + `busbar_plugin_loader::tarball::package`).
 /// A fixed test-only signing key (deterministic, never used outside this process) — the point isn't
 /// key secrecy, it's exercising the REAL signature-verification path (`plugins.trust.publishers`)
 /// rather than the `allow_unsigned` escape hatch.
@@ -233,8 +233,9 @@ fn build_signed_tarball(lib_bytes: &[u8]) -> (Vec<u8>, String) {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
-    let signed = busbar_plugin_sign::sign(&key, manifest, lib_bytes);
+    let signed = busbar_plugin_loader::sign::sign(&key, manifest, lib_bytes);
     let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib_bytes)
         .expect("package signed tarball");
     let pubkey_hex = hex_encode(&key.verifying_key().to_bytes());
@@ -287,9 +288,7 @@ async fn wait_for_healthz(admin_addr: &str) {
 /// "prod ready" bar, not an opt-in extra.
 #[tokio::test(flavor = "multi_thread")]
 async fn install_over_admin_api_and_drive_a_real_hook_invocation() {
-    let Some(busbar_bin) = busbar_bin() else {
-        return; // logged above; CI already hard-panics instead of reaching here
-    };
+    let busbar_bin = busbar_bin();
     let Some(cdylib_path) = webrequest_cdylib() else {
         return; // logged above; CI already hard-panics instead of reaching here
     };
