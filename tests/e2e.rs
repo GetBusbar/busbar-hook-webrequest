@@ -18,7 +18,7 @@
 //! - SSRF rejection of a blocked target at load.
 
 use axum::{routing::post, Router};
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_plugin_loader::hook::{load_hook_from_bytes, HookProjectors};
@@ -193,16 +193,16 @@ fn projectors() -> Arc<HookProjectors> {
                     .and_then(|m| m.as_str())
                     .unwrap_or("")
                     .to_string();
-                return RoutingDecision::Reject { status, message };
+                return Ok(RoutingDecision::Reject { status, message });
             }
             let Some(order) = v.get("order").and_then(|o| o.as_array()) else {
-                return RoutingDecision::Abstain;
+                return Ok(RoutingDecision::Abstain);
             };
             let valid: std::collections::HashSet<usize> = cands.iter().map(|c| c.idx).collect();
-            RoutingDecision::from_ranked(
+            Ok(RoutingDecision::from_ranked(
                 order.iter().filter_map(|x| x.as_u64().map(|x| x as usize)),
                 &valid,
-            )
+            ))
         }),
         transform_outcome: Box::new(|v| {
             if let Some(reject) = v.get("reject") {
@@ -226,7 +226,7 @@ fn projectors() -> Arc<HookProjectors> {
                 .and_then(|m| m.as_array())
             {
                 Some(msgs) if !msgs.is_empty() => {
-                    TransformOutcome::Rewrite(busbar_api::RewriteReply {
+                    TransformOutcome::Rewrite(busbar_contract::hooks::RewriteReply {
                         messages: msgs.clone(),
                         tools: Vec::new(),
                     })
@@ -235,7 +235,7 @@ fn projectors() -> Arc<HookProjectors> {
             }
         }),
         status: Box::new(|v| {
-            v.get("status").map(|s| busbar_api::HookStatus {
+            v.get("status").map(|s| busbar_contract::hooks::HookStatus {
                 settings_version: None,
                 settings: s.get("settings").and_then(|x| x.as_object()).cloned(),
                 metrics: s.get("metrics").and_then(|m| m.as_array()).cloned(),
@@ -280,7 +280,7 @@ fn req_with_prompt(text: &str) -> RoutingRequest<'static> {
         system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: Some(busbar_api::PromptProjection {
+        prompt: Some(busbar_contract::hooks::PromptProjection {
             system: None,
             messages: vec![("user".into(), text.to_string().into())],
         }),
@@ -307,7 +307,7 @@ fn cand(idx: usize) -> Candidate<'static> {
         budget_remaining: None,
         rate_headroom: None,
         // Same contract as RoutingRequest::signals above: empty unless a consumer declares one.
-        signals: busbar_api::SignalBag::new(),
+        signals: busbar_contract::signal::SignalBag::new(),
     }
 }
 

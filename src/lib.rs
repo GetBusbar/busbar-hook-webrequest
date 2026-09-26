@@ -37,7 +37,7 @@
 
 mod net_guard;
 
-use busbar_plugin_sdk::HookHandler;
+use busbar_contract::abi::sdk::HookHandler;
 use serde::Deserialize;
 use std::sync::RwLock;
 use std::time::Duration;
@@ -500,7 +500,7 @@ impl HookHandler for Forwarder {
                     // The `HookHandler::configure` ABI contract is a bare `bool` ACK/NACK — there is no
                     // return-message channel to thread the specific (already userinfo-masked) rejection
                     // reason back to the operator through. This crate has no logging dependency (no
-                    // `log`/`tracing`, and the plugin-sdk exposes no host-side log bridge either) to add
+                    // `log`/`tracing`, and the SDK exposes no host-side log bridge either) to add
                     // one for; `eprintln!` to stderr is the only zero-dependency way to make the reason
                     // discoverable rather than silently dropping it, so an operator whose reconfigure
                     // NACKs at least has somewhere to look.
@@ -639,7 +639,25 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     Ok(Box::new(Forwarder::new(config)?))
 }
 
-busbar_plugin_sdk::export_hook_plugin!(open);
+// THE ONE DOOR REGISTRATION (DECISIONS #2 rule (1)): the macro emits `BUSBAR_COLD_ENTRY` — the
+// boundary a busbar build that LINKS this crate hands its loader — and registers that same entry as
+// this image's door, so the SDK's frozen symbols in the `cdylib` (the DROPPED-IN door) answer through
+// the very same code. Compiled in or dropped in: one plugin.
+busbar_contract::abi::sdk::export_hook_plugin!(open);
+
+/// The package name a signed tarball of this plugin states (`manifest.name`).
+pub const NAME: &str = "busbar-webrequest-hook-plugin";
+
+/// The alias a hook reference names this plugin by (`module: webrequest`).
+pub const ALIAS: &str = "webrequest";
+
+/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a busbar build that links this crate registers on
+/// the hook axis — the same row, and the same boundary, the dropped-in tarball states and exports.
+pub mod linked {
+    /// `(name, alias, boundary)`.
+    pub const HOOK: (&str, &str, &busbar_contract::abi::sdk::ColdEntry) =
+        (super::NAME, super::ALIAS, &super::BUSBAR_COLD_ENTRY);
+}
 
 #[cfg(test)]
 mod tests;
