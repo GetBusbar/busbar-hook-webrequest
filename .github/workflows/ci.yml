@@ -142,5 +142,5 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: plugin/lcov.info
-          slug: GetBusbar/webrequest-hook
+          slug: GetBusbar/busbar-hook-webrequest
           fail_ci_if_error: false
