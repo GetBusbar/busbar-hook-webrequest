@@ -18,6 +18,10 @@ on:
   pull_request:
     branches: [main, dev, qa]
   workflow_dispatch: {}
+  # release.yml's `gate` runs THIS workflow on the tagged commit, so a release is gated by exactly the
+  # suite (pin check, fmt, clippy, build, test, conformance, full-stack e2e) every dev push runs — at
+  # the same pin.
+  workflow_call: {}
 
 permissions:
   contents: read
