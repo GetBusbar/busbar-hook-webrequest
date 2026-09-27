@@ -2,15 +2,14 @@
 # supported targets, pack + sign each into a loadable busbar plugin tarball, and publish them to
 # THIS repo's own GitHub Release.
 #
-# This mirrors busbarAI/.github/workflows/release.yml's `auth-plugins` job (and the identical
-# pattern GetBusbar/auth-oidc and GetBusbar/headroom-hook use) — same 5-target matrix, same
-# busbar-plugin-pack pack/sign step (built from a sibling busbar checkout), same
-# BUSBAR_SIGN_KEY-or-`--allow-unsigned` fallback, same `gh release upload` + build-provenance
-# attestation — just scoped to this one plugin.
+# Same 5-target matrix, same BUSBAR_SIGN_KEY-or-`--allow-unsigned` fallback, same `gh release
+# upload` + build-provenance attestation pattern every first-party plugin repo uses.
 #
-# busbar-plugin-pack is built here from a sibling busbar checkout, exactly like every other
-# first-party plugin repo, so this workflow produces the real signed, loadable tarball directly
-# rather than a raw unsigned cdylib needing a manual packing step.
+# CONTRACT-ONLY BUILD (busbar 1.6.0). The cdylib's one busbar dependency is busbar-contract, a `git`
+# dependency on GetBusbar/busbar at the rev in `.busbar-ref` field 1 (ci.yml's `pin` job refuses a
+# manifest or lock that disagrees). The plugin builds standalone with `--locked`; the busbar checkout
+# at that same rev exists ONLY to build the packer (busbar-plugin-pack, from busbar-plugin-loader) —
+# nothing in this repo's build reaches into it by path.
 #
 # This plugin's own version (the `v*` tag pushed here) is NOT tied to busbar's version number —
 # see other first-party plugin repos for the same convention.
@@ -51,15 +50,14 @@ jobs:
         run: echo "sha=$(cut -d' ' -f1 .busbar-ref)" >> "$GITHUB_OUTPUT"
         shell: bash
 
+  # This repo's OWN ci.yml, on the tagged commit: its `pin` job proves Cargo.toml and Cargo.lock name
+  # `.busbar-ref` field 1, then fmt/clippy/build/test, the linked + dropped-in conformance and the
+  # full-stack e2e run against that rev. (busbar's shared plugin-ci.yml assumed a sibling path
+  # checkout of the retired plugin-sdk and cannot build a contract-only plugin.)
   gate:
     needs: resolve-busbar-ref
-    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@dev
-    with:
-      plugin_crate: busbar-webrequest-hook-plugin
-      plugin_kind: hook
-      plugin_alias: webrequest
-      service: none
-      busbar_ref: ${{ needs.resolve-busbar-ref.outputs.sha }}
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
 
   # Create the Release first so the parallel per-target upload jobs have something to attach to
   # (uploading from a matrix without a pre-existing release races -> "release not found").
@@ -130,26 +128,35 @@ jobs:
         run: echo "sha=$(cut -d' ' -f1 webrequest-hook/.busbar-ref)" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      - name: Checkout busbar (sibling path dependency)
+      # Source of the packer only; the plugin itself resolves busbar-contract from git at this rev.
+      - name: Checkout busbar at the pin (builds busbar-plugin-pack)
         uses: actions/checkout@v7
         with:
           repository: GetBusbar/busbar
           ref: ${{ steps.ref.outputs.sha }}
-          path: busbarAI
+          path: busbar
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain rust-toolchain.toml pins (both repos name 1.98.0). A floating `@stable` would
+      # install the target on a toolchain rustup then ignores in favour of the pinned one.
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            webrequest-hook
+            busbar
 
-      - name: Build the webrequest-hook plugin cdylib
+      - name: Build the webrequest-hook plugin cdylib (busbar-contract from git at .busbar-ref)
         working-directory: webrequest-hook
-        run: cargo build --release --locked --lib --target ${{ matrix.target }}
+        run: cargo build --release --locked --lib --target ${{ matrix.target }} -p busbar-webrequest-hook-plugin
         shell: bash
 
-      - name: Build busbar-plugin-pack (from the sibling busbar checkout)
-        working-directory: busbarAI
-        run: cargo build --release --target ${{ matrix.target }} -p busbar-plugin-pack
+      # Host build: the packer only reads the cdylib's bytes, so it need not match the plugin target.
+      # (busbar-plugin-pack is a bin of busbar-plugin-loader behind its `pack` feature since 1.6.0.)
+      - name: Build busbar-plugin-pack (from the pinned busbar checkout)
+        working-directory: busbar
+        run: cargo build --release --locked -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
         shell: bash
 
       - name: Package + sign the plugin tarball
@@ -160,11 +167,11 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           target="${{ matrix.target }}"
           outdir="plugin-dist"; mkdir -p "$outdir"
-          pack="busbarAI/target/${target}/release/busbar-plugin-pack"
-          [ -x "$pack" ] || pack="busbarAI/target/${target}/release/busbar-plugin-pack.exe"
+          pack="busbar/target/release/busbar-plugin-pack"
+          [ -x "$pack" ] || pack="busbar/target/release/busbar-plugin-pack.exe"
           unsigned_flag=""
           if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
-            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging an UNSIGNED plugin tarball (loadable only under plugins.trust.allow_unsigned). See busbarAI's release.yml TODO(release-keys) seam."
+            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging an UNSIGNED plugin tarball (loadable only under plugins.trust.allow_unsigned). See busbar's release.yml TODO(release-keys) seam."
             unsigned_flag="--allow-unsigned"
           fi
           lib="webrequest-hook/target/${target}/release/${{ matrix.libprefix }}busbar_webrequest_hook_plugin.${{ matrix.libext }}"
