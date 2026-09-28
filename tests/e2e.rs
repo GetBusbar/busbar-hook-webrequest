@@ -121,7 +121,7 @@ fn plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_webrequest_hook_plugin");
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_webrequest");
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         newest_existing(&[uplifted, raw])
@@ -129,7 +129,7 @@ fn plugin_path() -> Option<std::path::PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "the webrequest-hook plugin cdylib is not built under CI: `cargo test` must build \
-             busbar_webrequest_hook_plugin (checked both the uplifted target dir and target/deps). \
+             busbar_hook_webrequest (checked both the uplifted target dir and target/deps). \
              Refusing to silently skip the only over-the-ABI coverage of the kind:hook dlopen seam."
         );
     }

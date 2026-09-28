@@ -646,7 +646,7 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
 busbar_contract::abi::sdk::export_hook_plugin!(open);
 
 /// The package name a signed tarball of this plugin states (`manifest.name`).
-pub const NAME: &str = "busbar-webrequest-hook-plugin";
+pub const NAME: &str = "busbar-hook-webrequest";
 
 /// The alias a hook reference names this plugin by (`module: webrequest`).
 pub const ALIAS: &str = "webrequest";

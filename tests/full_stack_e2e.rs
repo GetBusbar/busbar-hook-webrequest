@@ -113,7 +113,7 @@ fn webrequest_cdylib() -> Option<PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_webrequest_hook_plugin");
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_webrequest");
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]
@@ -130,7 +130,7 @@ fn webrequest_cdylib() -> Option<PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "full_stack_e2e: the webrequest-hook plugin cdylib is not built under CI: `cargo test` \
-             must build busbar_webrequest_hook_plugin (checked both the uplifted target dir and \
+             must build busbar_hook_webrequest (checked both the uplifted target dir and \
              target/deps)."
         );
     }
@@ -212,7 +212,7 @@ fn build_signed_tarball(lib_bytes: &[u8]) -> (Vec<u8>, String) {
     let seed = [0x42u8; 32];
     let key = SigningKey::from_bytes(&seed);
     let manifest = Manifest {
-        name: "busbar-webrequest-hook-plugin".to_string(),
+        name: "busbar-hook-webrequest".to_string(),
         alias: "webrequest".to_string(),
         kind: "hook".to_string(),
         version: "1.5.0".to_string(),
@@ -428,7 +428,7 @@ models:
         body["trust"], "trusted",
         "a validly signed, allowlisted-publisher plugin must install as trusted: {body}"
     );
-    assert_eq!(body["name"], "busbar-webrequest-hook-plugin");
+    assert_eq!(body["name"], "busbar-hook-webrequest");
 
     // ── 5. Reload the plugin registry so the freshly installed tarball is actually loaded ───────
     let resp = client

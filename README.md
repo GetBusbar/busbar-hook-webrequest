@@ -5,7 +5,7 @@ A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/
 
 | kind | alias | crate | busbar | license |
 |---|---|---|---|---|
-| `hook` | `webrequest` | `busbar-webrequest-hook-plugin` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
+| `hook` | `webrequest` | `busbar-hook-webrequest` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
 
 [![ci](https://github.com/GetBusbar/busbar-hook-webrequest/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-hook-webrequest/actions/workflows/ci.yml)
 <!-- fleet:header:end -->
@@ -67,7 +67,7 @@ Needs a Rust toolchain ([rustup](https://rustup.rs); `rust-toolchain.toml`
 pins the version CI uses).
 
 ```sh
-cargo build --release      # cdylib: target/release/libbusbar_webrequest_hook_plugin.{so,dylib}
+cargo build --release      # cdylib: target/release/libbusbar_hook_webrequest.{so,dylib}
 cargo test                 # unit tests, the loader-seam e2e, the linked/dropped-in conformance,
                            # and the full-stack e2e (needs a busbar checkout, below)
 cargo clippy --all-targets -- -D warnings
@@ -89,7 +89,7 @@ sibling checkout beside this repo:
 ```
 some-parent-dir/
 ├── busbar/            # at the .busbar-ref rev
-└── webrequest-hook/
+└── busbar-hook-webrequest/
 ```
 
 ## Pack and sign
@@ -102,12 +102,12 @@ in busbar for the full reference (`busbar-plugin-pack` is built with
 
 ```sh
 BUSBAR_SIGN_KEY=<signing key> busbar-plugin-pack pack \
-    --lib target/release/libbusbar_webrequest_hook_plugin.so \
-    --name busbar-webrequest-hook-plugin --alias webrequest --kind hook \
+    --lib target/release/libbusbar_hook_webrequest.so \
+    --name busbar-hook-webrequest --alias webrequest --kind hook \
     --version 1.5.0 --publisher busbar \
     --license Apache-2.0 \
     --needs-prompt rw --needs-user ro \
-    --out busbar-webrequest-hook-plugin-1.5.0-x86_64-linux.tar.gz
+    --out busbar-hook-webrequest-1.5.0-x86_64-linux.tar.gz
 ```
 
 `--needs-prompt` / `--needs-user` declare this plugin's grant intent in

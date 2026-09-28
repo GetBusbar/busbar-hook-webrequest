@@ -139,6 +139,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-hook-webrequest"
+version = "1.5.0"
+dependencies = [
+ "axum",
+ "base64",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "busbar-kernel-ledger"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar?rev=7a5b429041752e00375e120ab1547a8928c3dee4#7a5b429041752e00375e120ab1547a8928c3dee4"
@@ -179,20 +193,6 @@ dependencies = [
  "tar",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "busbar-webrequest-hook-plugin"
-version = "1.5.0"
-dependencies = [
- "axum",
- "base64",
- "busbar-contract",
- "busbar-plugin-loader",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
