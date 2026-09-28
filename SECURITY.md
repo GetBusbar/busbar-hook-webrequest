@@ -26,7 +26,7 @@ credited once a fix is released.
 
 ## Scope
 
-`webrequest-hook` is a `kind: hook` busbar plugin: it POSTs each hook op envelope
+`busbar-hook-webrequest` is a `kind: hook` busbar plugin: it POSTs each hook op envelope
 (`decide`/`transform`/`notify`/`configure`/`describe`/`status`) — which may carry
 operator-granted prompt/user content — to an operator-configured URL on the
 request hot path, and is the only first-party plugin in this set that makes

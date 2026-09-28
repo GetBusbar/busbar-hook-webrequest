@@ -53,21 +53,19 @@ fn cdylib() -> Vec<u8> {
         .parent()
         .and_then(|d| d.parent())
         .expect("target/<profile>");
-    let file = busbar_plugin_loader::plugin_library_filename("busbar_webrequest_hook_plugin");
+    let file = busbar_plugin_loader::plugin_library_filename("busbar_hook_webrequest");
     let found = [profile.join(&file), profile.join("deps").join(&file)]
         .into_iter()
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .max()
         .map(|(_, p)| p)
-        .unwrap_or_else(|| {
-            panic!("the busbar-webrequest-hook-plugin cdylib ({file}) is not built")
-        });
+        .unwrap_or_else(|| panic!("the busbar-hook-webrequest cdylib ({file}) is not built"));
     std::fs::read(found).expect("read the cdylib")
 }
 
 /// The statement both doors carry, as `kind`.
 fn statement(kind: &str) -> Manifest {
-    let (name, alias, _) = busbar_webrequest_hook_plugin::linked::HOOK;
+    let (name, alias, _) = busbar_hook_webrequest::linked::HOOK;
     let abi = busbar_plugin_loader::supported_abi(kind)
         .iter()
         .copied()
@@ -98,10 +96,7 @@ fn statement(kind: &str) -> Manifest {
 
 /// The LINKED row: exactly what a busbar composition root that links this crate states.
 fn linked_registry() -> PluginRegistry {
-    let row = LinkedPlugin::boundary(
-        statement("hook"),
-        busbar_webrequest_hook_plugin::linked::HOOK.2,
-    );
+    let row = LinkedPlugin::boundary(statement("hook"), busbar_hook_webrequest::linked::HOOK.2);
     PluginRegistry::empty()
         .link(vec![row])
         .expect("the linked row registers")
@@ -314,7 +309,7 @@ fn cand(idx: usize) -> Candidate<'static> {
 /// and — per scenario case, each a forwarder opened at `<upstream>/<case>` — the decision (or the
 /// failure) and every body the upstream received. Nothing port-specific is recorded.
 async fn transcript(registry: &PluginRegistry, restrict_tag: &'static str) -> serde_json::Value {
-    let alias = busbar_webrequest_hook_plugin::ALIAS;
+    let alias = busbar_hook_webrequest::ALIAS;
     let p = registry.resolve(alias).expect("the alias resolves");
     let stated = Manifest {
         sha256: String::new(),
@@ -407,7 +402,7 @@ async fn the_linked_and_the_dropped_in_webrequest_hook_are_one_hook() {
 
     // RED ARM (a): the same bytes signed as `store` are refused at open, naming both kinds.
     let wrong = dropped("as-store", statement("store"), &lib);
-    let e = match wrong.open_store(busbar_webrequest_hook_plugin::ALIAS, "{}") {
+    let e = match wrong.open_store(busbar_hook_webrequest::ALIAS, "{}") {
         Ok(_) => panic!("a hook library signed as store must not open"),
         Err(e) => e,
     };
