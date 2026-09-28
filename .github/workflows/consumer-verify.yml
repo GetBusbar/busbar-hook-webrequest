@@ -24,8 +24,8 @@ jobs:
     uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@7a5b429041752e00375e120ab1547a8928c3dee4
     with:
       version: ${{ inputs.version || '' }}
-      asset_prefix: busbar-webrequest
-      plugin_name: busbar-webrequest
+      asset_prefix: busbar-hook-webrequest
+      plugin_name: busbar-hook-webrequest
       plugin_alias: webrequest
       plugin_kind: hook
       bundle_image: ""
