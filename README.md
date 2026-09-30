@@ -10,6 +10,8 @@ A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/
 [![ci](https://github.com/GetBusbar/busbar-hook-webrequest/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-hook-webrequest/actions/workflows/ci.yml)
 <!-- fleet:header:end -->
 
+## What it is for
+
 [![Coverage](https://codecov.io/gh/GetBusbar/busbar-hook-webrequest/branch/dev/graph/badge.svg)](https://codecov.io/gh/GetBusbar/busbar-hook-webrequest)
 
 **v1.5.0.** The first-party, signed `kind: hook` plugin for
@@ -27,7 +29,6 @@ busbar `dlopen`s in-process (never spawned as a separate process), and as
 an `rlib` a busbar build can link it (`linked::HOOK`) — the same boundary
 either way. `tests/conformance.rs` proves the two doors are one hook.
 
-## What it is for
 
 - **Migration** off the retired socket/webhook hook transport: point
   `settings.url` at the same service a `route: webhook` pool used and the
@@ -37,7 +38,7 @@ either way. `tests/conformance.rs` proves the two doors are one hook.
   *remotely* behind this trusted, signed, `dlopen`'d forwarder. The
   forwarder — not busbar core — owns the outbound HTTP call.
 
-## The security stance
+### The security stance
 
 - **SSRF-guarded** (`src/net_guard/mod.rs`): the configured URL is validated
   at `open`/`configure` — loopback sidecars are allowed; link-local /
@@ -61,6 +62,13 @@ either way. `tests/conformance.rs` proves the two doors are one hook.
 See the doc comments at the top of [`src/lib.rs`](src/lib.rs) and
 [`src/net_guard/mod.rs`](src/net_guard/mod.rs) for the full design rationale.
 
+## Config
+
+| Setting | Required | Default | Notes |
+|---|---|---|---|
+| `url` | yes | — | The `https://` (or loopback `http://`) URL each hook op envelope is POSTed to. Validated against the SSRF guard at load and on every `configure` push; a committed push takes effect immediately (the next `decide`/`transform`/`notify` uses it), not only after a future plugin reload. |
+| `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget, since a hook FFI call holds a process-wide permit until the blocking call returns (see `MAX_TIMEOUT_MS`'s doc comment in `src/lib.rs`). Independently pushable via `configure`, applied immediately. |
+
 ## Build
 
 Needs a Rust toolchain ([rustup](https://rustup.rs); `rust-toolchain.toml`
@@ -74,7 +82,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-## Dependencies
+### Dependencies
 
 The one busbar crate this plugin names is `busbar-contract` (plus
 `busbar-plugin-loader`, dev-only, for the conformance and e2e tests) — a
@@ -92,7 +100,7 @@ some-parent-dir/
 └── busbar-hook-webrequest/
 ```
 
-## Pack and sign
+### Pack and sign
 
 Once built, the cdylib is packed and signed like any other busbar plugin
 — see
@@ -123,13 +131,6 @@ reference it as a hook module — see
 [`docs/plugins.md`](https://github.com/GetBusbar/busbar/blob/main/docs/plugins.md#hook-plugins-kind-hook)
 for the `hooks:` wiring (`kind: hook`, `settings: { url: ... }`).
 
-## Config
-
-| Setting | Required | Default | Notes |
-|---|---|---|---|
-| `url` | yes | — | The `https://` (or loopback `http://`) URL each hook op envelope is POSTed to. Validated against the SSRF guard at load and on every `configure` push; a committed push takes effect immediately (the next `decide`/`transform`/`notify` uses it), not only after a future plugin reload. |
-| `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget, since a hook FFI call holds a process-wide permit until the blocking call returns (see `MAX_TIMEOUT_MS`'s doc comment in `src/lib.rs`). Independently pushable via `configure`, applied immediately. |
-
 ## Tests
 
 `cargo test` runs both the pure unit tests (`src/lib.rs`, `src/net_guard/mod.rs`
@@ -142,3 +143,7 @@ under `cargo test --workspace`-equivalent (i.e. a normal `cargo build`
 first, or just `cargo test`, which builds the cdylib as part of the
 test run) so the e2e test finds the library; it self-skips with a
 message if the cdylib isn't present.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
