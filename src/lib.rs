@@ -173,18 +173,20 @@ impl Drop for Forwarder {
 /// later. And because the answer is the current one, the client follows the target when its
 /// addresses rotate, as it did before a static pin was taken at open.
 ///
-/// An IP-literal host never reaches the resolver; `host_is_blocked` already ruled on it.
+/// An IP-literal host never reaches the resolver; `host_is_blocked` already ruled on it. A
+/// plaintext `http://` target (a `localhost` name, the only kind the plaintext gate lets through)
+/// must also resolve to loopback only, so a resolver that answers it with a remote address cannot
+/// draw the envelope out in cleartext.
 ///
 /// No `connect_timeout`: the per-request `.timeout(...)` in `post_op` reads the live timeout on every
 /// call and bounds the whole request, connect included. A connect bound frozen here at build time
 /// was stale after a timeout-only `configure` push: raised from 100ms to 5000ms, connects were
 /// still cut at 100ms while `status` reported 5000.
 fn build_client(url: &reqwest::Url, lookup: &net_guard::Lookup) -> Result<reqwest::Client, String> {
+    let resolver = net_guard::TargetResolver::new(std::sync::Arc::clone(lookup), url.host_str())
+        .plaintext(url.scheme() == "http");
     reqwest::Client::builder()
-        .dns_resolver(std::sync::Arc::new(net_guard::TargetResolver::new(
-            std::sync::Arc::clone(lookup),
-            url.host_str(),
-        )))
+        .dns_resolver(std::sync::Arc::new(resolver))
         // Disable redirects so a target cannot 30x us onto an internal host at runtime (the
         // validated URL only guarantees the FIRST hop is safe).
         .redirect(reqwest::redirect::Policy::none())
