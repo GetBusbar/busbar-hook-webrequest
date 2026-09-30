@@ -523,13 +523,13 @@ models:
     // ── 8. Confirm the mock webhook ACTUALLY received the real HTTP round trip ──────────────────
     // A `phase:`-less tap fires at ALL FOUR core stages (1.5.3: request, candidate, routing,
     // response — busbar's `CORE_HOOK_PHASES`, frozen so a later stage is strictly additive), so ONE
-    // real request produces FOUR real webhook calls, not one. `response` is the last of them, so
-    // waiting for it is what makes this poll deterministic rather than a race on whichever stage
-    // happened to land first.
+    // real request produces FOUR real webhook calls, not one. Each tap is its own fire-and-forget
+    // call, so they can land in any order: `response` arriving first says nothing about the others.
+    // The poll waits for all four envelopes (or the deadline), not for any one stage (WREQ-25).
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let received = loop {
         let snapshot = captured.lock().unwrap().clone();
-        if snapshot.iter().any(|e| e["stage"]["at"] == "response") {
+        if snapshot.len() >= 4 {
             break snapshot;
         }
         if std::time::Instant::now() > deadline {
