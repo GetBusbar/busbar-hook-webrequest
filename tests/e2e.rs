@@ -409,16 +409,47 @@ async fn forward_transform_rewrites_and_rejects() {
     }
 }
 
-/// `notify` is fire-and-forget: it never errors, never blocks, and posts the tap projection.
+/// `transform` puts ITS OWN op discriminator on the wire, not `decide`'s (WREQ-23): the target
+/// tells the ops apart by `op` alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn forward_transform_sends_the_transform_op() {
+    if plugin_path().is_none() {
+        return;
+    }
+    let (url, captured) = capturing_target().await;
+    let policy = load(&cfg(&url));
+    let _ = policy.transform(&req_with_prompt("hello-wire"), BUDGET).await;
+    let bodies = captured.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 1);
+    let v: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(v["op"], "transform");
+    assert_eq!(v["request"]["messages"][0]["text"], "hello-wire");
+}
+
+/// `notify` is fire-and-forget: it never errors, never blocks, and posts the tap projection. The
+/// post is observed on the wire with the `notify` op and the projection (WREQ-24); the poll allows
+/// for the post landing after `notify` returns.
 #[tokio::test(flavor = "multi_thread")]
 async fn forward_notify_is_fire_and_forget() {
     if plugin_path().is_none() {
         return;
     }
-    let url = mock_target(200, r#"{}"#, None).await;
+    let (url, captured) = capturing_target().await;
     let policy = load(&cfg(&url));
     let projection = serde_json::to_vec(&serde_json::json!({"request": {"pool": "p"}})).unwrap();
     policy.notify(&projection, BUDGET).await; // returns unit, never panics
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let bodies = loop {
+        let bodies = captured.lock().unwrap().clone();
+        if !bodies.is_empty() || std::time::Instant::now() > deadline {
+            break bodies;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(bodies.len(), 1, "notify must post exactly once: {bodies:?}");
+    let v: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(v["op"], "notify");
+    assert_eq!(v["request"]["pool"], "p");
 }
 
 /// The forwarder SENDS the op envelope (op discriminator + the projected request) on the wire — and
