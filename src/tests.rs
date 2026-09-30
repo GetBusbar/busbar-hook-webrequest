@@ -651,3 +651,62 @@ fn the_client_resolves_the_pushed_host_through_the_guard() {
     assert!(err.contains("SSRF guard"), "{err}");
     assert_eq!((a.hits(), b.hits()), (1, 1), "nothing may be dialed");
 }
+
+/// WREQ-3. `post_op` read the url and the client under two separate lock acquisitions, so a url
+/// push landing between them paired the OLD url with the NEW client, whose resolver guards the new
+/// host and resolved the old one unchecked. Both names here pass the open/configure check and
+/// answer an internal address at connect, so every correctly paired request is refused before a
+/// dial; a dial (a hit on either target) can only come from a torn pair. One lock makes that
+/// impossible. The race is a narrow window, so this test catches the torn pair only
+/// probabilistically; once the url and client share one lock it can never fire.
+#[test]
+fn a_url_push_never_pairs_the_old_url_with_the_new_client() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let a = Target::json(r#"{"order":[0]}"#);
+    let b = Target::json(r#"{"order":[1]}"#);
+    let url_a = format!("http://a.localhost:{}/", a.port());
+    let url_b = format!("http://b.localhost:{}/", b.port());
+    let fwd = Arc::new(
+        Forwarder::with_lookup(
+            cfg(url_a.clone(), 2000),
+            split_lookup(Some(LOOPBACK), UNSPECIFIED, Duration::ZERO),
+        )
+        .expect("valid config"),
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let pusher = {
+        let (fwd, stop) = (Arc::clone(&fwd), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            let mut version = 1;
+            while !stop.load(Ordering::Relaxed) {
+                for url in [&url_b, &url_a] {
+                    let mut push = serde_json::Map::new();
+                    push.insert("url".into(), serde_json::json!(url));
+                    version += 1;
+                    assert!(fwd.configure(&push, version), "a valid push must ACK");
+                }
+            }
+        })
+    };
+    let posters: Vec<_> = (0..4)
+        .map(|_| {
+            let (fwd, stop) = (Arc::clone(&fwd), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = fwd.post_op("decide", &serde_json::json!({}));
+                }
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(1500));
+    stop.store(true, Ordering::Relaxed);
+    pusher.join().unwrap();
+    for p in posters {
+        p.join().unwrap();
+    }
+    assert_eq!(
+        (a.hits(), b.hits()),
+        (0, 0),
+        "a request was dialed through a client that does not guard its url's host"
+    );
+}
