@@ -174,12 +174,13 @@ impl Drop for Forwarder {
 /// addresses rotate, as it did before a static pin was taken at open.
 ///
 /// An IP-literal host never reaches the resolver; `host_is_blocked` already ruled on it.
-fn build_client(
-    url: &reqwest::Url,
-    timeout: Duration,
-    lookup: &net_guard::Lookup,
-) -> Result<reqwest::Client, String> {
-    let b = reqwest::Client::builder()
+///
+/// No `connect_timeout`: the per-request `.timeout(...)` in `post_op` reads the live timeout on every
+/// call and bounds the whole request, connect included. A connect bound frozen here at build time
+/// was stale after a timeout-only `configure` push: raised from 100ms to 5000ms, connects were
+/// still cut at 100ms while `status` reported 5000.
+fn build_client(url: &reqwest::Url, lookup: &net_guard::Lookup) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .dns_resolver(std::sync::Arc::new(net_guard::TargetResolver::new(
             std::sync::Arc::clone(lookup),
             url.host_str(),
@@ -187,17 +188,7 @@ fn build_client(
         // Disable redirects so a target cannot 30x us onto an internal host at runtime (the
         // validated URL only guarantees the FIRST hop is safe).
         .redirect(reqwest::redirect::Policy::none())
-        // Pinned to the timeout in effect when this client was built, not re-read per request: it
-        // only bounds the connect sub-phase, and the per-request `.timeout(...)` in `post_op` (which
-        // DOES read the live, possibly-reconfigured value on every call) always bounds the whole
-        // request at or under it. A connect_timeout that is stale-high is a no-op (the smaller
-        // per-request timeout still cuts the call off on schedule); stale-low only makes the connect
-        // sub-phase fail slightly earlier than a later, larger configured timeout would strictly
-        // require — never a foot-gun in either direction, so a timeout-only `configure` push does not
-        // need to rebuild the client and lose its warm connection pool. A HOST change does, but for
-        // the resolver's guard, not the timeout.
-        .connect_timeout(timeout);
-    b.build()
+        .build()
         .map_err(|e| format!("webrequest: failed to build HTTP client: {e}"))
 }
 
@@ -214,7 +205,7 @@ impl Forwarder {
         // The early NACK: a name that resolves internally now fails the load. Its answer is not
         // kept; every connect resolves and checks again (see `build_client`).
         net_guard::checked_addrs_for(&url, &lookup)?;
-        let client = build_client(&url, timeout, &lookup)?;
+        let client = build_client(&url, &lookup)?;
         // A current-thread runtime is enough: one blocking op at a time per engine spawn_blocking call.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -556,15 +547,11 @@ impl HookHandler for Forwarder {
         let rebuilt = match &new_url {
             None => None,
             Some(url) => {
-                match net_guard::checked_addrs_for(url, &self.lookup) {
-                    Ok(_) => {}
-                    Err(reason) => {
-                        eprintln!("webrequest: configure() rejected: {reason}");
-                        return false;
-                    }
+                if let Err(reason) = net_guard::checked_addrs_for(url, &self.lookup) {
+                    eprintln!("webrequest: configure() rejected: {reason}");
+                    return false;
                 }
-                let timeout = new_timeout.unwrap_or_else(|| read_live(&self.live).timeout);
-                match build_client(url, timeout, &self.lookup) {
+                match build_client(url, &self.lookup) {
                     Ok(c) => Some(c),
                     Err(reason) => {
                         eprintln!("webrequest: configure() rejected: {reason}");
