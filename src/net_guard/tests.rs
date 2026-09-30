@@ -395,3 +395,22 @@ fn the_target_resolver_leaves_other_names_unchecked() {
         vec![SocketAddr::new("10.0.0.1".parse().unwrap(), 0)]
     );
 }
+
+/// WREQ-5. The three rejection errors masked the userinfo but echoed the query verbatim, so a
+/// `?token=` credential reached the `open` load error and `configure`'s stderr line. They now echo
+/// the URL through the same masker `status` uses.
+#[test]
+fn rejection_errors_redact_the_query_and_fragment() {
+    for raw in [
+        "http://10.0.0.5/hook?token=SECRET#SECRET-FRAG",
+        "ftp://h.example/?token=SECRET#SECRET-FRAG",
+        "http://api.example.com/hook?token=SECRET#SECRET-FRAG",
+    ] {
+        let err = validate_target_url(raw).expect_err("each of these is refused");
+        assert!(
+            !err.contains("SECRET") && !err.contains("token="),
+            "the rejection echoed the query or fragment: {err}"
+        );
+        assert!(err.contains("?<redacted>"), "{err}");
+    }
+}
