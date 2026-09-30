@@ -22,6 +22,8 @@
 //! - **SSRF**: the configured URL is validated at `open`/`configure` against [`net_guard`] — the same
 //!   policy the old webhook hook used (loopback sidecars allowed; link-local / IMDS / RFC1918 / CGNAT /
 //!   ULA / cloud-metadata / alternate-IPv4-encodings blocked; plaintext `http://` only to loopback).
+//!   A host NAME is resolved and checked again on every connect, so a later internal answer is
+//!   refused before anything is dialed.
 //! - **Redirects disabled** on the client (`redirect::none`): a target cannot 30x-redirect us to an
 //!   internal host at runtime.
 //! - **Tight timeouts**; the response body is **capped before allocation** (a hostile target cannot
@@ -123,10 +125,10 @@ struct Forwarder {
     // long-lived singleton plugin instance must not brick itself for its remaining lifetime over a
     // panic in an unrelated call.
     live: RwLock<LiveTarget>,
-    /// Behind a lock because a `configure` push that changes the HOST has to rebuild it: the client
-    /// carries the pinned DNS answers for the old host (see `build_client`), and a pin for the wrong
-    /// host is worse than no pin. Read-cloned per request; `reqwest::Client` is Arc-backed, so that
-    /// is a refcount bump, not a new pool.
+    /// Behind a lock because a `configure` push that changes the HOST has to rebuild it: the client's
+    /// resolver guards the old host by name (see `build_client`), and a guard on the wrong host
+    /// checks nothing. Read-cloned per request; `reqwest::Client` is Arc-backed, so that is a
+    /// refcount bump, not a new pool.
     client: RwLock<reqwest::Client>,
     // Wrapped in `Option` SOLELY so `Drop` can move the runtime out and shut it down NON-blockingly.
     // A bare `tokio::runtime::Runtime` dropped in place runs its blocking `Drop`, which PANICS when
@@ -166,26 +168,25 @@ impl Drop for Forwarder {
     }
 }
 
-/// Build the forwarding client, PINNED to `addrs` when the target host is a name that resolved.
+/// Build the forwarding client, its resolver GUARDING the target host.
 ///
-/// The pin is what makes the SSRF guard's resolve step mean anything. Without it the guard resolves
-/// the name, approves the addresses, and then hands the bare hostname to reqwest, which resolves it
-/// AGAIN at connect time and can get a different answer — that is DNS rebinding, and the second
-/// answer is the interesting one to an attacker. `resolve_to_addrs` makes the approved addresses the
-/// only ones this client will ever dial for that host.
+/// The guard runs on every connect, not once at open: the client resolves the target host through
+/// [`net_guard::TargetResolver`], which fails the connect before anything is dialed when ANY
+/// address in the CURRENT answer is internal (or the answer is empty). Checking once at open and
+/// dialing whatever a later lookup returns is DNS rebinding's shape, and so is a name that did not
+/// resolve at open (allowed then, as an availability event) resolving to the metadata service
+/// later. And because the answer is the current one, the client follows the target when its
+/// addresses rotate, as it did before a static pin was taken at open.
 ///
-/// `None` means there is nothing to pin: an IP literal (already ruled on textually) or a name that
-/// did not resolve. See `net_guard::resolve_and_check` for why a resolution failure is allowed
-/// through rather than treated as a security event.
+/// An IP-literal host never reaches the resolver; `host_is_blocked` already ruled on it.
 fn build_client(
     target: &LiveTarget,
-    addrs: Option<&[std::net::SocketAddr]>,
     lookup: &net_guard::Lookup,
 ) -> Result<reqwest::Client, String> {
-    let mut b = reqwest::Client::builder()
+    let b = reqwest::Client::builder()
         .dns_resolver(std::sync::Arc::new(net_guard::TargetResolver::new(
             std::sync::Arc::clone(lookup),
-            None,
+            target.url.host_str(),
         )))
         // Disable redirects so a target cannot 30x us onto an internal host at runtime (the
         // validated URL only guarantees the FIRST hop is safe).
@@ -198,11 +199,8 @@ fn build_client(
         // sub-phase fail slightly earlier than a later, larger configured timeout would strictly
         // require — never a foot-gun in either direction, so a timeout-only `configure` push does not
         // need to rebuild the client and lose its warm connection pool. A HOST change does, but for
-        // the pin, not the timeout.
+        // the resolver's guard, not the timeout.
         .connect_timeout(target.timeout);
-    if let (Some(addrs), Some(host)) = (addrs, target.url.host_str()) {
-        b = b.resolve_to_addrs(host, addrs);
-    }
     b.build()
         .map_err(|e| format!("webrequest: failed to build HTTP client: {e}"))
 }
@@ -217,8 +215,10 @@ impl Forwarder {
     /// [`Forwarder::new`] over an explicit name `lookup` (the seam tests use to answer DNS).
     fn with_lookup(cfg: Config, lookup: net_guard::Lookup) -> Result<Self, String> {
         let target = LiveTarget::validate(&cfg)?;
-        let addrs = net_guard::checked_addrs_for(&target.url, &lookup)?;
-        let client = build_client(&target, addrs.as_deref(), &lookup)?;
+        // The early NACK: a name that resolves internally now fails the load. Its answer is not
+        // kept; every connect resolves and checks again (see `build_client`).
+        net_guard::checked_addrs_for(&target.url, &lookup)?;
+        let client = build_client(&target, &lookup)?;
         // A current-thread runtime is enough: one blocking op at a time per engine spawn_blocking call.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -285,7 +285,7 @@ impl Forwarder {
                 .timeout(target_timeout)
                 .send()
                 .await
-                .map_err(|e| format!("webrequest: request failed: {}", e.without_url()))?;
+                .map_err(request_failed)?;
             let resp = resp.error_for_status().map_err(|e| {
                 format!(
                     "webrequest: target returned an error status: {}",
@@ -296,6 +296,20 @@ impl Forwarder {
             parse_reply(&buf)
         })
     }
+}
+
+/// The error string for a failed send: reqwest's own text, URL-free (see `post_op`), plus the
+/// resolver's refusal when the SSRF guard is what failed the connect. reqwest's `Display` never
+/// prints its source chain, so without this a refused connect reads as a bare "error sending
+/// request", indistinguishable from a refused port.
+fn request_failed(e: reqwest::Error) -> String {
+    let refusal = net_guard::ssrf_refusal_in(&e);
+    let mut msg = format!("webrequest: request failed: {}", e.without_url());
+    if let Some(refusal) = refusal {
+        msg.push_str(": ");
+        msg.push_str(&refusal);
+    }
+    msg
 }
 
 /// Read `live`, recovering from a poisoned lock rather than panicking: nothing in either critical
@@ -541,29 +555,27 @@ impl HookHandler for Forwarder {
             return true; // Nothing pushed that changes the live target — ACK, nothing to commit.
         }
         // A pushed URL is re-run through the RESOLVE half of the guard too, not just the textual one
-        // above, and the client is rebuilt so the new host's approved addresses are pinned. Doing the
-        // textual check alone here would leave `configure` as the way around the resolve check: push
-        // a name that resolves internally and the forwarder is re-pointed at the metadata service
-        // with the old host's pin still attached, which is worse than no pin at all.
+        // above (the early NACK), and the client is rebuilt so its resolver guards the NEW host.
+        // A client left guarding the old host would resolve the new one unchecked.
         //
         // Built BEFORE the live target is committed, so a rejection leaves the previous target and
         // its client fully intact — commit-on-ack, matching the rest of this method.
         let rebuilt = match &new_url {
             None => None,
             Some(url) => {
-                let addrs = match net_guard::checked_addrs_for(url, &self.lookup) {
-                    Ok(a) => a,
+                match net_guard::checked_addrs_for(url, &self.lookup) {
+                    Ok(_) => {}
                     Err(reason) => {
                         eprintln!("webrequest: configure() rejected: {reason}");
                         return false;
                     }
-                };
+                }
                 let timeout = new_timeout.unwrap_or_else(|| read_live(&self.live).timeout);
                 let probe = LiveTarget {
                     url: url.clone(),
                     timeout,
                 };
-                match build_client(&probe, addrs.as_deref(), &self.lookup) {
+                match build_client(&probe, &self.lookup) {
                     Ok(c) => Some(c),
                     Err(reason) => {
                         eprintln!("webrequest: configure() rejected: {reason}");
