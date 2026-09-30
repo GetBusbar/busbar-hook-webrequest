@@ -464,25 +464,26 @@ fn scheme_is(url: &reqwest::Url, want: &str) -> bool {
     url.scheme().eq_ignore_ascii_case(want)
 }
 
-/// Validate the operator-configured target URL against the SSRF guard, returning the canonicalized URL
-/// string on success or a stable, credential-free error on rejection. Accepts `https://` for any
-/// allowed host and `http://` ONLY for a loopback host (parity with the old webhook policy: a plaintext
-/// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
-/// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
+/// Validate the operator-configured target URL against the SSRF guard, returning the parsed URL on
+/// success or a stable, credential-free error on rejection. Accepts `https://` for any allowed host
+/// and `http://` ONLY for a loopback host (parity with the old webhook policy: a plaintext hop must
+/// stay on loopback so a payload — which may carry granted prompt/user content — is never sent in
+/// cleartext to a remote host). Every error echoes the URL through [`reportable_url`], so neither an
+/// embedded `user:pass@` nor a `?token=` query reaches it.
 pub(crate) fn validate_target_url(raw: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(raw)
         .map_err(|e| format!("webrequest: settings.url is not a valid URL: {e}"))?;
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
             "webrequest: settings.url must be an http:// or https:// URL (got '{}')",
-            mask_userinfo(&url)
+            reportable_url(&url)
         ));
     }
     if host_is_blocked(&url) {
         return Err(format!(
             "webrequest: settings.url must not target a link-local/private/CGNAT/cloud-metadata host \
              (SSRF guard; loopback sidecars are allowed); got '{}'",
-            mask_userinfo(&url)
+            reportable_url(&url)
         ));
     }
     if scheme_is(&url, "http") && !host_is_loopback(&url) {
@@ -490,14 +491,14 @@ pub(crate) fn validate_target_url(raw: &str) -> Result<reqwest::Url, String> {
             "webrequest: settings.url must use https:// for a non-loopback target (plaintext http:// is \
              only permitted for a loopback sidecar; the payload could otherwise be sent in cleartext); \
              got '{}'",
-            mask_userinfo(&url)
+            reportable_url(&url)
         ));
     }
     Ok(url)
 }
 
-/// Replace any `user[:pass]@` userinfo on `url` with `***@` so a credential embedded in the operator's
-/// URL never reaches a (logged) error message.
+/// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is
+/// what every URL echo uses; this alone leaves a `?token=` query in place.
 ///
 /// Operates on the ALREADY-PARSED [`reqwest::Url`] rather than doing textual `find("://")` surgery on
 /// the raw input string. This matters: WHATWG URL parsing (which both `reqwest::Url::parse` and every
@@ -521,13 +522,14 @@ pub(crate) fn mask_userinfo(url: &reqwest::Url) -> String {
     masked.to_string()
 }
 
-/// The target URL in a form that is safe to publish on the operator-visible `status` surface.
+/// The target URL in a form that is safe to echo ANYWHERE: the ONE masker every URL echo in this
+/// crate goes through (the `status` surface and every `validate_target_url` error, which reaches the
+/// `open` load error and `configure`'s stderr line).
 ///
-/// `mask_userinfo` alone is not enough here. It masks credentials in the userinfo, which is the
-/// shape that shows up in an ERROR string, but a status field is different: it carries the whole
-/// URL, and a sidecar that authenticates by query parameter (`?token=...`) is a common enough shape
-/// that publishing the raw query would be a credential leak into the admin API and into every
-/// status snapshot taken from it. So the query is redacted to a marker rather than reproduced.
+/// `mask_userinfo` alone is not enough. It masks credentials in the userinfo, but a sidecar that
+/// authenticates by query parameter (`?token=...`) is a common enough shape that echoing the raw
+/// query would leak the credential into the admin API, every status snapshot, and the logs. So the
+/// query is redacted to a marker rather than reproduced.
 ///
 /// The fragment goes too: it never reaches the wire on an HTTP request, so it can only be noise or
 /// an accident, and there is no reason to echo it.
