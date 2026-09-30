@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-hook-webrequest"
+version = "1.5.0"
+publish = false            # linked into busbar at a pinned rev, or shipped as a signed tarball; never to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The webrequest hook's logic: a transparent HTTP forwarder that POSTs each hook op envelope to an operator-configured URL and returns the capped JSON reply. Pure functions over bytes: config, the request bytes, the reply rules. No socket, no TLS, no runtime."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The one URL grammar (WHATWG), the same crate reqwest parsed the operator's URL with in 1.5.5.
+url = "2"
+# Status-code reason phrases for the 1.5.5 error text.
+http = "1"
+
+[dev-dependencies]
+# The byte-identity oracle: the request bytes this crate writes are compared with what the 1.5.5
+# client (reqwest, the version 1.5.5 shipped) put on the wire to a raw listener. Dev only.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }

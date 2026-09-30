@@ -1,7 +1,7 @@
 use super::*;
 
-fn url(s: &str) -> reqwest::Url {
-    reqwest::Url::parse(s).unwrap()
+fn url(s: &str) -> url::Url {
+    url::Url::parse(s).unwrap()
 }
 
 #[test]
@@ -221,7 +221,7 @@ fn the_reportable_url_redacts_a_query_string_and_the_fragment() {
 }
 
 /// Regression for the TAB-in-scheme-separator masking bypass: WHATWG URL parsing (which
-/// `reqwest::Url::parse` uses, same as the real HTTP client) strips embedded TAB/CR/LF before the
+/// `url::Url::parse` uses, same as the real HTTP client) strips embedded TAB/CR/LF before the
 /// scheme separator, so `"https:\t//svc:hunter2@10.0.0.1/route"` parses and resolves completely
 /// normally to host `10.0.0.1` with userinfo `svc:hunter2` — even though the literal substring
 /// `"://"` never appears in the raw string. A masking function keyed on `raw.find("://")` would
@@ -233,7 +233,7 @@ fn mask_userinfo_survives_tab_in_scheme_separator() {
     let raw = "https:\t//svc:hunter2@10.0.0.1/route";
     // Sanity: this raw string really does parse and really does resolve to the blocked host — proving
     // the reproduction is real, not a URL that simply fails to parse.
-    let parsed = reqwest::Url::parse(raw).expect("WHATWG parsing accepts the embedded tab");
+    let parsed = url::Url::parse(raw).expect("WHATWG parsing accepts the embedded tab");
     assert_eq!(parsed.host_str(), Some("10.0.0.1"));
 
     let err = validate_target_url(raw).expect_err("10.0.0.1 must be SSRF-rejected");
@@ -251,7 +251,7 @@ fn mask_userinfo_survives_tab_in_scheme_separator() {
 /// loopback — which is ALLOWED (sidecars), so this pins the carve-out rather than the block.
 #[test]
 fn a_name_resolving_to_loopback_is_allowed_and_pinned() {
-    let url = reqwest::Url::parse("http://localhost:9/route").unwrap();
+    let url = url::Url::parse("http://localhost:9/route").unwrap();
     assert!(
         !host_is_blocked(&url),
         "the textual guard allows localhost (sidecar carve-out)"
@@ -273,7 +273,7 @@ fn an_ip_literal_has_nothing_to_pin() {
         "https://93.184.216.34/route",
         "https://[2606:2800:220:1:248:1893:25c8:1946]/route",
     ] {
-        let url = reqwest::Url::parse(raw).unwrap();
+        let url = url::Url::parse(raw).unwrap();
         assert!(
             checked_addrs_for(&url).unwrap().is_none(),
             "an IP literal must not be resolved: {raw}"
@@ -306,7 +306,7 @@ fn the_resolved_predicate_agrees_with_the_literal_one() {
             "resolved-address verdict for {raw}"
         );
         // And the literal-text path must say the same thing about the same address.
-        let url = reqwest::Url::parse(&if ip.is_ipv6() {
+        let url = url::Url::parse(&if ip.is_ipv6() {
             format!("https://[{raw}]/x")
         } else {
             format!("https://{raw}/x")
@@ -325,7 +325,7 @@ fn the_resolved_predicate_agrees_with_the_literal_one() {
 /// plugin's load over it would take the gateway down for a transient blip.
 #[test]
 fn a_name_that_does_not_resolve_is_allowed_but_unpinned() {
-    let url = reqwest::Url::parse("https://this-name-must-not-resolve.invalid/route").unwrap();
+    let url = url::Url::parse("https://this-name-must-not-resolve.invalid/route").unwrap();
     assert_eq!(
         checked_addrs_for(&url).expect("a resolution failure is not a rejection"),
         None,
