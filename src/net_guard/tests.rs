@@ -256,7 +256,8 @@ fn a_name_resolving_to_loopback_is_allowed_and_pinned() {
         !host_is_blocked(&url),
         "the textual guard allows localhost (sidecar carve-out)"
     );
-    let addrs = checked_addrs_for(&url).expect("localhost must not be rejected");
+    let addrs =
+        checked_addrs_for(&url, &system_lookup()).expect("localhost must not be rejected");
     let addrs = addrs.expect("localhost resolves, so there are addresses to pin");
     assert!(!addrs.is_empty());
     assert!(
@@ -275,7 +276,7 @@ fn an_ip_literal_has_nothing_to_pin() {
     ] {
         let url = reqwest::Url::parse(raw).unwrap();
         assert!(
-            checked_addrs_for(&url).unwrap().is_none(),
+            checked_addrs_for(&url, &system_lookup()).unwrap().is_none(),
             "an IP literal must not be resolved: {raw}"
         );
     }
@@ -327,7 +328,8 @@ fn the_resolved_predicate_agrees_with_the_literal_one() {
 fn a_name_that_does_not_resolve_is_allowed_but_unpinned() {
     let url = reqwest::Url::parse("https://this-name-must-not-resolve.invalid/route").unwrap();
     assert_eq!(
-        checked_addrs_for(&url).expect("a resolution failure is not a rejection"),
+        checked_addrs_for(&url, &system_lookup())
+            .expect("a resolution failure is not a rejection"),
         None,
         "nothing resolved, so there is nothing to pin"
     );

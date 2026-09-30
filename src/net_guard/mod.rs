@@ -38,6 +38,7 @@
 //! defended against here.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::sync::Arc;
 
 // ── Pure context-free predicates (copied verbatim from busbar/src/net_guard.rs) ────────────────────
 
@@ -283,15 +284,26 @@ pub(crate) fn host_is_blocked(url: &reqwest::Url) -> bool {
 /// briefly down is an availability event, not a security one — it cannot reach anything, internal or
 /// otherwise, and failing the plugin's load over it would take the whole gateway down for a
 /// transient blip. The caller treats `None` as "allowed, but nothing to pin".
-fn resolve_and_check(host: &str, port: u16) -> Result<Option<Vec<SocketAddr>>, String> {
-    let Ok(addrs) = (host, port).to_socket_addrs() else {
+fn resolve_and_check(
+    host: &str,
+    port: u16,
+    lookup: &Lookup,
+) -> Result<Option<Vec<SocketAddr>>, String> {
+    let Ok(addrs) = lookup(host, port) else {
         return Ok(None);
     };
-    let addrs: Vec<SocketAddr> = addrs.collect();
     if addrs.is_empty() {
         return Ok(None);
     }
-    for addr in &addrs {
+    check_resolved(&addrs)?;
+    Ok(Some(addrs))
+}
+
+/// The ANY rule over a resolved answer: `Err` naming the first internal address, `Ok` when every
+/// address may be dialed (loopback included, the sidecar carve-out). Pure, so the rule is testable
+/// without a resolver.
+pub(crate) fn check_resolved(addrs: &[SocketAddr]) -> Result<(), String> {
+    for addr in addrs {
         if ip_is_internal(&addr.ip()) {
             return Err(format!(
                 "resolves to the internal address {} (SSRF guard; loopback sidecars are allowed)",
@@ -299,7 +311,86 @@ fn resolve_and_check(host: &str, port: u16) -> Result<Option<Vec<SocketAddr>>, S
             ));
         }
     }
-    Ok(Some(addrs))
+    Ok(())
+}
+
+/// A name lookup, `(host, port) -> addresses`. Production uses [`system_lookup`] (the OS resolver,
+/// the same `getaddrinfo` reqwest's default resolver calls); tests inject a fixed answer so no test
+/// depends on, or waits on, real DNS.
+pub(crate) type Lookup =
+    Arc<dyn Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static>;
+
+/// The OS resolver as a [`Lookup`].
+pub(crate) fn system_lookup() -> Lookup {
+    Arc::new(|host: &str, port: u16| (host, port).to_socket_addrs().map(Iterator::collect))
+}
+
+/// A connect-time refusal by [`TargetResolver`]: the target host's answer was internal (or empty).
+/// A distinct type so `post_op` can recognise it in a reqwest error's source chain.
+#[derive(Debug)]
+pub(crate) struct SsrfRefusal(String);
+
+impl std::fmt::Display for SsrfRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SsrfRefusal {}
+
+/// The forwarding client's DNS resolver. Every name the client dials is resolved through
+/// `lookup`; when the name is the GUARDED target host, the answer must pass [`check_resolved`]
+/// (and be non-empty) or the connect fails with an [`SsrfRefusal`] before anything is dialed. Any
+/// other name (an environment proxy's host, say) is resolved unchecked.
+pub(crate) struct TargetResolver {
+    lookup: Lookup,
+    guarded: Option<String>,
+}
+
+impl TargetResolver {
+    /// A resolver over `lookup` that checks the answers for `guarded` (a URL host; compared in the
+    /// canonical form [`canonical_name`] gives both sides). `None` checks nothing.
+    pub(crate) fn new(lookup: Lookup, guarded: Option<&str>) -> Self {
+        Self {
+            lookup,
+            guarded: guarded.map(canonical_name),
+        }
+    }
+}
+
+impl reqwest::dns::Resolve for TargetResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let lookup = Arc::clone(&self.lookup);
+        let name = name.as_str().to_string();
+        let guard = self.guarded.as_deref() == Some(canonical_name(&name).as_str());
+        Box::pin(async move {
+            type BoxError = Box<dyn std::error::Error + Send + Sync>;
+            let host = name.clone();
+            // Port 0: the connector puts the URL's (or the scheme's) port on every address.
+            let addrs: Vec<SocketAddr> = tokio::task::spawn_blocking(move || lookup(&host, 0))
+                .await
+                .map_err(|e| -> BoxError { Box::new(e) })?
+                .map_err(|e| -> BoxError { Box::new(e) })?;
+            if guard {
+                let refusal = if addrs.is_empty() {
+                    Some(format!("host '{name}' resolved to no addresses (SSRF guard)"))
+                } else {
+                    check_resolved(&addrs)
+                        .err()
+                        .map(|why| format!("host '{name}' {why}"))
+                };
+                if let Some(refusal) = refusal {
+                    return Err(Box::new(SsrfRefusal(refusal)) as BoxError);
+                }
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// A host name in the form the guard compares: ASCII-lowercased, one trailing FQDN-root `.` dropped.
+fn canonical_name(host: &str) -> String {
+    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
 }
 
 /// The internal-address predicate, over an already-resolved [`IpAddr`]. Shares its rules with
@@ -331,7 +422,10 @@ fn ip_is_internal(ip: &IpAddr) -> bool {
 /// AGAIN at connect time and may get a different answer — the DNS-rebinding shape, where the second
 /// answer is the metadata service. Feeding these exact addresses to the client closes that: the
 /// approved addresses are the only ones it will ever dial.
-pub(crate) fn checked_addrs_for(url: &reqwest::Url) -> Result<Option<Vec<SocketAddr>>, String> {
+pub(crate) fn checked_addrs_for(
+    url: &reqwest::Url,
+    lookup: &Lookup,
+) -> Result<Option<Vec<SocketAddr>>, String> {
     let Some(host) = host_of(url) else {
         return Ok(None);
     };
@@ -339,7 +433,7 @@ pub(crate) fn checked_addrs_for(url: &reqwest::Url) -> Result<Option<Vec<SocketA
         return Ok(None); // an IP literal: `host_is_blocked` already ruled on it
     }
     let port = url.port_or_known_default().unwrap_or(443);
-    resolve_and_check(&host, port)
+    resolve_and_check(&host, port, lookup)
         .map_err(|why| format!("webrequest: settings.url host '{host}' {why}"))
 }
 

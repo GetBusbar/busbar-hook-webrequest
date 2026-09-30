@@ -149,6 +149,9 @@ struct Forwarder {
     // Either is a deeper restructuring than a bounded join alone. The hazard is LOW-probability
     // today (dlclose-on-hot-reload is not this loader's behavior) but real if that ever changes.
     rt: Option<tokio::runtime::Runtime>,
+    /// The name lookup behind both the open/configure resolve check and the client's resolver
+    /// ([`net_guard::system_lookup`] in production; a fixed answer in tests).
+    lookup: net_guard::Lookup,
 }
 
 impl Drop for Forwarder {
@@ -177,8 +180,13 @@ impl Drop for Forwarder {
 fn build_client(
     target: &LiveTarget,
     addrs: Option<&[std::net::SocketAddr]>,
+    lookup: &net_guard::Lookup,
 ) -> Result<reqwest::Client, String> {
     let mut b = reqwest::Client::builder()
+        .dns_resolver(std::sync::Arc::new(net_guard::TargetResolver::new(
+            std::sync::Arc::clone(lookup),
+            None,
+        )))
         // Disable redirects so a target cannot 30x us onto an internal host at runtime (the
         // validated URL only guarantees the FIRST hop is safe).
         .redirect(reqwest::redirect::Policy::none())
@@ -203,9 +211,14 @@ impl Forwarder {
     /// Build a forwarder from validated config. Fails closed if the URL is missing, malformed, blocked
     /// by the SSRF guard, or the client/runtime cannot be built.
     fn new(cfg: Config) -> Result<Self, String> {
+        Self::with_lookup(cfg, net_guard::system_lookup())
+    }
+
+    /// [`Forwarder::new`] over an explicit name `lookup` (the seam tests use to answer DNS).
+    fn with_lookup(cfg: Config, lookup: net_guard::Lookup) -> Result<Self, String> {
         let target = LiveTarget::validate(&cfg)?;
-        let addrs = net_guard::checked_addrs_for(&target.url)?;
-        let client = build_client(&target, addrs.as_deref())?;
+        let addrs = net_guard::checked_addrs_for(&target.url, &lookup)?;
+        let client = build_client(&target, addrs.as_deref(), &lookup)?;
         // A current-thread runtime is enough: one blocking op at a time per engine spawn_blocking call.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -215,6 +228,7 @@ impl Forwarder {
             live: RwLock::new(target),
             client: RwLock::new(client),
             rt: Some(rt),
+            lookup,
         })
     }
 
@@ -537,7 +551,7 @@ impl HookHandler for Forwarder {
         let rebuilt = match &new_url {
             None => None,
             Some(url) => {
-                let addrs = match net_guard::checked_addrs_for(url) {
+                let addrs = match net_guard::checked_addrs_for(url, &self.lookup) {
                     Ok(a) => a,
                     Err(reason) => {
                         eprintln!("webrequest: configure() rejected: {reason}");
@@ -549,7 +563,7 @@ impl HookHandler for Forwarder {
                     url: url.clone(),
                     timeout,
                 };
-                match build_client(&probe, addrs.as_deref()) {
+                match build_client(&probe, addrs.as_deref(), &self.lookup) {
                     Ok(c) => Some(c),
                     Err(reason) => {
                         eprintln!("webrequest: configure() rejected: {reason}");
