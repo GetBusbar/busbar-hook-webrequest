@@ -847,7 +847,10 @@ fn a_plaintext_target_answering_remote_at_connect_is_refused_before_any_dial() {
         if port != 0 {
             return Err(std::io::Error::other("no answer at open"));
         }
-        Ok(vec![SocketAddr::new(LOOPBACK, 0), SocketAddr::new(REMOTE, 0)])
+        Ok(vec![
+            SocketAddr::new(LOOPBACK, 0),
+            SocketAddr::new(REMOTE, 0),
+        ])
     });
     let fwd = Forwarder::with_lookup(
         cfg(format!("http://svc.localhost:{}/", target.port()), 2000),
