@@ -414,3 +414,28 @@ fn rejection_errors_redact_the_query_and_fragment() {
         assert!(err.contains("?<redacted>"), "{err}");
     }
 }
+
+/// WREQ-7. A local-use NAT64 /96 other than the all-zero one under `64:ff9b:1::/48` was not
+/// unwrapped, so `[64:ff9b:1:abcd::a9fe:a9fe]` (169.254.169.254 behind an operator-chosen
+/// local-use prefix) passed both the literal and the resolved-address checks. Core's copy accepts
+/// any /96 under the local-use /48; this copy now does too.
+#[test]
+fn any_local_use_nat64_prefix_is_unwrapped() {
+    for raw in ["64:ff9b:1:abcd::a9fe:a9fe", "64:ff9b:1:fffe:1:2:a00:1"] {
+        let v6: Ipv6Addr = raw.parse().unwrap();
+        assert!(embedded_v4(&v6).is_some(), "{raw} embeds an IPv4 address");
+        assert!(
+            ip_is_internal(&IpAddr::V6(v6)),
+            "{raw} carries an internal IPv4 target"
+        );
+        assert!(host_is_blocked(&url(&format!("https://[{raw}]/"))), "{raw}");
+    }
+    assert_eq!(
+        embedded_v4(&"64:ff9b:1:abcd::a9fe:a9fe".parse().unwrap()),
+        Some(Ipv4Addr::new(169, 254, 169, 254))
+    );
+    // The well-known prefix stays exact: bits under 64:ff9b::/96 beyond the prefix are not NAT64.
+    assert_eq!(embedded_v4(&"64:ff9b:0:1::a9fe:a9fe".parse().unwrap()), None);
+    // Loopback behind a local-use prefix keeps the sidecar carve-out.
+    assert!(!host_is_blocked(&url("http://[64:ff9b:1:abcd::7f00:1]:8080/x")));
+}
