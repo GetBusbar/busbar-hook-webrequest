@@ -404,3 +404,250 @@ fn drop_in_async_context_does_not_panic() {
         drop(fwd);
     });
 }
+
+// ── Loopback targets and DNS answers for the connect-path tests ─────────────────────────────────
+
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+
+/// A loopback HTTP/1.1 target on a plain thread. Every connection gets one request read (its body
+/// recorded) and the raw `response` pieces written back in order, flushed one at a time, then the
+/// connection closes. `Connection: close` in every response keeps reqwest from pooling, so each
+/// request is a fresh connect (and a fresh resolve).
+struct Target {
+    addr: SocketAddr,
+    bodies: Arc<Mutex<Vec<String>>>,
+}
+
+impl Target {
+    fn start(response: Vec<Vec<u8>>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback target");
+        let addr = listener.local_addr().expect("target address");
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&bodies);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let Some(body) = read_request(&mut stream) else {
+                    continue;
+                };
+                sink.lock().unwrap().push(body);
+                for piece in &response {
+                    if stream.write_all(piece).and_then(|()| stream.flush()).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        });
+        Self { addr, bodies }
+    }
+
+    /// A target answering every request with `body` as a 200 JSON reply.
+    fn json(body: &str) -> Self {
+        Self::start(vec![json_response(body)])
+    }
+
+    fn port(&self) -> u16 {
+        self.addr.port()
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}/", self.addr)
+    }
+
+    fn hits(&self) -> usize {
+        self.bodies.lock().unwrap().len()
+    }
+}
+
+/// Read one request off `stream` and return its body (`None` if the peer went away first).
+fn read_request(stream: &mut TcpStream) -> Option<String> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            let len = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            while buf.len() < end + 4 + len {
+                let n = stream.read(&mut chunk).ok()?;
+                if n == 0 {
+                    return None;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            return Some(String::from_utf8_lossy(&buf[end + 4..end + 4 + len]).into_owned());
+        }
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+}
+
+/// A complete `200 OK` JSON response carrying `body`.
+fn json_response(body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+/// A lookup with no DNS behind it: every name fails to resolve, instantly, which the open/configure
+/// check allows. For tests whose subject is not the connect path.
+fn no_dns() -> net_guard::Lookup {
+    Arc::new(|_: &str, _: u16| Err(std::io::Error::other("no DNS in unit tests")))
+}
+
+/// A lookup that answers the open/configure resolve check with `validate` (`None`: the name does
+/// not resolve) and every CONNECT with `connect`, after `delay`. The two are told apart by port:
+/// the check asks with the URL's port, the client's resolver asks with port 0.
+fn split_lookup(validate: Option<IpAddr>, connect: IpAddr, delay: Duration) -> net_guard::Lookup {
+    Arc::new(move |_: &str, port: u16| {
+        if port != 0 {
+            return validate
+                .map(|ip| vec![SocketAddr::new(ip, port)])
+                .ok_or_else(|| std::io::Error::other("no answer"));
+        }
+        std::thread::sleep(delay);
+        Ok(vec![SocketAddr::new(connect, 0)])
+    })
+}
+
+/// `0.0.0.0`: internal (unspecified) to the guard, yet a connect to it reaches the local host on
+/// Linux, so a target on 127.0.0.1 counts a request that was dialed there. Nothing real is dialed.
+const UNSPECIFIED: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+fn cfg(url: String, timeout_ms: u64) -> Config {
+    Config {
+        url,
+        timeout_ms: Some(timeout_ms),
+    }
+}
+
+/// WREQ-1. A name that did not resolve at open used to leave the client unpinned, and reqwest
+/// then resolved it at connect with no check at all: SERVFAIL at open, `169.254.169.254` at the
+/// request, and the envelope went to the metadata service. Every connect now checks its own
+/// answer, and an internal one fails the connect before anything is dialed.
+#[test]
+fn an_internal_answer_at_connect_is_refused_before_any_dial() {
+    let target = Target::json(r#"{"order":[0]}"#);
+    let fwd = Forwarder::with_lookup(
+        cfg(format!("http://svc.localhost:{}/", target.port()), 2000),
+        split_lookup(None, UNSPECIFIED, Duration::ZERO),
+    )
+    .expect("a name that does not resolve at open is allowed (availability, not security)");
+    let err = fwd
+        .post_op("decide", &serde_json::json!({}))
+        .expect_err("an internal answer at connect must fail the call");
+    assert!(
+        err.contains("SSRF guard") && err.contains("0.0.0.0"),
+        "the failure must be the guard's refusal, not a connect error: {err}"
+    );
+    assert_eq!(target.hits(), 0, "nothing may be dialed on a refused answer");
+}
+
+/// WREQ-2. The address approved at open was pinned for the client's life, so when the target's
+/// addresses rotated every call failed until a url push or a restart. The connect now resolves the
+/// CURRENT answer and follows the target.
+#[test]
+fn the_connect_follows_the_targets_current_dns_answer() {
+    let target = Target::json(r#"{"order":[0]}"#);
+    // Approved at open: `::1`, where nothing listens on the target's port. The target has since
+    // moved to 127.0.0.1, which is what DNS answers at connect.
+    let fwd = Forwarder::with_lookup(
+        cfg(format!("http://svc.localhost:{}/", target.port()), 2000),
+        split_lookup(
+            Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+            LOOPBACK,
+            Duration::ZERO,
+        ),
+    )
+    .expect("loopback answers are allowed");
+    let reply = fwd
+        .post_op("decide", &serde_json::json!({}))
+        .expect("the connect must reach the address DNS answers now, not the one from open");
+    assert_eq!(reply, serde_json::json!({"order": [0]}));
+    assert_eq!(target.hits(), 1);
+}
+
+/// WREQ-14. The resolver reaches the built client, and a url push rebuilds the client so the
+/// resolver guards the NEW host: a pushed name is reached through the lookup, and when its answer
+/// turns internal the connect is refused. A client left guarding the old host would resolve the
+/// pushed name unchecked and dial it.
+#[test]
+fn the_client_resolves_the_pushed_host_through_the_guard() {
+    let a = Target::json(r#"{"order":[0]}"#);
+    let b = Target::json(r#"{"order":[1]}"#);
+    let answers: Arc<Mutex<std::collections::HashMap<String, IpAddr>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let asked: Arc<Mutex<Vec<(String, u16)>>> = Arc::new(Mutex::new(Vec::new()));
+    let lookup: net_guard::Lookup = {
+        let answers = Arc::clone(&answers);
+        let asked = Arc::clone(&asked);
+        Arc::new(move |host: &str, port: u16| {
+            asked.lock().unwrap().push((host.to_string(), port));
+            let ip = answers.lock().unwrap().get(host).copied();
+            ip.map(|ip| vec![SocketAddr::new(ip, 0)])
+                .ok_or_else(|| std::io::Error::other("NXDOMAIN"))
+        })
+    };
+    answers
+        .lock()
+        .unwrap()
+        .insert("one.localhost".into(), LOOPBACK);
+    answers
+        .lock()
+        .unwrap()
+        .insert("two.localhost".into(), LOOPBACK);
+
+    let fwd = Forwarder::with_lookup(
+        cfg(format!("http://one.localhost:{}/", a.port()), 2000),
+        lookup,
+    )
+    .expect("valid config");
+    assert_eq!(
+        fwd.post_op("decide", &serde_json::json!({})).unwrap(),
+        serde_json::json!({"order": [0]})
+    );
+    assert_eq!(a.hits(), 1);
+    assert!(
+        asked
+            .lock()
+            .unwrap()
+            .contains(&("one.localhost".to_string(), 0)),
+        "the connect must resolve through the forwarder's lookup: {:?}",
+        asked.lock().unwrap()
+    );
+
+    let mut push = serde_json::Map::new();
+    push.insert(
+        "url".into(),
+        serde_json::json!(format!("http://two.localhost:{}/", b.port())),
+    );
+    assert!(fwd.configure(&push, 2), "a valid pushed url must ACK");
+    assert_eq!(
+        fwd.post_op("decide", &serde_json::json!({})).unwrap(),
+        serde_json::json!({"order": [1]})
+    );
+    assert_eq!((a.hits(), b.hits()), (1, 1));
+
+    answers
+        .lock()
+        .unwrap()
+        .insert("two.localhost".into(), UNSPECIFIED);
+    let err = fwd
+        .post_op("decide", &serde_json::json!({}))
+        .expect_err("the pushed host's internal answer must be refused");
+    assert!(err.contains("SSRF guard"), "{err}");
+    assert_eq!((a.hits(), b.hits()), (1, 1), "nothing may be dialed");
+}

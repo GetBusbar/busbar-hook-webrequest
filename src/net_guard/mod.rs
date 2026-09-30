@@ -32,10 +32,11 @@
 //! the two copies would not by itself turn any test here red — keeping the two byte-identical is a
 //! manual review discipline at PR time, not something this test module enforces automatically.
 //!
-//! Note also: these predicates validate the URL's literal host (or its already-resolved IP) at
-//! open/configure time; they do not re-check DNS resolution at connect time, so a host that resolves
-//! to an allowed IP at validation and to a blocked internal IP later (DNS rebinding / TOCTOU) is not
-//! defended against here.
+//! A NAME is checked twice: at open/configure ([`checked_addrs_for`], the early NACK) and again on
+//! every connect ([`TargetResolver`], which the forwarding client resolves the target host through).
+//! The connect-time check is the one that holds: a host that resolves to an allowed address at
+//! validation and to an internal one later (DNS rebinding), or that did not resolve at validation
+//! at all, is refused before anything is dialed.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
@@ -281,9 +282,9 @@ pub(crate) fn host_is_blocked(url: &reqwest::Url) -> bool {
 /// a weaker problem than "always does".
 ///
 /// A resolution FAILURE is deliberately NOT an error here (`Ok(None)`). A target whose DNS is
-/// briefly down is an availability event, not a security one — it cannot reach anything, internal or
-/// otherwise, and failing the plugin's load over it would take the whole gateway down for a
-/// transient blip. The caller treats `None` as "allowed, but nothing to pin".
+/// briefly down is an availability event, not a security one, and failing the plugin's load over it
+/// would take the whole gateway down for a transient blip. That is safe only because this is not
+/// the last check: every connect resolves again and checks that answer ([`TargetResolver`]).
 fn resolve_and_check(
     host: &str,
     port: u16,
@@ -337,6 +338,18 @@ impl std::fmt::Display for SsrfRefusal {
 }
 
 impl std::error::Error for SsrfRefusal {}
+
+/// The text of the first [`SsrfRefusal`] in `err`'s source chain, if there is one.
+pub(crate) fn ssrf_refusal_in(err: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut cur = Some(err);
+    while let Some(e) = cur {
+        if let Some(r) = e.downcast_ref::<SsrfRefusal>() {
+            return Some(r.0.clone());
+        }
+        cur = e.source();
+    }
+    None
+}
 
 /// The forwarding client's DNS resolver. Every name the client dials is resolved through
 /// `lookup`; when the name is the GUARDED target host, the answer must pass [`check_resolved`]
@@ -414,14 +427,13 @@ fn ip_is_internal(ip: &IpAddr) -> bool {
     }
 }
 
-/// The addresses a validated `url` may be connected to, for pinning — `None` when the host is an IP
-/// literal (already checked, nothing to pin) or did not resolve.
+/// The open/configure resolve check for a validated `url`: `Err` when its host is a name that
+/// resolves to an internal address, else the approved answer (`None` when the host is an IP literal,
+/// already checked textually, or did not resolve).
 ///
-/// Pinning is what makes the resolve check MEAN anything. Without it the guard resolves a name,
-/// approves the addresses, and then hands the bare hostname to the HTTP client, which resolves it
-/// AGAIN at connect time and may get a different answer — the DNS-rebinding shape, where the second
-/// answer is the metadata service. Feeding these exact addresses to the client closes that: the
-/// approved addresses are the only ones it will ever dial.
+/// This is the EARLY NACK, so a misconfigured name fails the load or the push rather than every
+/// request. It is not what stops a connect: the answer is not kept, and every connect resolves and
+/// checks again through [`TargetResolver`].
 pub(crate) fn checked_addrs_for(
     url: &reqwest::Url,
     lookup: &Lookup,

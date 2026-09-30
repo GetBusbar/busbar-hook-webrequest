@@ -244,13 +244,13 @@ fn mask_userinfo_survives_tab_in_scheme_separator() {
     assert_eq!(mask_userinfo(&parsed), "https://***@10.0.0.1/route");
 }
 
-// ── resolve-and-pin ───────────────────────────────────────────────────────────────────────────────
+// ── the open/configure resolve check ─────────────────────────────────────────────────────────────
 
 /// The textual guard cannot see through a NAME, which is exactly the hole `resolve_and_check` fills.
 /// `localhost` is the one name guaranteed to resolve the same way everywhere, and it resolves to
 /// loopback — which is ALLOWED (sidecars), so this pins the carve-out rather than the block.
 #[test]
-fn a_name_resolving_to_loopback_is_allowed_and_pinned() {
+fn a_name_resolving_to_loopback_is_allowed() {
     let url = reqwest::Url::parse("http://localhost:9/route").unwrap();
     assert!(
         !host_is_blocked(&url),
@@ -258,7 +258,7 @@ fn a_name_resolving_to_loopback_is_allowed_and_pinned() {
     );
     let addrs =
         checked_addrs_for(&url, &system_lookup()).expect("localhost must not be rejected");
-    let addrs = addrs.expect("localhost resolves, so there are addresses to pin");
+    let addrs = addrs.expect("localhost resolves, so the approved answer is returned");
     assert!(!addrs.is_empty());
     assert!(
         addrs.iter().all(|a| a.ip().is_loopback()),
@@ -266,10 +266,10 @@ fn a_name_resolving_to_loopback_is_allowed_and_pinned() {
     );
 }
 
-/// An IP LITERAL has nothing to pin: `host_is_blocked` already ruled on it textually, and resolving
+/// An IP LITERAL is not resolved: `host_is_blocked` already ruled on it textually, and resolving
 /// it would be a pointless round trip that could only agree with itself.
 #[test]
-fn an_ip_literal_has_nothing_to_pin() {
+fn an_ip_literal_is_not_resolved() {
     for raw in [
         "https://93.184.216.34/route",
         "https://[2606:2800:220:1:248:1893:25c8:1946]/route",
@@ -321,16 +321,77 @@ fn the_resolved_predicate_agrees_with_the_literal_one() {
     }
 }
 
-/// A name that does not resolve is ALLOWED through with nothing to pin. A DNS outage is an
-/// availability event, not a security one: the target is unreachable either way, and failing the
-/// plugin's load over it would take the gateway down for a transient blip.
+/// A name that does not resolve is ALLOWED through at open/configure. A DNS outage is an
+/// availability event, not a security one, and failing the plugin's load over it would take the
+/// gateway down for a transient blip; every connect resolves and checks the name again.
 #[test]
-fn a_name_that_does_not_resolve_is_allowed_but_unpinned() {
+fn a_name_that_does_not_resolve_is_allowed_at_open() {
     let url = reqwest::Url::parse("https://this-name-must-not-resolve.invalid/route").unwrap();
     assert_eq!(
         checked_addrs_for(&url, &system_lookup())
             .expect("a resolution failure is not a rejection"),
         None,
-        "nothing resolved, so there is nothing to pin"
+        "nothing resolved, so there is no approved answer"
+    );
+}
+
+// ── the connect-time resolver ────────────────────────────────────────────────────────────────────
+
+/// Resolve `name` through a [`TargetResolver`] guarding `svc.example` whose lookup answers
+/// `answer`. No network: the lookup is a fixed answer.
+fn resolve_through_guard(answer: &[&str], name: &str) -> Result<Vec<SocketAddr>, String> {
+    let answer: Vec<SocketAddr> = answer
+        .iter()
+        .map(|ip| SocketAddr::new(ip.parse().unwrap(), 0))
+        .collect();
+    let lookup: Lookup = Arc::new(move |_: &str, _: u16| Ok(answer.clone()));
+    let resolver = TargetResolver::new(lookup, Some("svc.example"));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(reqwest::dns::Resolve::resolve(
+        &resolver,
+        name.parse().unwrap(),
+    ))
+    .map(|addrs| addrs.collect())
+    .map_err(|e| e.to_string())
+}
+
+/// WREQ-1. The guarded host's answer is refused when ANY address is internal, or when it is
+/// empty; an external or loopback answer passes through untouched.
+#[test]
+fn the_target_resolver_applies_the_any_rule_to_the_guarded_host() {
+    let err = resolve_through_guard(&["169.254.169.254"], "svc.example").unwrap_err();
+    assert!(
+        err.contains("SSRF guard") && err.contains("169.254.169.254"),
+        "{err}"
+    );
+    let err = resolve_through_guard(&["93.184.216.34", "10.0.0.1"], "svc.example").unwrap_err();
+    assert!(
+        err.contains("10.0.0.1"),
+        "one internal address refuses the whole answer: {err}"
+    );
+    let err = resolve_through_guard(&[], "svc.example").unwrap_err();
+    assert!(err.contains("no addresses"), "{err}");
+    assert_eq!(
+        resolve_through_guard(&["93.184.216.34"], "svc.example").unwrap(),
+        vec![SocketAddr::new("93.184.216.34".parse().unwrap(), 0)]
+    );
+    assert_eq!(
+        resolve_through_guard(&["127.0.0.1"], "svc.example").unwrap().len(),
+        1,
+        "loopback is the sidecar carve-out"
+    );
+    // The guard compares the canonical name: case and the FQDN root dot do not dodge it.
+    assert!(resolve_through_guard(&["10.0.0.1"], "SVC.Example.").is_err());
+}
+
+/// Only the target host is guarded. Any other name the client resolves (an environment proxy's
+/// host is the real case) resolves unchecked, as it did before the guard moved to connect time.
+#[test]
+fn the_target_resolver_leaves_other_names_unchecked() {
+    assert_eq!(
+        resolve_through_guard(&["10.0.0.1"], "proxy.internal").unwrap(),
+        vec![SocketAddr::new("10.0.0.1".parse().unwrap(), 0)]
     );
 }

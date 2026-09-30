@@ -44,7 +44,10 @@ either way. `tests/conformance.rs` proves the two doors are one hook.
   at `open`/`configure` — loopback sidecars are allowed; link-local /
   IMDS / RFC1918 / CGNAT / ULA / cloud-metadata / alternate-IPv4
   encodings are blocked; plaintext `http://` is permitted only to
-  loopback.
+  loopback. A host NAME is resolved and checked again on every connect,
+  so an answer that turns internal later (DNS rebinding) is refused
+  before anything is dialed, and a target whose addresses rotate is
+  followed.
 - **Redirects disabled** on the client (`redirect::none`): a target
   cannot 30x-redirect the plugin to an internal host at runtime.
 - **Tight timeouts**; the reply body is capped before allocation (64
