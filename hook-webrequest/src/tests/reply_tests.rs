@@ -69,12 +69,18 @@ fn depth_and_parse_errors_are_length_only() {
             deep.len()
         )
     );
-    let edge = format!(
-        "{}{}",
-        "[".repeat(MAX_REPLY_DEPTH),
-        "]".repeat(MAX_REPLY_DEPTH)
-    );
-    assert!(parse_reply(edge.as_bytes()).is_ok());
+    // The boundary is exact: depth 127 (n arrays + the outer object) parses, 128 is refused.
+    let nested = |n: usize| format!(r#"{{"order":{}{}}}"#, "[".repeat(n), "]".repeat(n));
+    assert!(parse_reply(nested(MAX_REPLY_DEPTH - 2).as_bytes()).is_ok());
+    assert!(parse_reply(nested(MAX_REPLY_DEPTH - 1).as_bytes()).is_err());
+    assert!(!exceeds_max_depth(
+        nested(MAX_REPLY_DEPTH - 1).as_bytes(),
+        MAX_REPLY_DEPTH
+    ));
+    assert!(exceeds_max_depth(
+        nested(MAX_REPLY_DEPTH).as_bytes(),
+        MAX_REPLY_DEPTH
+    ));
     let echo = br#"{"secret prompt": "#;
     let err = parse_reply(echo).unwrap_err();
     assert_eq!(
