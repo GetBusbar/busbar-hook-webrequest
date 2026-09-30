@@ -84,19 +84,27 @@ pub(crate) fn embedded_v4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
     //     RFC1918 case this guard cares about, so a deployment translating to internal space is
     //     using the local-use prefix, not the well-known one. Matching only the well-known prefix
     //     would have missed the deployments most likely to reach somewhere internal.
-    // Both are matched at /96 (the last two segments hold the address); for the /48 local-use
-    // prefix that means segments 3..5 must be zero for the address to sit at the /96 offset.
-    let nat64_wkp =
-        s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0;
-    let nat64_local =
-        s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 1 && s[3] == 0 && s[4] == 0 && s[5] == 0;
-    if nat64_wkp || nat64_local {
-        return Some(Ipv4Addr::new(
-            (s[6] >> 8) as u8,
-            (s[6] & 0xff) as u8,
-            (s[7] >> 8) as u8,
-            (s[7] & 0xff) as u8,
-        ));
+    // Both embed at /96 (the last two segments hold the address), but they differ in how much of
+    // the leading 96 bits is FIXED. RFC 6052 pins the whole well-known /96, so `seg[3..6]` must be
+    // zero there. RFC 8215 pins only the top 48 bits of the local-use prefix and leaves an operator
+    // free to choose any /96 under it (its own Section 6 example is `64:ff9b:1:fffe::/96`), so
+    // every `seg[3..6]` is accepted there. `64:ff9b:1::/48` is reserved for this translation and
+    // never globally routable (RFC 8215 Section 3), so accepting all of it cannot mis-flag real
+    // public traffic. Ported from core's hardened rule (busbar-kernel-egress trust/net.rs,
+    // `embedded_ipv4`), per this module's harden-both-copies rule.
+    const NAT64_WELL_KNOWN: u16 = 0; // RFC 6052 `64:ff9b::/96`
+    const NAT64_LOCAL_USE: u16 = 1; // RFC 8215 `64:ff9b:1::/48`, /96 instantiation
+    if s[0] == 0x0064 && s[1] == 0xff9b {
+        let embeds_v4 = match s[2] {
+            NAT64_WELL_KNOWN => s[3] == 0 && s[4] == 0 && s[5] == 0,
+            NAT64_LOCAL_USE => true,
+            _ => false,
+        };
+        if embeds_v4 {
+            let [a, b] = s[6].to_be_bytes();
+            let [c, d] = s[7].to_be_bytes();
+            return Some(Ipv4Addr::new(a, b, c, d));
+        }
     }
     // 6to4: 2002:AABB:CCDD::/48 encodes A.B.C.D.
     if s[0] == 0x2002 {
