@@ -287,17 +287,29 @@ fn an_ip_literal_is_not_resolved() {
 /// exact inconsistency that makes a guard bypassable.
 #[test]
 fn the_resolved_predicate_agrees_with_the_literal_one() {
-    let cases: [(&str, bool); 10] = [
-        ("127.0.0.1", false),      // loopback sidecar: allowed
-        ("::1", false),            // ditto, v6
-        ("10.0.0.1", true),        // RFC 1918
-        ("172.16.0.1", true),      // RFC 1918
-        ("192.168.1.1", true),     // RFC 1918
-        ("169.254.169.254", true), // link-local / cloud metadata
-        ("100.64.0.1", true),      // CGNAT
-        ("fd00::1", true),         // unique-local v6
-        ("fe80::1", true),         // link-local v6
-        ("93.184.216.34", false),  // ordinary public address
+    // WREQ-16: the embedded-IPv4, site-local, unspecified and broadcast arms too, not just the
+    // plain ranges, so dropping any arm from the shared predicate fails here.
+    let cases: [(&str, bool); 20] = [
+        ("127.0.0.1", false),                 // loopback sidecar: allowed
+        ("::1", false),                       // ditto, v6
+        ("10.0.0.1", true),                   // RFC 1918
+        ("172.16.0.1", true),                 // RFC 1918
+        ("192.168.1.1", true),                // RFC 1918
+        ("169.254.169.254", true),            // link-local / cloud metadata
+        ("100.64.0.1", true),                 // CGNAT
+        ("fd00::1", true),                    // unique-local v6
+        ("fe80::1", true),                    // link-local v6
+        ("93.184.216.34", false),             // ordinary public address
+        ("::ffff:169.254.169.254", true),     // IPv4-mapped metadata
+        ("::ffff:127.0.0.1", false),          // IPv4-mapped loopback: allowed
+        ("64:ff9b::a9fe:a9fe", true),         // NAT64 well-known, metadata
+        ("64:ff9b:1:abcd::a9fe:a9fe", true),  // NAT64 local-use, metadata
+        ("2002:a9fe:a9fe::", true),           // 6to4, metadata
+        ("fec0::1", true),                    // site-local v6
+        ("::", true),                         // unspecified v6
+        ("0.0.0.0", true),                    // unspecified v4
+        ("255.255.255.255", true),            // broadcast
+        ("2606:4700:4700::1111", false),      // ordinary public v6
     ];
     for (raw, want_internal) in cases {
         let ip: std::net::IpAddr = raw.parse().unwrap();

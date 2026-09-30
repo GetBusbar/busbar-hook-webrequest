@@ -260,19 +260,9 @@ pub(crate) fn host_is_blocked(url: &reqwest::Url) -> bool {
         return !is_alternate_loopback_v4(&host);
     }
     match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => !v4.is_loopback() && is_internal_v4(&v4),
-        Ok(IpAddr::V6(v6)) => {
-            if v6.is_loopback() {
-                return false; // `::1` loopback sidecar — allowed
-            }
-            if let Some(v4) = embedded_v4(&v6) {
-                return !v4.is_loopback() && is_internal_v4(&v4);
-            }
-            v6.is_unspecified()
-                || is_unique_local_v6(&v6)
-                || is_link_local_v6(&v6)
-                || is_site_local_v6(&v6)
-        }
+        // The ONE internal-address rule, shared with the resolved-address path, so a literal and a
+        // name that resolves to the same address cannot get different answers.
+        Ok(ip) => ip_is_internal(&ip),
         // DNS name: metadata names blocked above; `localhost` and any external host allowed.
         Err(_) => false,
     }
@@ -414,15 +404,15 @@ fn canonical_name(host: &str) -> String {
     host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
 }
 
-/// The internal-address predicate, over an already-resolved [`IpAddr`]. Shares its rules with
-/// [`host_is_blocked`]'s literal-text path so a name and a literal cannot disagree about the same
-/// address — the loopback carve-out for sidecars included.
+/// The internal-address predicate, over an IP address: a resolved answer, or the literal host
+/// [`host_is_blocked`] parsed. Both paths call this one function, so a name and a literal cannot
+/// disagree about the same address — the loopback carve-out for sidecars included.
 fn ip_is_internal(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => !v4.is_loopback() && is_internal_v4(v4),
         IpAddr::V6(v6) => {
             if v6.is_loopback() {
-                return false;
+                return false; // `::1` loopback sidecar — allowed
             }
             if let Some(v4) = embedded_v4(v6) {
                 return !v4.is_loopback() && is_internal_v4(&v4);
