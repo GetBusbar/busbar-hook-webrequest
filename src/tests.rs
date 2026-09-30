@@ -22,8 +22,10 @@ fn open_fails_closed_on_bad_config() {
         open(r#"{"url":"http://api.example.com/x"}"#).is_err(),
         "plaintext http to a remote target must fail the load"
     );
+    // An IP literal, not a name: `open` resolves a name through the real resolver, and a unit test
+    // must not depend on (or wait for) live DNS (WREQ-18).
     assert!(
-        open(r#"{"url":"https://api.example.com/route"}"#).is_ok(),
+        open(r#"{"url":"https://192.0.2.10/route"}"#).is_ok(),
         "a valid https target must load"
     );
     assert!(
@@ -41,7 +43,10 @@ fn parse_reply_depth_and_length_only_errors() {
     deep.push_str(&"]".repeat(150));
     deep.push('}');
     assert!(deep.len() < MAX_REPLY_BYTES);
-    assert!(parse_reply(deep.as_bytes()).is_err());
+    // The pre-check's own message, not serde_json's recursion limit (which would surface as
+    // "invalid JSON"): the pre-check is what decides here (WREQ-10).
+    let err = parse_reply(deep.as_bytes()).unwrap_err();
+    assert!(err.contains("exceeded max nesting depth"), "{err}");
 
     // A malformed reply that echoes prompt content must not splash it into the error.
     let malformed = br#"{"order":[0,, "echo":"SENTINEL-PROMPT-TEXT"}"#;
@@ -62,17 +67,13 @@ fn parse_reply_depth_and_length_only_errors() {
     );
 }
 
-/// The depth cap is exact at its OWN boundary, wherever that boundary actually is: every other test
-/// only probes well-past-the-limit (150) or well-under, so an off-by-one in `exceeds_max_depth`'s
-/// `depth > max` (e.g. changed to `>=`) would silently narrow the real contract by one and nothing
-/// else here would catch it.
+/// The observable depth boundary of `parse_reply`: depth 127 parses, depth 128 does not.
 ///
-/// NOTE the boundary this test pins is depth 127, not `MAX_REPLY_DEPTH` (128) as the module doc
-/// comment claims ("depth-guarded at 128 levels"): `serde_json`'s OWN internal recursion limit
-/// rejects a depth-128 document before `exceeds_max_depth`'s pre-check is even the deciding factor
-/// (depth 127 parses; depth 128 fails serde_json's own parse regardless of the pre-check's
-/// `128 > 128` being false). The crate's real, usable ceiling is therefore one level lower than the
-/// module doc states, and this test pins the observed behaviour.
+/// NOTE the boundary this test pins is depth 127, not `MAX_REPLY_DEPTH` (128): `serde_json`'s OWN
+/// internal recursion limit rejects a depth-128 document whatever the pre-check says (depth 127
+/// parses; depth 128 fails serde_json's own parse even though the pre-check's `128 > 128` is
+/// false). So this test cannot see an off-by-one in `exceeds_max_depth` (`>` changed to `>=` still
+/// accepts 127 and refuses 128); `exceeds_max_depth_is_exact_at_its_own_boundary` pins that.
 #[test]
 fn parse_reply_depth_boundary_is_exact() {
     let nested = |n: usize| {
@@ -92,6 +93,34 @@ fn parse_reply_depth_boundary_is_exact() {
     assert!(
         parse_reply(one_over.as_bytes()).is_err(),
         "depth 128 must be rejected"
+    );
+}
+
+/// WREQ-10. `exceeds_max_depth`'s own boundary, away from serde_json's limit: `max` levels are
+/// allowed, `max + 1` are not. A `>=` in place of `>` fails the second assertion.
+#[test]
+fn exceeds_max_depth_is_exact_at_its_own_boundary() {
+    assert!(exceeds_max_depth(b"[[[", 2));
+    assert!(!exceeds_max_depth(b"[[", 2));
+    assert!(!exceeds_max_depth(b"[[]][[]]", 2), "depth, not bracket count");
+    assert!(exceeds_max_depth(br#"{"a":[{"b":1}]}"#, 2));
+}
+
+/// WREQ-11. Brackets inside a JSON string are text, not nesting, and an escaped quote does not end
+/// the string. Without the string tracking the first reply below is 200 levels deep and refused;
+/// without the escape tracking the second one is.
+#[test]
+fn brackets_inside_strings_do_not_count_as_depth() {
+    let brackets = "[".repeat(200);
+    let plain = format!(r#"{{"m":"{brackets}"}}"#);
+    assert_eq!(
+        parse_reply(plain.as_bytes()).unwrap(),
+        serde_json::json!({ "m": brackets })
+    );
+    let escaped = format!(r#"{{"m":"a"{brackets}"}}"#);
+    assert_eq!(
+        parse_reply(escaped.as_bytes()).unwrap(),
+        serde_json::json!({ "m": format!("a\"{brackets}") })
     );
 }
 
@@ -153,20 +182,18 @@ fn request_envelope_merges_op_and_preserves_projection() {
 }
 
 /// `post_op`'s transport-error string is masked even when the target URL embeds a credential. The
-/// e2e test of the same property now works too (a `decide` failure reaches the engine rather than
-/// being discarded as an `Abstain`), so this is the narrower unit-level twin of it.
+/// unit-level twin of `tests/e2e.rs`'s `forward_transport_error_never_leaks_userinfo`, which skips
+/// off CI when the cdylib is not built; this one always runs.
 ///
-/// NOT "without `.without_url()` this would contain `hunter2`" — it would not, and this comment used
-/// to claim it did. reqwest strips `user:pass@` off the URL into an auth header before the request
-/// is made, so the userinfo is gone whatever this crate does. What `.without_url()` actually removes
-/// is the QUERY STRING, which reqwest preserves verbatim; `tests/e2e.rs`'s
-/// `forward_transport_error_never_leaks_userinfo` is the one that asserts it, because that is where
-/// a `?token=` can be injected through the real config seam.
+/// reqwest strips `user:pass@` off the URL into an auth header before the request is made, so the
+/// userinfo is gone whatever this crate does. What `.without_url()` actually removes is the QUERY
+/// STRING, which reqwest preserves verbatim, so the URL carries a `?token=` (WREQ-19): without it
+/// this test could not fail with `.without_url()` deleted.
 #[test]
 fn post_op_error_string_never_contains_url_userinfo() {
     let fwd = Forwarder::new(Config {
         // RFC 5737 TEST-NET-1: unroutable, so the POST fails fast without a real network hop.
-        url: "https://svc:hunter2@192.0.2.1/route".to_string(),
+        url: "https://svc:hunter2@192.0.2.1/route?token=hunter3".to_string(),
         timeout_ms: Some(300),
     })
     .expect(
@@ -184,16 +211,23 @@ fn post_op_error_string_never_contains_url_userinfo() {
         !err.contains("svc:"),
         "post_op error leaked the URL's userinfo username: {err}"
     );
+    assert!(
+        !err.contains("hunter3") && !err.contains("token="),
+        "post_op error leaked the URL's query credential: {err}"
+    );
 }
 
 /// `describe` returns the forwarder's own schema; `status` reports the target host and timeout with
 /// no prompt/user content, and acks its own metrics shape.
 #[test]
 fn describe_and_status_report_own_state() {
-    let fwd = Forwarder::new(Config {
-        url: "https://api.example.com/route".to_string(),
-        timeout_ms: Some(1234),
-    })
+    let fwd = Forwarder::with_lookup(
+        Config {
+            url: "https://api.example.com/route".to_string(),
+            timeout_ms: Some(1234),
+        },
+        no_dns(),
+    )
     .expect("valid config");
     assert_eq!(fwd.describe()["schema"]["type"], "object");
     let status = fwd.status();
@@ -208,10 +242,13 @@ fn describe_and_status_report_own_state() {
 /// SSRF-blocked URL NACKs (false → the engine rejects the push), a missing url ACKs (nothing to check).
 #[test]
 fn configure_revalidates_pushed_url() {
-    let fwd = Forwarder::new(Config {
-        url: "https://api.example.com/route".to_string(),
-        timeout_ms: None,
-    })
+    let fwd = Forwarder::with_lookup(
+        Config {
+            url: "https://api.example.com/route".to_string(),
+            timeout_ms: None,
+        },
+        no_dns(),
+    )
     .expect("valid config");
 
     let mut ok = serde_json::Map::new();
@@ -243,10 +280,13 @@ fn configure_revalidates_pushed_url() {
 /// NACKs.
 #[test]
 fn configure_nacks_a_present_but_wrong_typed_url() {
-    let fwd = Forwarder::new(Config {
-        url: "https://api.example.com/route".to_string(),
-        timeout_ms: None,
-    })
+    let fwd = Forwarder::with_lookup(
+        Config {
+            url: "https://api.example.com/route".to_string(),
+            timeout_ms: None,
+        },
+        no_dns(),
+    )
     .expect("valid config");
 
     let mut number_url = serde_json::Map::new();
@@ -270,10 +310,13 @@ fn configure_nacks_a_present_but_wrong_typed_url() {
 /// budgets for one hook call.
 #[test]
 fn timeout_ms_is_clamped_to_max_timeout_ms() {
-    let fwd = Forwarder::new(Config {
-        url: "https://api.example.com/route".to_string(),
-        timeout_ms: Some(60_000),
-    })
+    let fwd = Forwarder::with_lookup(
+        Config {
+            url: "https://api.example.com/route".to_string(),
+            timeout_ms: Some(60_000),
+        },
+        no_dns(),
+    )
     .expect("valid config");
     assert_eq!(
         fwd.live.read().unwrap().timeout,
@@ -281,10 +324,13 @@ fn timeout_ms_is_clamped_to_max_timeout_ms() {
         "an oversized timeout_ms must clamp to MAX_TIMEOUT_MS, not pass through"
     );
 
-    let fwd = Forwarder::new(Config {
-        url: "https://api.example.com/route".to_string(),
-        timeout_ms: Some(0),
-    })
+    let fwd = Forwarder::with_lookup(
+        Config {
+            url: "https://api.example.com/route".to_string(),
+            timeout_ms: Some(0),
+        },
+        no_dns(),
+    )
     .expect("valid config");
     assert_eq!(
         fwd.live.read().unwrap().timeout,
@@ -301,10 +347,13 @@ fn timeout_ms_is_clamped_to_max_timeout_ms() {
 /// implemented, a committed (ACKed) `url` push is visible immediately via `status()`.
 #[test]
 fn configure_commits_a_new_url_to_the_live_target() {
-    let fwd = Forwarder::new(Config {
-        url: "https://api.example.com/route".to_string(),
-        timeout_ms: None,
-    })
+    let fwd = Forwarder::with_lookup(
+        Config {
+            url: "https://api.example.com/route".to_string(),
+            timeout_ms: None,
+        },
+        no_dns(),
+    )
     .expect("valid config");
     assert_eq!(
         fwd.status()["status"]["settings"]["target_host"],
@@ -329,10 +378,13 @@ fn configure_commits_a_new_url_to_the_live_target() {
 /// leaves the live url untouched — the two settings commit independently.
 #[test]
 fn configure_commits_a_new_timeout_without_touching_the_url() {
-    let fwd = Forwarder::new(Config {
-        url: "https://api.example.com/route".to_string(),
-        timeout_ms: Some(1234),
-    })
+    let fwd = Forwarder::with_lookup(
+        Config {
+            url: "https://api.example.com/route".to_string(),
+            timeout_ms: Some(1234),
+        },
+        no_dns(),
+    )
     .expect("valid config");
 
     let mut push = serde_json::Map::new();
@@ -355,10 +407,13 @@ fn configure_commits_a_new_timeout_without_touching_the_url() {
 /// partially.
 #[test]
 fn configure_nacks_a_present_but_wrong_typed_timeout_and_does_not_partially_apply() {
-    let fwd = Forwarder::new(Config {
-        url: "https://api.example.com/route".to_string(),
-        timeout_ms: None,
-    })
+    let fwd = Forwarder::with_lookup(
+        Config {
+            url: "https://api.example.com/route".to_string(),
+            timeout_ms: None,
+        },
+        no_dns(),
+    )
     .expect("valid config");
 
     let mut push = serde_json::Map::new();
@@ -395,10 +450,13 @@ fn drop_in_async_context_does_not_panic() {
         .build()
         .expect("build outer runtime");
     outer.block_on(async {
-        let fwd = Forwarder::new(Config {
-            url: "https://api.example.com/route".to_string(),
-            timeout_ms: None,
-        })
+        let fwd = Forwarder::with_lookup(
+            Config {
+                url: "https://api.example.com/route".to_string(),
+                timeout_ms: None,
+            },
+            no_dns(),
+        )
         .expect("valid config");
         // Dropping `fwd` here is the operation under test — it must not panic in this async context.
         drop(fwd);
@@ -731,4 +789,119 @@ fn a_pushed_timeout_bounds_the_connect_too() {
         .expect("a 200ms connect is inside the pushed 2000ms timeout");
     assert_eq!(reply, serde_json::json!({"order": [0]}));
     assert_eq!(target.hits(), 1);
+}
+
+// ── Test-only coverage (WREQ-12, WREQ-13, WREQ-20, WREQ-21, WREQ-22) ─────────────────────────────
+
+/// A forwarder at `url` (an IP-literal loopback target, so no lookup is ever made).
+fn forwarder_at(url: String) -> Forwarder {
+    Forwarder::with_lookup(cfg(url, 2000), no_dns()).expect("valid config")
+}
+
+/// WREQ-12. The reply cap is exact: a reply of exactly `MAX_REPLY_BYTES` is accepted.
+#[test]
+fn a_reply_of_exactly_the_cap_is_accepted() {
+    let body = format!("\"{}\"", "x".repeat(MAX_REPLY_BYTES - 2));
+    assert_eq!(body.len(), MAX_REPLY_BYTES);
+    let target = Target::json(&body);
+    let reply = forwarder_at(target.url())
+        .post_op("decide", &serde_json::json!({}))
+        .expect("a reply of exactly the cap is within it");
+    assert_eq!(reply.as_str().map(str::len), Some(MAX_REPLY_BYTES - 2));
+}
+
+/// WREQ-12. The cap counts the WHOLE body across chunks: a 100 KiB reply streamed in 8 KiB chunks
+/// (each far under the cap) is refused.
+#[test]
+fn the_reply_cap_is_cumulative_across_chunks() {
+    let chunk = vec![b' '; 8 * 1024];
+    let mut pieces = vec![b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        .to_vec()];
+    for _ in 0..(100 / 8 + 1) {
+        let mut piece = format!("{:x}\r\n", chunk.len()).into_bytes();
+        piece.extend_from_slice(&chunk);
+        piece.extend_from_slice(b"\r\n");
+        pieces.push(piece);
+    }
+    pieces.push(b"0\r\n\r\n".to_vec());
+    let target = Target::start(pieces);
+    let err = forwarder_at(target.url())
+        .post_op("decide", &serde_json::json!({}))
+        .expect_err("a body past the cap must be refused");
+    assert!(err.contains("byte cap"), "{err}");
+}
+
+/// WREQ-13. Redirects are not followed: a target answering `302` to a second target never causes
+/// a request to it.
+#[test]
+fn a_redirect_is_not_followed() {
+    let elsewhere = Target::json(r#"{"order":[0]}"#);
+    let redirect = format!(
+        "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Type: application/json\r\n\
+         Content-Length: 2\r\nConnection: close\r\n\r\n{{}}",
+        elsewhere.url()
+    );
+    let target = Target::start(vec![redirect.into_bytes()]);
+    let _ = forwarder_at(target.url()).post_op("decide", &serde_json::json!({}));
+    assert_eq!(target.hits(), 1);
+    assert_eq!(
+        elsewhere.hits(),
+        0,
+        "the redirect target must never be requested"
+    );
+}
+
+/// WREQ-20. `status` reports the url under `url`, through the masker: the query is redacted and
+/// the userinfo masked, never published raw.
+#[test]
+fn status_reports_the_masked_url() {
+    let fwd = Forwarder::with_lookup(
+        cfg("https://svc:pw@h.example.invalid/r?token=S3CRET".to_string(), 1234),
+        no_dns(),
+    )
+    .expect("valid config");
+    let status = fwd.status();
+    let settings = &status["status"]["settings"];
+    assert_eq!(settings["url"], "https://***@h.example.invalid/r?<redacted>");
+    assert_eq!(settings["target_host"], "h.example.invalid");
+    assert!(!settings.to_string().contains("S3CRET"));
+}
+
+/// WREQ-21. A committed url push is what the next request uses: after the push the envelope goes
+/// to the new target and never to the old one.
+#[test]
+fn a_committed_url_push_routes_the_next_request() {
+    let a = Target::json(r#"{"order":[0]}"#);
+    let b = Target::json(r#"{"order":[1]}"#);
+    let fwd = forwarder_at(a.url());
+    let mut push = serde_json::Map::new();
+    push.insert("url".into(), serde_json::json!(b.url()));
+    assert!(fwd.configure(&push, 2), "a valid pushed url must ACK");
+    let reply = fwd
+        .post_op("decide", &serde_json::json!({"request": {"pool": "p"}}))
+        .expect("the pushed target answers");
+    assert_eq!(reply, serde_json::json!({"order": [1]}));
+    assert_eq!(a.hits(), 0, "the old target must not be requested");
+    let bodies = b.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 1);
+    let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(sent["op"], "decide");
+    assert_eq!(sent["request"]["pool"], "p");
+}
+
+/// WREQ-22. A pushed `timeout_ms` is clamped to `[1, MAX_TIMEOUT_MS]` like the one given at open.
+#[test]
+fn a_pushed_timeout_is_clamped() {
+    let fwd = forwarder_at("http://127.0.0.1:9/".to_string());
+    for (pushed, applied) in [(600_000u64, MAX_TIMEOUT_MS), (0, 1)] {
+        let mut push = serde_json::Map::new();
+        push.insert("timeout_ms".into(), serde_json::json!(pushed));
+        assert!(fwd.configure(&push, 2), "a pushed timeout_ms ACKs");
+        assert_eq!(
+            fwd.status()["status"]["settings"]["timeout_ms"],
+            applied,
+            "timeout_ms {pushed} must apply as {applied}"
+        );
+    }
 }
