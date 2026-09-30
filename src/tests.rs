@@ -710,3 +710,25 @@ fn a_url_push_never_pairs_the_old_url_with_the_new_client() {
         "a request was dialed through a client that does not guard its url's host"
     );
 }
+
+/// WREQ-6. The client's `connect_timeout` was frozen at the timeout in effect when it was built,
+/// so a timeout-only push raising `timeout_ms` never raised the connect bound: opened at 50ms and
+/// pushed to 2000ms, a connect that takes 200ms (here, a slow DNS answer) was still cut at 50ms.
+/// The pushed timeout now bounds the whole call, connect included.
+#[test]
+fn a_pushed_timeout_bounds_the_connect_too() {
+    let target = Target::json(r#"{"order":[0]}"#);
+    let fwd = Forwarder::with_lookup(
+        cfg(format!("http://svc.localhost:{}/", target.port()), 50),
+        split_lookup(None, LOOPBACK, Duration::from_millis(200)),
+    )
+    .expect("valid config");
+    let mut push = serde_json::Map::new();
+    push.insert("timeout_ms".into(), serde_json::json!(2000));
+    assert!(fwd.configure(&push, 2), "a valid pushed timeout_ms must ACK");
+    let reply = fwd
+        .post_op("decide", &serde_json::json!({}))
+        .expect("a 200ms connect is inside the pushed 2000ms timeout");
+    assert_eq!(reply, serde_json::json!({"order": [0]}));
+    assert_eq!(target.hits(), 1);
+}
