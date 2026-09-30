@@ -451,3 +451,64 @@ fn any_local_use_nat64_prefix_is_unwrapped() {
     // Loopback behind a local-use prefix keeps the sidecar carve-out.
     assert!(!host_is_blocked(&url("http://[64:ff9b:1:abcd::7f00:1]:8080/x")));
 }
+
+/// WREQ-15. The ANY rule over a resolved answer, directly: one internal address anywhere in the
+/// answer refuses it, and an all-external (or loopback) answer passes.
+#[test]
+fn check_resolved_refuses_an_answer_with_any_internal_address() {
+    let at = |ips: &[&str]| -> Vec<SocketAddr> {
+        ips.iter()
+            .map(|ip| SocketAddr::new(ip.parse().unwrap(), 443))
+            .collect()
+    };
+    let err = check_resolved(&at(&["169.254.169.254"])).unwrap_err();
+    assert!(err.contains("169.254.169.254"), "{err}");
+    let err = check_resolved(&at(&["93.184.216.34", "10.0.0.1"])).unwrap_err();
+    assert!(err.contains("10.0.0.1"), "ANY, not all: {err}");
+    let err = check_resolved(&at(&["fd00::1", "93.184.216.34"])).unwrap_err();
+    assert!(err.contains("fd00::1"), "{err}");
+    assert!(check_resolved(&at(&["93.184.216.34"])).is_ok());
+    assert!(check_resolved(&at(&["93.184.216.34", "127.0.0.1", "::1"])).is_ok());
+}
+
+/// WREQ-15. The open/configure check's REJECT path: a name whose answer holds an internal address
+/// is refused, with the host named in the error. Only the allow paths were exercised before.
+#[test]
+fn checked_addrs_for_refuses_a_name_resolving_internally() {
+    let lookup = |ips: &'static [&'static str]| -> Lookup {
+        Arc::new(move |_: &str, port: u16| {
+            Ok(ips
+                .iter()
+                .map(|ip| SocketAddr::new(ip.parse().unwrap(), port))
+                .collect())
+        })
+    };
+    let target = url("https://svc.example/route");
+    let err = checked_addrs_for(&target, &lookup(&["93.184.216.34", "169.254.169.254"]))
+        .expect_err("an answer with an internal address must be refused");
+    assert!(
+        err.contains("'svc.example'") && err.contains("169.254.169.254"),
+        "{err}"
+    );
+    let addrs = checked_addrs_for(&target, &lookup(&["93.184.216.34"]))
+        .expect("an external answer is allowed")
+        .expect("and returned");
+    assert_eq!(
+        addrs,
+        vec![SocketAddr::new("93.184.216.34".parse().unwrap(), 443)]
+    );
+}
+
+/// WREQ-17. The plaintext-`http://` loopback gate beyond `127.0.0.1` and `localhost`: IPv6
+/// loopback and a `*.localhost` name are allowed; a name that merely CONTAINS `localhost` as a
+/// label, and an IPv4-mapped private address, are not.
+#[test]
+fn the_plaintext_http_gate_is_loopback_only() {
+    assert!(validate_target_url("http://[::1]:9000/route").is_ok());
+    assert!(validate_target_url("http://svc.localhost/route").is_ok());
+    assert!(validate_target_url("http://svc.LOCALHOST./route").is_ok());
+    let err = validate_target_url("http://evil.localhost.example.com/route").unwrap_err();
+    assert!(err.contains("must use https://"), "{err}");
+    assert!(validate_target_url("http://localhost.example.com/route").is_err());
+    assert!(validate_target_url("http://[::ffff:10.0.0.1]/route").is_err());
+}
