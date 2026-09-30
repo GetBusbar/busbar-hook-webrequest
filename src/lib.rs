@@ -81,18 +81,21 @@ struct Config {
     timeout_ms: Option<u64>,
 }
 
-/// The forwarding target: a validated URL and its wall-clock timeout, taken together so `configure`
-/// swaps both atomically (a caller never observes a new url paired with a stale timeout or vice versa).
+/// The forwarding target: a validated URL, its wall-clock timeout, and the client whose resolver
+/// guards that URL's host, held together under ONE lock so `configure` swaps them atomically and
+/// `post_op` snapshots them atomically. A caller never observes a new url paired with a stale
+/// timeout, or an old url paired with a client that guards a different host (whose resolver would
+/// then resolve the old url's host unchecked).
 struct LiveTarget {
     url: reqwest::Url,
     timeout: Duration,
+    client: reqwest::Client,
 }
 
 impl LiveTarget {
-    /// Validate a `Config` into a `LiveTarget`. Shared by `Forwarder::new` (the `open` path) and
-    /// `configure` (the live-reconfigure path) so both apply IDENTICAL SSRF/timeout rules — see
-    /// [`HookHandler::configure`]'s doc comment for why `configure` needs this too, not just `open`.
-    fn validate(cfg: &Config) -> Result<Self, String> {
+    /// Validate a `Config` into the target's url and timeout, applying the SSRF and timeout rules
+    /// `configure` applies to a pushed url and timeout.
+    fn validate(cfg: &Config) -> Result<(reqwest::Url, Duration), String> {
         if cfg.url.trim().is_empty() {
             return Err("webrequest: settings.url is required".to_string());
         }
@@ -104,10 +107,7 @@ impl LiveTarget {
             .timeout_ms
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .clamp(1, MAX_TIMEOUT_MS);
-        Ok(Self {
-            url,
-            timeout: Duration::from_millis(timeout_ms),
-        })
+        Ok((url, Duration::from_millis(timeout_ms)))
     }
 }
 
@@ -125,11 +125,6 @@ struct Forwarder {
     // long-lived singleton plugin instance must not brick itself for its remaining lifetime over a
     // panic in an unrelated call.
     live: RwLock<LiveTarget>,
-    /// Behind a lock because a `configure` push that changes the HOST has to rebuild it: the client's
-    /// resolver guards the old host by name (see `build_client`), and a guard on the wrong host
-    /// checks nothing. Read-cloned per request; `reqwest::Client` is Arc-backed, so that is a
-    /// refcount bump, not a new pool.
-    client: RwLock<reqwest::Client>,
     // Wrapped in `Option` SOLELY so `Drop` can move the runtime out and shut it down NON-blockingly.
     // A bare `tokio::runtime::Runtime` dropped in place runs its blocking `Drop`, which PANICS when
     // the drop happens on a tokio worker thread ("Cannot drop a runtime in a context where blocking
@@ -180,13 +175,14 @@ impl Drop for Forwarder {
 ///
 /// An IP-literal host never reaches the resolver; `host_is_blocked` already ruled on it.
 fn build_client(
-    target: &LiveTarget,
+    url: &reqwest::Url,
+    timeout: Duration,
     lookup: &net_guard::Lookup,
 ) -> Result<reqwest::Client, String> {
     let b = reqwest::Client::builder()
         .dns_resolver(std::sync::Arc::new(net_guard::TargetResolver::new(
             std::sync::Arc::clone(lookup),
-            target.url.host_str(),
+            url.host_str(),
         )))
         // Disable redirects so a target cannot 30x us onto an internal host at runtime (the
         // validated URL only guarantees the FIRST hop is safe).
@@ -200,7 +196,7 @@ fn build_client(
         // require — never a foot-gun in either direction, so a timeout-only `configure` push does not
         // need to rebuild the client and lose its warm connection pool. A HOST change does, but for
         // the resolver's guard, not the timeout.
-        .connect_timeout(target.timeout);
+        .connect_timeout(timeout);
     b.build()
         .map_err(|e| format!("webrequest: failed to build HTTP client: {e}"))
 }
@@ -214,19 +210,22 @@ impl Forwarder {
 
     /// [`Forwarder::new`] over an explicit name `lookup` (the seam tests use to answer DNS).
     fn with_lookup(cfg: Config, lookup: net_guard::Lookup) -> Result<Self, String> {
-        let target = LiveTarget::validate(&cfg)?;
+        let (url, timeout) = LiveTarget::validate(&cfg)?;
         // The early NACK: a name that resolves internally now fails the load. Its answer is not
         // kept; every connect resolves and checks again (see `build_client`).
-        net_guard::checked_addrs_for(&target.url, &lookup)?;
-        let client = build_client(&target, &lookup)?;
+        net_guard::checked_addrs_for(&url, &lookup)?;
+        let client = build_client(&url, timeout, &lookup)?;
         // A current-thread runtime is enough: one blocking op at a time per engine spawn_blocking call.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("webrequest: failed to build async runtime: {e}"))?;
         Ok(Self {
-            live: RwLock::new(target),
-            client: RwLock::new(client),
+            live: RwLock::new(LiveTarget {
+                url,
+                timeout,
+                client,
+            }),
             rt: Some(rt),
             lookup,
         })
@@ -248,19 +247,13 @@ impl Forwarder {
             .map_err(|e| format!("webrequest: failed to serialize op envelope: {e}"))?;
         // Read the LIVE (possibly `configure`-updated) target ONCE, under a single lock acquisition, so
         // a settings push that commits mid-call can never tear this request across an old url paired
-        // with a new timeout (or vice versa). Snapshotted outside `block_on`'s async block so the lock
-        // is never held across an await point.
-        let (target_url, target_timeout) = {
-            let live = read_live(&self.live);
-            (live.url.clone(), live.timeout)
-        };
-        // Cloned out from under the lock, so the lock is never held across the await below. Cheap:
+        // with a new timeout or a new client (or vice versa). Snapshotted outside `block_on`'s async
+        // block so the lock is never held across an await point. Cloning the client is cheap:
         // `reqwest::Client` is Arc-backed, so this shares the pool rather than building one.
-        let client = self
-            .client
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let (target_url, target_timeout, client) = {
+            let live = read_live(&self.live);
+            (live.url.clone(), live.timeout, live.client.clone())
+        };
         // Safe: `rt` is `Some` for the whole lifetime between `new` and `Drop` (only `Drop` takes it).
         let rt = self
             .rt
@@ -571,11 +564,7 @@ impl HookHandler for Forwarder {
                     }
                 }
                 let timeout = new_timeout.unwrap_or_else(|| read_live(&self.live).timeout);
-                let probe = LiveTarget {
-                    url: url.clone(),
-                    timeout,
-                };
-                match build_client(&probe, &self.lookup) {
+                match build_client(url, timeout, &self.lookup) {
                     Ok(c) => Some(c),
                     Err(reason) => {
                         eprintln!("webrequest: configure() rejected: {reason}");
@@ -586,14 +575,12 @@ impl HookHandler for Forwarder {
         };
 
         let mut live = write_live(&self.live);
-        if let Some(url) = new_url {
+        if let (Some(url), Some(client)) = (new_url, rebuilt) {
             live.url = url;
+            live.client = client;
         }
         if let Some(timeout) = new_timeout {
             live.timeout = timeout;
-        }
-        if let Some(client) = rebuilt {
-            *self.client.write().unwrap_or_else(|e| e.into_inner()) = client;
         }
         true
     }
