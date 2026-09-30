@@ -42,19 +42,19 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 // ── Pure context-free predicates (copied verbatim from busbar/src/net_guard.rs) ────────────────────
 
 /// IPv6 unique-local range `fc00::/7` (the first 7 bits are `1111110`).
-pub(crate) fn is_unique_local_v6(addr: &Ipv6Addr) -> bool {
+pub fn is_unique_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xfe00) == 0xfc00
 }
 
 /// IPv6 link-local range `fe80::/10` (the first 10 bits are `1111111010`).
-pub(crate) fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
+pub fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfe80
 }
 
 /// IPv6 site-local `fec0::/10`. Deprecated by RFC 3879 but still routed on plenty of real networks,
 /// and NOT covered by the ULA or link-local masks (`0xfec0 & 0xfe00` is `0xfe00`, not `0xfc00`;
 /// `0xfec0 & 0xffc0` is `0xfec0`, not `0xfe80`), so without this it was simply allowed.
-pub(crate) fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
+pub fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfec0
 }
 
@@ -70,7 +70,7 @@ pub(crate) fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
 ///
 /// Returning the embedded address lets the caller run it through the same `is_internal_v4` policy
 /// as any other IPv4 target, rather than maintaining a second, divergent list.
-pub(crate) fn embedded_v4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
+pub fn embedded_v4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = addr.to_ipv4() {
         return Some(v4);
     }
@@ -110,7 +110,7 @@ pub(crate) fn embedded_v4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
 
 /// RFC 6598 Shared Address Space `100.64.0.0/10` (CGNAT) — routable inside AWS/GCP VPCs and k8s
 /// clusters, so an SSRF target the private/link-local checks miss. `Ipv4Addr::is_private()` misses it.
-pub(crate) fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
+pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
     let o = v4.octets();
     o[0] == 100 && (o[1] & 0xC0) == 64
 }
@@ -119,7 +119,7 @@ pub(crate) fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
 /// but the OS resolver still maps to an IPv4 address (bare decimal `2130706433`, `0x`/`0X` hex, a
 /// leading-zero octal, or a dotted form with fewer than four octets). A canonical dotted-quad is NOT
 /// matched here (handled by the `parse::<IpAddr>()` path); a normal DNS hostname is not matched either.
-pub(crate) fn is_alternate_ipv4_encoding(host: &str) -> bool {
+pub fn is_alternate_ipv4_encoding(host: &str) -> bool {
     if host.is_empty() {
         return false;
     }
@@ -158,7 +158,7 @@ pub(crate) fn is_alternate_ipv4_encoding(host: &str) -> bool {
 /// blocking every OTHER alternate-encoded internal target. Conservative: anything it cannot positively
 /// confirm as loopback is treated as non-loopback (and therefore blocked). Mirrors
 /// `observability::is_alternate_loopback_v4`.
-pub(crate) fn is_alternate_loopback_v4(host: &str) -> bool {
+pub fn is_alternate_loopback_v4(host: &str) -> bool {
     if !host.contains('.') {
         if let Some(hex) = host.strip_prefix("0x").or_else(|| host.strip_prefix("0X")) {
             return u32::from_str_radix(hex, 16).ok() == Some(0x7f00_0001);
@@ -209,7 +209,7 @@ fn is_internal_v4(v4: &Ipv4Addr) -> bool {
 /// True iff the target URL's host is the loopback/localhost target the forwarder MAY reach — the exact
 /// carve-out `host_is_blocked` leaves un-blocked (parity with the old webhook policy, which allowed a
 /// loopback sidecar). Used to gate the plaintext-`http://` allowance to loopback only.
-pub(crate) fn host_is_loopback(url: &reqwest::Url) -> bool {
+pub fn host_is_loopback(url: &url::Url) -> bool {
     let Some(host) = host_of(url) else {
         return false;
     };
@@ -239,7 +239,7 @@ pub(crate) fn host_is_loopback(url: &reqwest::Url) -> bool {
 /// [`resolve_and_check`]'s job, and the two are used together by [`checked_addrs_for`]. Keeping the
 /// textual check separate matters: it is total (no I/O, no failure mode), so it can run first and
 /// reject the IP-literal spellings before anything touches the network.
-pub(crate) fn host_is_blocked(url: &reqwest::Url) -> bool {
+pub fn host_is_blocked(url: &url::Url) -> bool {
     let Some(host) = host_of(url) else {
         return true; // a URL with no host is unusable as a target
     };
@@ -331,7 +331,7 @@ fn ip_is_internal(ip: &IpAddr) -> bool {
 /// AGAIN at connect time and may get a different answer — the DNS-rebinding shape, where the second
 /// answer is the metadata service. Feeding these exact addresses to the client closes that: the
 /// approved addresses are the only ones it will ever dial.
-pub(crate) fn checked_addrs_for(url: &reqwest::Url) -> Result<Option<Vec<SocketAddr>>, String> {
+pub fn checked_addrs_for(url: &url::Url) -> Result<Option<Vec<SocketAddr>>, String> {
     let Some(host) = host_of(url) else {
         return Ok(None);
     };
@@ -345,7 +345,7 @@ pub(crate) fn checked_addrs_for(url: &reqwest::Url) -> Result<Option<Vec<SocketA
 
 /// The URL's host with the IPv6 `[...]` brackets and a single trailing FQDN-root `.` stripped, so the
 /// predicates see the same canonical form the OTLP/webhook guard did. Returns `None` for a hostless URL.
-fn host_of(url: &reqwest::Url) -> Option<String> {
+fn host_of(url: &url::Url) -> Option<String> {
     let host = url.host_str()?;
     let host = host.strip_prefix('[').unwrap_or(host);
     let host = host.strip_suffix(']').unwrap_or(host);
@@ -354,7 +354,7 @@ fn host_of(url: &reqwest::Url) -> Option<String> {
 }
 
 /// Case-insensitive equality of a URL's scheme to `want` (an ASCII-lowercase literal).
-fn scheme_is(url: &reqwest::Url, want: &str) -> bool {
+fn scheme_is(url: &url::Url, want: &str) -> bool {
     url.scheme().eq_ignore_ascii_case(want)
 }
 
@@ -363,8 +363,8 @@ fn scheme_is(url: &reqwest::Url, want: &str) -> bool {
 /// allowed host and `http://` ONLY for a loopback host (parity with the old webhook policy: a plaintext
 /// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
 /// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
-pub(crate) fn validate_target_url(raw: &str) -> Result<reqwest::Url, String> {
-    let url = reqwest::Url::parse(raw)
+pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
+    let url = url::Url::parse(raw)
         .map_err(|e| format!("webrequest: settings.url is not a valid URL: {e}"))?;
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
@@ -393,8 +393,8 @@ pub(crate) fn validate_target_url(raw: &str) -> Result<reqwest::Url, String> {
 /// Replace any `user[:pass]@` userinfo on `url` with `***@` so a credential embedded in the operator's
 /// URL never reaches a (logged) error message.
 ///
-/// Operates on the ALREADY-PARSED [`reqwest::Url`] rather than doing textual `find("://")` surgery on
-/// the raw input string. This matters: WHATWG URL parsing (which both `reqwest::Url::parse` and every
+/// Operates on the ALREADY-PARSED [`url::Url`] rather than doing textual `find("://")` surgery on
+/// the raw input string. This matters: WHATWG URL parsing (which both `url::Url::parse` and every
 /// real HTTP client use) silently strips embedded TAB/CR/LF from a URL before establishing the scheme
 /// separator, so a raw string like `"https:\t//svc:hunter2@10.0.0.1/route"` parses and connects
 /// completely normally (host `10.0.0.1`, userinfo `svc:hunter2`) even though the LITERAL substring
@@ -402,7 +402,7 @@ pub(crate) fn validate_target_url(raw: &str) -> Result<reqwest::Url, String> {
 /// it is a silent no-op — and the unmasked credential then lands verbatim in the SSRF-rejection error
 /// string. Masking the parsed `Url`'s username/password fields directly is correct regardless of what
 /// whitespace or control characters the raw input used to spell the scheme separator.
-pub(crate) fn mask_userinfo(url: &reqwest::Url) -> String {
+pub fn mask_userinfo(url: &url::Url) -> String {
     if url.username().is_empty() && url.password().is_none() {
         return url.to_string();
     }
@@ -425,7 +425,7 @@ pub(crate) fn mask_userinfo(url: &reqwest::Url) -> String {
 ///
 /// The fragment goes too: it never reaches the wire on an HTTP request, so it can only be noise or
 /// an accident, and there is no reason to echo it.
-pub(crate) fn reportable_url(url: &reqwest::Url) -> String {
+pub fn reportable_url(url: &url::Url) -> String {
     let mut safe = url.clone();
     safe.set_fragment(None);
     let had_query = safe.query().is_some();

@@ -1,52 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-[package]
-name = "busbar-hook-webrequest"
-version = "1.5.0"
-publish = false            # first-party signed cdylib, shipped as a packed/signed tarball, not to crates.io
-edition = "2021"
-rust-version = "1.97"
-description = "First-party signed kind:hook plugin cdylib: a transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/notify/configure/describe/status) to an operator-configured URL and returns the capped JSON reply. The migration path for the retired socket/webhook hook transport and the isolation path for untrusted hook logic (run it remotely behind this trusted dlopen'd forwarder). Owns its own reqwest client; applies its own SSRF guard on the configured URL."
-license = "Apache-2.0"
-
-[lib]
-crate-type = ["cdylib", "rlib"]   # cdylib: the DROPPED-IN door (a signed tarball in `plugins/`); rlib: the LINKED door
-                                  # (`linked::HOOK`) and what `cargo test` needs to emit the cdylib the conformance test packs
-
-[dependencies]
-# The ONE busbar crate this plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into it
-# as `busbar_contract::abi::sdk`). Pinned by git rev to the busbar commit in `.busbar-ref` field 1; a
-# busbar build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy of
-# the contract links.
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# The plugin owns the web call: its own async runtime + HTTP client. redirect::none is set on the
-# client so a target cannot 30x-redirect us to an internal host at runtime. Production code only ever
-# builds a `new_current_thread()` runtime (see `Forwarder::new`), so `rt-multi-thread` is NOT listed
-# here — it would otherwise ship in the shipped release cdylib for no reason. It's still available to
-# `cargo test` (via the `[dev-dependencies]` copy below, which Cargo unifies with this one for any
-# build that includes dev-dependencies): `src/tests.rs`'s `drop_in_async_context_does_not_panic` test
-# needs a real multi-thread runtime to reproduce the hot-reload drop-on-a-tokio-worker-thread case.
-tokio = { version = "1", features = ["rt", "time", "macros"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-
-[dev-dependencies]
-# A local mock HTTP server for the end-to-end forward tests (mirrors the old webhook.rs test harness).
-axum = { version = "0.8", features = ["http1"] }
-# `rt-multi-thread` here (not in `[dependencies]`) is what makes it available to `cargo test` (see the
-# comment on the `[dependencies]` tokio entry above) without shipping it in the release artifact.
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }
-# The conformance and end-to-end tests load the built cdylib over the REAL loader (sign, pack, scan,
-# open) — dev-only, never in the shipped artifact. Same pinned rev as busbar-contract above, so one busbar
-# source resolves. Its `sign` module signs the tarball `full_stack_e2e.rs` installs over the admin API
-# exactly as the release pipeline / `busbar-plugin-pack` does (the old busbar-plugin-sign crate folded
-# into the loader).
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
-# Encodes the signed tarball into the admin API's `tarball_b64` JSON field (same crate/version the
-# engine's own admin tests use for the identical purpose).
-base64 = "0.22"
-# `full_stack_e2e.rs` drives the real admin + data-plane HTTP APIs with JSON bodies. The `json`
-# feature is added HERE (not in `[dependencies]`'s reqwest, which stays JSON-free) — Cargo unifies
-# the two entries for any build that includes dev-dependencies, so this never reaches the shipped
-# release cdylib.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+#
+# One repo per plugin (owner ruling, busbar 1.6.0): the webrequest hook's logic (busbar-hook-webrequest,
+# the rlib busbar's composition root links) and, once the hook kind's door lands, the thin cdylib that
+# packages it (busbar-hook-webrequest-plugin), as a same-repo Cargo workspace laid out like export-file.
+[workspace]
+resolver = "2"
+members = [
+    "hook-webrequest",
+]
