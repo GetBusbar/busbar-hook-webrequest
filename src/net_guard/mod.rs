@@ -227,8 +227,7 @@ pub(crate) fn host_is_loopback(url: &reqwest::Url) -> bool {
         return is_alternate_loopback_v4(&host);
     }
     match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => v4.is_loopback(),
-        Ok(IpAddr::V6(v6)) => v6.is_loopback() || v6.to_ipv4().is_some_and(|v4| v4.is_loopback()),
+        Ok(ip) => ip_is_loopback(&ip),
         Err(_) => {
             host.eq_ignore_ascii_case("localhost")
                 || host
@@ -236,6 +235,34 @@ pub(crate) fn host_is_loopback(url: &reqwest::Url) -> bool {
                     .is_some_and(|(_, tld)| tld.eq_ignore_ascii_case("localhost"))
         }
     }
+}
+
+/// The loopback predicate over an IP address: a literal host ([`host_is_loopback`]) or a resolved
+/// answer for a plaintext target ([`check_plaintext_resolved`]). One function, so a `localhost`
+/// name and the literal it resolves to cannot get different answers.
+fn ip_is_loopback(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4().is_some_and(|v4| v4.is_loopback()),
+    }
+}
+
+/// The plaintext rule over a resolved answer: an `http://` target is allowed only because its name
+/// is a loopback one (`localhost`, `*.localhost`), so EVERY address its name resolves to must be
+/// loopback. RFC 6761 asks resolvers to answer those names with loopback but does not guarantee
+/// it; a resolver that answers `svc.localhost` with a remote address would otherwise receive the
+/// envelope in cleartext. `Err` names the first non-loopback address.
+pub(crate) fn check_plaintext_resolved(addrs: &[SocketAddr]) -> Result<(), String> {
+    for addr in addrs {
+        if !ip_is_loopback(&addr.ip()) {
+            return Err(format!(
+                "resolves to the non-loopback address {} (plaintext http:// is only permitted \
+                 for a loopback sidecar)",
+                addr.ip()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// SSRF block predicate for the target URL: identical to a full internal check EXCEPT loopback and the
@@ -313,6 +340,16 @@ pub(crate) fn check_resolved(addrs: &[SocketAddr]) -> Result<(), String> {
     Ok(())
 }
 
+/// The guarded target's answer rules: [`check_resolved`] always, and [`check_plaintext_resolved`]
+/// for a plaintext target.
+fn check_answer(addrs: &[SocketAddr], plaintext: bool) -> Result<(), String> {
+    check_resolved(addrs)?;
+    if plaintext {
+        check_plaintext_resolved(addrs)?;
+    }
+    Ok(())
+}
+
 /// A name lookup, `(host, port) -> addresses`. Production uses [`system_lookup`] (the OS resolver,
 /// the same `getaddrinfo` reqwest's default resolver calls); tests inject a fixed answer so no test
 /// depends on, or waits on, real DNS.
@@ -351,11 +388,13 @@ pub(crate) fn ssrf_refusal_in(err: &(dyn std::error::Error + 'static)) -> Option
 
 /// The forwarding client's DNS resolver. Every name the client dials is resolved through
 /// `lookup`; when the name is the GUARDED target host, the answer must pass [`check_resolved`]
-/// (and be non-empty) or the connect fails with an [`SsrfRefusal`] before anything is dialed. Any
-/// other name (an environment proxy's host, say) is resolved unchecked.
+/// (and be non-empty) or the connect fails with an [`SsrfRefusal`] before anything is dialed. For
+/// a plaintext `http://` target it must also pass [`check_plaintext_resolved`]. Any other name (an
+/// environment proxy's host, say) is resolved unchecked.
 pub(crate) struct TargetResolver {
     lookup: Lookup,
     guarded: Option<String>,
+    plaintext: bool,
 }
 
 impl TargetResolver {
@@ -365,7 +404,15 @@ impl TargetResolver {
         Self {
             lookup,
             guarded: guarded.map(canonical_name),
+            plaintext: false,
         }
+    }
+
+    /// Mark the guarded target as a plaintext `http://` one: its answers must then be loopback
+    /// only ([`check_plaintext_resolved`]).
+    pub(crate) fn plaintext(mut self, plaintext: bool) -> Self {
+        self.plaintext = plaintext;
+        self
     }
 }
 
@@ -374,6 +421,7 @@ impl reqwest::dns::Resolve for TargetResolver {
         let lookup = Arc::clone(&self.lookup);
         let name = name.as_str().to_string();
         let guard = self.guarded.as_deref() == Some(canonical_name(&name).as_str());
+        let plaintext = guard && self.plaintext;
         Box::pin(async move {
             type BoxError = Box<dyn std::error::Error + Send + Sync>;
             let host = name.clone();
@@ -388,7 +436,7 @@ impl reqwest::dns::Resolve for TargetResolver {
                         "host '{name}' resolved to no addresses (SSRF guard)"
                     ))
                 } else {
-                    check_resolved(&addrs)
+                    check_answer(&addrs, plaintext)
                         .err()
                         .map(|why| format!("host '{name}' {why}"))
                 };
@@ -445,8 +493,15 @@ pub(crate) fn checked_addrs_for(
         return Ok(None); // an IP literal: `host_is_blocked` already ruled on it
     }
     let port = url.port_or_known_default().unwrap_or(443);
-    resolve_and_check(&host, port, lookup)
-        .map_err(|why| format!("webrequest: settings.url host '{host}' {why}"))
+    let addrs = resolve_and_check(&host, port, lookup);
+    // A plaintext target's name is allowed only as a loopback name; its answer must agree.
+    let addrs = match addrs {
+        Ok(Some(addrs)) if scheme_is(url, "http") => {
+            check_plaintext_resolved(&addrs).map(|()| Some(addrs))
+        }
+        other => other,
+    };
+    addrs.map_err(|why| format!("webrequest: settings.url host '{host}' {why}"))
 }
 
 /// The URL's host with the IPv6 `[...]` brackets and a single trailing FQDN-root `.` stripped, so the

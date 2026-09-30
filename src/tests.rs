@@ -805,6 +805,62 @@ fn a_pushed_timeout_bounds_the_connect_too() {
     assert_eq!(target.hits(), 1);
 }
 
+/// `203.0.113.7` (TEST-NET-3): neither loopback nor internal. The tests below only ever hand it to
+/// the guard behind a loopback address, so nothing dials it.
+const REMOTE: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+
+/// A lookup answering every name, at every port, with `ips`.
+fn answer(ips: &'static [IpAddr]) -> net_guard::Lookup {
+    Arc::new(move |_: &str, port: u16| {
+        Ok(ips.iter().map(|ip| SocketAddr::new(*ip, port)).collect())
+    })
+}
+
+/// WREQ-4. A plaintext `http://` name passes the gate only because it is a `localhost` name, but
+/// its answer was never required to be loopback: a resolver answering `svc.localhost` with a remote
+/// address was accepted at open. It is now refused; a loopback-only answer, and the same remote
+/// answer for an `https://` target, are still allowed.
+#[test]
+fn a_plaintext_target_must_resolve_to_loopback_at_open() {
+    let plain = || cfg("http://svc.localhost:9/".into(), 2000);
+    let tls = || cfg("https://svc.localhost:9/".into(), 2000);
+    let mixed = answer(&[LOOPBACK, REMOTE]);
+    assert!(
+        Forwarder::with_lookup(plain(), Arc::clone(&mixed)).is_err(),
+        "a plaintext target whose name answers a remote address must fail the load"
+    );
+    assert!(
+        Forwarder::with_lookup(tls(), mixed).is_ok(),
+        "TLS targets are not bound to loopback"
+    );
+    let loopback = answer(&[LOOPBACK, IpAddr::V6(Ipv6Addr::LOCALHOST)]);
+    assert!(Forwarder::with_lookup(plain(), loopback).is_ok());
+}
+
+/// WREQ-4, at connect. The name did not resolve at open (allowed), and at connect it answers
+/// loopback AND a remote address. The connector would dial the loopback address first and deliver
+/// the envelope; the plaintext rule refuses the whole answer before any dial.
+#[test]
+fn a_plaintext_target_answering_remote_at_connect_is_refused_before_any_dial() {
+    let target = Target::json(r#"{"order":[0]}"#);
+    let lookup: net_guard::Lookup = Arc::new(|_: &str, port: u16| {
+        if port != 0 {
+            return Err(std::io::Error::other("no answer at open"));
+        }
+        Ok(vec![SocketAddr::new(LOOPBACK, 0), SocketAddr::new(REMOTE, 0)])
+    });
+    let fwd = Forwarder::with_lookup(
+        cfg(format!("http://svc.localhost:{}/", target.port()), 2000),
+        lookup,
+    )
+    .expect("a name that does not resolve at open is allowed");
+    assert!(
+        fwd.post_op("decide", &serde_json::json!({})).is_err(),
+        "a remote address in a plaintext target's answer must fail the call"
+    );
+    assert_eq!(target.hits(), 0, "nothing may be dialed");
+}
+
 // ── Test-only coverage (WREQ-12, WREQ-13, WREQ-20, WREQ-21, WREQ-22) ─────────────────────────────
 
 /// A forwarder at `url` (an IP-literal loopback target, so no lookup is ever made).
