@@ -384,7 +384,9 @@ impl reqwest::dns::Resolve for TargetResolver {
                 .map_err(|e| -> BoxError { Box::new(e) })?;
             if guard {
                 let refusal = if addrs.is_empty() {
-                    Some(format!("host '{name}' resolved to no addresses (SSRF guard)"))
+                    Some(format!(
+                        "host '{name}' resolved to no addresses (SSRF guard)"
+                    ))
                 } else {
                     check_resolved(&addrs)
                         .err()
