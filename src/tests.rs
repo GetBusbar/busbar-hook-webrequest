@@ -102,7 +102,10 @@ fn parse_reply_depth_boundary_is_exact() {
 fn exceeds_max_depth_is_exact_at_its_own_boundary() {
     assert!(exceeds_max_depth(b"[[[", 2));
     assert!(!exceeds_max_depth(b"[[", 2));
-    assert!(!exceeds_max_depth(b"[[]][[]]", 2), "depth, not bracket count");
+    assert!(
+        !exceeds_max_depth(b"[[]][[]]", 2),
+        "depth, not bracket count"
+    );
     assert!(exceeds_max_depth(br#"{"a":[{"b":1}]}"#, 2));
 }
 
@@ -117,7 +120,7 @@ fn brackets_inside_strings_do_not_count_as_depth() {
         parse_reply(plain.as_bytes()).unwrap(),
         serde_json::json!({ "m": brackets })
     );
-    let escaped = format!(r#"{{"m":"a"{brackets}"}}"#);
+    let escaped = format!(r#"{{"m":"a\"{brackets}"}}"#);
     assert_eq!(
         parse_reply(escaped.as_bytes()).unwrap(),
         serde_json::json!({ "m": format!("a\"{brackets}") })
@@ -492,7 +495,11 @@ impl Target {
                 };
                 sink.lock().unwrap().push(body);
                 for piece in &response {
-                    if stream.write_all(piece).and_then(|()| stream.flush()).is_err() {
+                    if stream
+                        .write_all(piece)
+                        .and_then(|()| stream.flush())
+                        .is_err()
+                    {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(2));
@@ -611,7 +618,11 @@ fn an_internal_answer_at_connect_is_refused_before_any_dial() {
         err.contains("SSRF guard") && err.contains("0.0.0.0"),
         "the failure must be the guard's refusal, not a connect error: {err}"
     );
-    assert_eq!(target.hits(), 0, "nothing may be dialed on a refused answer");
+    assert_eq!(
+        target.hits(),
+        0,
+        "nothing may be dialed on a refused answer"
+    );
 }
 
 /// WREQ-2. The address approved at open was pinned for the client's life, so when the target's
@@ -783,7 +794,10 @@ fn a_pushed_timeout_bounds_the_connect_too() {
     .expect("valid config");
     let mut push = serde_json::Map::new();
     push.insert("timeout_ms".into(), serde_json::json!(2000));
-    assert!(fwd.configure(&push, 2), "a valid pushed timeout_ms must ACK");
+    assert!(
+        fwd.configure(&push, 2),
+        "a valid pushed timeout_ms must ACK"
+    );
     let reply = fwd
         .post_op("decide", &serde_json::json!({}))
         .expect("a 200ms connect is inside the pushed 2000ms timeout");
@@ -857,13 +871,19 @@ fn a_redirect_is_not_followed() {
 #[test]
 fn status_reports_the_masked_url() {
     let fwd = Forwarder::with_lookup(
-        cfg("https://svc:pw@h.example.invalid/r?token=S3CRET".to_string(), 1234),
+        cfg(
+            "https://svc:pw@h.example.invalid/r?token=S3CRET".to_string(),
+            1234,
+        ),
         no_dns(),
     )
     .expect("valid config");
     let status = fwd.status();
     let settings = &status["status"]["settings"];
-    assert_eq!(settings["url"], "https://***@h.example.invalid/r?<redacted>");
+    assert_eq!(
+        settings["url"],
+        "https://***@h.example.invalid/r?<redacted>"
+    );
     assert_eq!(settings["target_host"], "h.example.invalid");
     assert!(!settings.to_string().contains("S3CRET"));
 }

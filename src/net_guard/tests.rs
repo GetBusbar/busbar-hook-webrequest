@@ -256,8 +256,7 @@ fn a_name_resolving_to_loopback_is_allowed() {
         !host_is_blocked(&url),
         "the textual guard allows localhost (sidecar carve-out)"
     );
-    let addrs =
-        checked_addrs_for(&url, &system_lookup()).expect("localhost must not be rejected");
+    let addrs = checked_addrs_for(&url, &system_lookup()).expect("localhost must not be rejected");
     let addrs = addrs.expect("localhost resolves, so the approved answer is returned");
     assert!(!addrs.is_empty());
     assert!(
@@ -290,26 +289,26 @@ fn the_resolved_predicate_agrees_with_the_literal_one() {
     // WREQ-16: the embedded-IPv4, site-local, unspecified and broadcast arms too, not just the
     // plain ranges, so dropping any arm from the shared predicate fails here.
     let cases: [(&str, bool); 20] = [
-        ("127.0.0.1", false),                 // loopback sidecar: allowed
-        ("::1", false),                       // ditto, v6
-        ("10.0.0.1", true),                   // RFC 1918
-        ("172.16.0.1", true),                 // RFC 1918
-        ("192.168.1.1", true),                // RFC 1918
-        ("169.254.169.254", true),            // link-local / cloud metadata
-        ("100.64.0.1", true),                 // CGNAT
-        ("fd00::1", true),                    // unique-local v6
-        ("fe80::1", true),                    // link-local v6
-        ("93.184.216.34", false),             // ordinary public address
-        ("::ffff:169.254.169.254", true),     // IPv4-mapped metadata
-        ("::ffff:127.0.0.1", false),          // IPv4-mapped loopback: allowed
-        ("64:ff9b::a9fe:a9fe", true),         // NAT64 well-known, metadata
-        ("64:ff9b:1:abcd::a9fe:a9fe", true),  // NAT64 local-use, metadata
-        ("2002:a9fe:a9fe::", true),           // 6to4, metadata
-        ("fec0::1", true),                    // site-local v6
-        ("::", true),                         // unspecified v6
-        ("0.0.0.0", true),                    // unspecified v4
-        ("255.255.255.255", true),            // broadcast
-        ("2606:4700:4700::1111", false),      // ordinary public v6
+        ("127.0.0.1", false),                // loopback sidecar: allowed
+        ("::1", false),                      // ditto, v6
+        ("10.0.0.1", true),                  // RFC 1918
+        ("172.16.0.1", true),                // RFC 1918
+        ("192.168.1.1", true),               // RFC 1918
+        ("169.254.169.254", true),           // link-local / cloud metadata
+        ("100.64.0.1", true),                // CGNAT
+        ("fd00::1", true),                   // unique-local v6
+        ("fe80::1", true),                   // link-local v6
+        ("93.184.216.34", false),            // ordinary public address
+        ("::ffff:169.254.169.254", true),    // IPv4-mapped metadata
+        ("::ffff:127.0.0.1", false),         // IPv4-mapped loopback: allowed
+        ("64:ff9b::a9fe:a9fe", true),        // NAT64 well-known, metadata
+        ("64:ff9b:1:abcd::a9fe:a9fe", true), // NAT64 local-use, metadata
+        ("2002:a9fe:a9fe::", true),          // 6to4, metadata
+        ("fec0::1", true),                   // site-local v6
+        ("::", true),                        // unspecified v6
+        ("0.0.0.0", true),                   // unspecified v4
+        ("255.255.255.255", true),           // broadcast
+        ("2606:4700:4700::1111", false),     // ordinary public v6
     ];
     for (raw, want_internal) in cases {
         let ip: std::net::IpAddr = raw.parse().unwrap();
@@ -340,8 +339,7 @@ fn the_resolved_predicate_agrees_with_the_literal_one() {
 fn a_name_that_does_not_resolve_is_allowed_at_open() {
     let url = reqwest::Url::parse("https://this-name-must-not-resolve.invalid/route").unwrap();
     assert_eq!(
-        checked_addrs_for(&url, &system_lookup())
-            .expect("a resolution failure is not a rejection"),
+        checked_addrs_for(&url, &system_lookup()).expect("a resolution failure is not a rejection"),
         None,
         "nothing resolved, so there is no approved answer"
     );
@@ -390,7 +388,9 @@ fn the_target_resolver_applies_the_any_rule_to_the_guarded_host() {
         vec![SocketAddr::new("93.184.216.34".parse().unwrap(), 0)]
     );
     assert_eq!(
-        resolve_through_guard(&["127.0.0.1"], "svc.example").unwrap().len(),
+        resolve_through_guard(&["127.0.0.1"], "svc.example")
+            .unwrap()
+            .len(),
         1,
         "loopback is the sidecar carve-out"
     );
@@ -447,9 +447,14 @@ fn any_local_use_nat64_prefix_is_unwrapped() {
         Some(Ipv4Addr::new(169, 254, 169, 254))
     );
     // The well-known prefix stays exact: bits under 64:ff9b::/96 beyond the prefix are not NAT64.
-    assert_eq!(embedded_v4(&"64:ff9b:0:1::a9fe:a9fe".parse().unwrap()), None);
+    assert_eq!(
+        embedded_v4(&"64:ff9b:0:1::a9fe:a9fe".parse().unwrap()),
+        None
+    );
     // Loopback behind a local-use prefix keeps the sidecar carve-out.
-    assert!(!host_is_blocked(&url("http://[64:ff9b:1:abcd::7f00:1]:8080/x")));
+    assert!(!host_is_blocked(&url(
+        "http://[64:ff9b:1:abcd::7f00:1]:8080/x"
+    )));
 }
 
 /// WREQ-15. The ANY rule over a resolved answer, directly: one internal address anywhere in the

@@ -418,7 +418,9 @@ async fn forward_transform_sends_the_transform_op() {
     }
     let (url, captured) = capturing_target().await;
     let policy = load(&cfg(&url));
-    let _ = policy.transform(&req_with_prompt("hello-wire"), BUDGET).await;
+    let _ = policy
+        .transform(&req_with_prompt("hello-wire"), BUDGET)
+        .await;
     let bodies = captured.lock().unwrap().clone();
     assert_eq!(bodies.len(), 1);
     let v: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
