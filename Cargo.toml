@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # One repo per plugin (owner ruling, busbar 1.6.0): the webrequest hook's logic (busbar-hook-webrequest,
-# the rlib busbar's composition root links) and, once the hook kind's door lands, the thin cdylib that
-# packages it (busbar-hook-webrequest-plugin), as a same-repo Cargo workspace laid out like export-file.
+# the rlib busbar's composition root links, with its door) and the thin cdylib that packages it
+# (busbar-hook-webrequest-plugin), as a same-repo Cargo workspace laid out like export-file.
 [workspace]
 resolver = "2"
 members = [
     "hook-webrequest",
+    "hook-webrequest-plugin",
 ]
