@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-hook-webrequest-plugin"
+version = "1.5.0"
+publish = false            # first-party signed cdylib, shipped as a packed/signed tarball, not to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "First-party signed kind:hook plugin cdylib: the webrequest forwarder (module: webrequest), packaged as a droppable busbar plugin. Drop the signed tarball into plugins/ and name it from a hook's module: webrequest."
+license = "Apache-2.0"
+
+[lib]
+# cdylib: the DROPPED-IN door (a signed tarball in `plugins/`). rlib: REQUIRED for `cargo test` to
+# emit the cdylib artifact the conformance test loads (a cdylib-only package builds a trivial test
+# harness and never produces the .so/.dylib).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# THE LOGIC, same repo: its `door::door` is the door this image exports.
+busbar-hook-webrequest = { path = "../hook-webrequest" }
+# `export_door!`, the macro that emits the image's one symbol. Same pinned rev as the logic crate's.
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "071df28701134d4bac52e0753800622449d498f1" }
+
+[dev-dependencies]
+# The conformance test loads the built cdylib over the REAL loader and the linked door through the
+# same loader — dev-only, never in the shipped artifact. Same pinned rev as busbar-contract above,
+# so one busbar source resolves.
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "071df28701134d4bac52e0753800622449d498f1" }
+serde_json = "1"
