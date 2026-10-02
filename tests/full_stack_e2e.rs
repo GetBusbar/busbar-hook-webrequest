@@ -226,6 +226,7 @@ fn build_signed_tarball(lib_bytes: &[u8]) -> (Vec<u8>, String) {
         description: "full_stack_e2e signed test tarball".to_string(),
         homepage: String::new(),
         license: "Apache-2.0".to_string(),
+        statement: None,
         needs: HookNeeds {
             prompt: NeedLevel::Ro,
             user: NeedLevel::No,
