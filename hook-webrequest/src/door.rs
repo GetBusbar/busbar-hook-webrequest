@@ -69,7 +69,7 @@ pub const NEEDS: &[Need] = &[Need {
 
 /// A gate that may see and rewrite the prompt and read the caller (1.5.5's `needs_prompt: rw`,
 /// `needs_user: ro`); the operator's grant decides what it is handed.
-const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO, &[]);
+const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 
 /// How many ops one instance holds in flight; the host clamps.
 pub const MAX_INFLIGHT: u32 = 64;
