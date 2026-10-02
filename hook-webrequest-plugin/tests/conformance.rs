@@ -19,6 +19,9 @@
 //! that names a blocked URL is a NACK and leaves the live target; a far end's error status is a
 //! FAILED `decide` and an abstaining `transform`; and the Statement declares exactly one need,
 //! outbound, in the loopback-allowed egress class, over the host's `http` framer.
+//!
+//! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
+//! DESIGN §5: no plugin opens a socket, dials, binds or does TLS), with its RED arm.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -51,6 +54,9 @@ use busbar_plugin_loader::dispatch::{
     DispatchConfig, Dispatcher, Done, Frame, InFrame, LinkedRow, NoSink, OutFrame, Plugin,
 };
 use serde_json::{json, Value};
+
+#[path = "support/net_ban.rs"]
+mod net_ban;
 
 /// The URL every opened forwarder is configured with: loopback plaintext, userinfo, a query.
 const URL: &str = "http://user:pa%20ss@127.0.0.1:9/hook?x=1";
@@ -637,7 +643,7 @@ fn script(arm: &Arm) -> Vec<String> {
 }
 
 #[test]
-fn the_linked_and_dropped_in_doors_answer_alike_and_as_1_5_5() {
+fn the_linked_and_the_dropped_in_doors_answer_alike_and_as_1_5_5() {
     let linked = script(&Arm::Linked);
     let dropped = script(&Arm::Dropped(cdylib()));
     assert_eq!(linked, dropped);
