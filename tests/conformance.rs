@@ -83,6 +83,7 @@ fn statement(kind: &str) -> Manifest {
         description: String::new(),
         homepage: String::new(),
         license: String::new(),
+        statement: None,
         needs: HookNeeds {
             prompt: NeedLevel::Ro,
             user: NeedLevel::No,
