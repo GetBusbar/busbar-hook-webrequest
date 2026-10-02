@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]   # cdylib: the DROPPED-IN door (a signed tarbal
 # as `busbar_contract::abi::sdk`). Pinned by git rev to the busbar commit in `.busbar-ref` field 1; a
 # busbar build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy of
 # the contract links.
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "23d8a6b46deb158839df8bc02115b09023633040" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "934a016e20fc1a67c209b671d137c8cc28092767" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The plugin owns the web call: its own async runtime + HTTP client. redirect::none is set on the
@@ -41,7 +41,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 # source resolves. Its `sign` module signs the tarball `full_stack_e2e.rs` installs over the admin API
 # exactly as the release pipeline / `busbar-plugin-pack` does (the old busbar-plugin-sign crate folded
 # into the loader).
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "23d8a6b46deb158839df8bc02115b09023633040" }
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "934a016e20fc1a67c209b671d137c8cc28092767" }
 # Encodes the signed tarball into the admin API's `tarball_b64` JSON field (same crate/version the
 # engine's own admin tests use for the identical purpose).
 base64 = "0.22"
