@@ -90,11 +90,14 @@ struct Sent {
     timeout_ms: u64,
 }
 
+/// The dispatcher's connection-table wake.
+type Wake = Arc<dyn Fn(u64) + Send + Sync>;
+
 /// THE FAR END, as a connection table: every need is framed; an open is the whole request (kept
 /// in `sent`); each reply is the scripted `(status, reason, body)`, its first read PENDING with
 /// the op's ticket woken from another thread.
 struct Upstream {
-    wake: Mutex<Option<Arc<dyn Fn(u64) + Send + Sync>>>,
+    wake: Mutex<Option<Wake>>,
     answer: Mutex<(u32, &'static str, Vec<u8>)>,
     sent: Mutex<Vec<Sent>>,
     reads: Mutex<HashMap<u64, u8>>,
@@ -514,7 +517,11 @@ fn script(arm: &Arm) -> Vec<String> {
 
     // RED: a configuration the forwarder refuses never opens, in 1.5.5's words.
     for (bad, words) in [
-        ("{}", "webrequest: settings.url is required"),
+        (r#"{"url": ""}"#, "webrequest: settings.url is required"),
+        (
+            "{}",
+            "webrequest: invalid plugin config: missing field `url`",
+        ),
         (r#"{"url": 5}"#, "webrequest: invalid plugin config"),
         (r#"{"url": "http://169.254.169.254/"}"#, "webrequest:"),
     ] {
