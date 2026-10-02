@@ -1,4 +1,4 @@
-<!-- fleet:header:begin (rendered by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml; edit it there) -->
+<!-- fleet:header:begin (rendered by `busbar-release plugin sync` from GetBusbar/busbar-release template/ and busbar's plugins.yaml; edit it there) -->
 # busbar-hook-webrequest
 
 A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/notify/configure/describe/status) to an operator-configured URL and returns the capped JSON reply: a busbar first-party kind:hook plugin (dlopen cdylib).
