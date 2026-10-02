@@ -473,7 +473,7 @@ fn decide_frame() -> Arc<DecideFrame> {
 
 /// The 1.5.5 op envelope for `op`: the projection 1.5.5's host built, enveloped as 1.5.5's
 /// forwarder did.
-fn envelope_155(op: &str) -> Vec<u8> {
+fn envelope_155(op: &'static str) -> Vec<u8> {
     let cands = if op == "notify" {
         Vec::new()
     } else {
@@ -490,7 +490,7 @@ fn envelope_155(op: &str) -> Vec<u8> {
 }
 
 /// The request every op must put on the wire for `op`: the 1.5.5 client's.
-fn expected(op: &str) -> Sent {
+fn expected(op: &'static str) -> Sent {
     Sent {
         target: "http://127.0.0.1:9".into(),
         method: b"POST".to_vec(),
