@@ -230,6 +230,9 @@ impl Conns for Upstream {
 }
 
 impl DeclaredConns for Upstream {
+    fn serves_scheme(&self, transport: &str) -> bool {
+        transport == "http"
+    }
     fn declare(
         &self,
         _: InstanceId,
