@@ -32,31 +32,28 @@
 //! the two copies would not by itself turn any test here red — keeping the two byte-identical is a
 //! manual review discipline at PR time, not something this test module enforces automatically.
 //!
-//! A NAME is checked twice: at open/configure ([`checked_addrs_for`], the early NACK) and again on
-//! every connect ([`TargetResolver`], which the forwarding client resolves the target host through).
-//! The connect-time check is the one that holds: a host that resolves to an allowed address at
-//! validation and to an internal one later (DNS rebinding), or that did not resolve at validation
-//! at all, is refused before anything is dialed.
+//! Note also: these predicates validate the URL's literal host text at open/configure time. Name
+//! resolution, the resolved-address check and the address pin (DNS rebinding / TOCTOU) belong to the
+//! host's loopback-allowed egress class, which every connection this plugin opens goes through.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
-use std::sync::Arc;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 // ── Pure context-free predicates (copied verbatim from busbar/src/net_guard.rs) ────────────────────
 
 /// IPv6 unique-local range `fc00::/7` (the first 7 bits are `1111110`).
-pub(crate) fn is_unique_local_v6(addr: &Ipv6Addr) -> bool {
+pub fn is_unique_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xfe00) == 0xfc00
 }
 
 /// IPv6 link-local range `fe80::/10` (the first 10 bits are `1111111010`).
-pub(crate) fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
+pub fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfe80
 }
 
 /// IPv6 site-local `fec0::/10`. Deprecated by RFC 3879 but still routed on plenty of real networks,
 /// and NOT covered by the ULA or link-local masks (`0xfec0 & 0xfe00` is `0xfe00`, not `0xfc00`;
 /// `0xfec0 & 0xffc0` is `0xfec0`, not `0xfe80`), so without this it was simply allowed.
-pub(crate) fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
+pub fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfec0
 }
 
@@ -72,7 +69,7 @@ pub(crate) fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
 ///
 /// Returning the embedded address lets the caller run it through the same `is_internal_v4` policy
 /// as any other IPv4 target, rather than maintaining a second, divergent list.
-pub(crate) fn embedded_v4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
+pub fn embedded_v4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = addr.to_ipv4() {
         return Some(v4);
     }
@@ -120,7 +117,7 @@ pub(crate) fn embedded_v4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
 
 /// RFC 6598 Shared Address Space `100.64.0.0/10` (CGNAT) — routable inside AWS/GCP VPCs and k8s
 /// clusters, so an SSRF target the private/link-local checks miss. `Ipv4Addr::is_private()` misses it.
-pub(crate) fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
+pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
     let o = v4.octets();
     o[0] == 100 && (o[1] & 0xC0) == 64
 }
@@ -129,7 +126,7 @@ pub(crate) fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
 /// but the OS resolver still maps to an IPv4 address (bare decimal `2130706433`, `0x`/`0X` hex, a
 /// leading-zero octal, or a dotted form with fewer than four octets). A canonical dotted-quad is NOT
 /// matched here (handled by the `parse::<IpAddr>()` path); a normal DNS hostname is not matched either.
-pub(crate) fn is_alternate_ipv4_encoding(host: &str) -> bool {
+pub fn is_alternate_ipv4_encoding(host: &str) -> bool {
     if host.is_empty() {
         return false;
     }
@@ -168,7 +165,7 @@ pub(crate) fn is_alternate_ipv4_encoding(host: &str) -> bool {
 /// blocking every OTHER alternate-encoded internal target. Conservative: anything it cannot positively
 /// confirm as loopback is treated as non-loopback (and therefore blocked). Mirrors
 /// `observability::is_alternate_loopback_v4`.
-pub(crate) fn is_alternate_loopback_v4(host: &str) -> bool {
+pub fn is_alternate_loopback_v4(host: &str) -> bool {
     if !host.contains('.') {
         if let Some(hex) = host.strip_prefix("0x").or_else(|| host.strip_prefix("0X")) {
             return u32::from_str_radix(hex, 16).ok() == Some(0x7f00_0001);
@@ -219,7 +216,7 @@ fn is_internal_v4(v4: &Ipv4Addr) -> bool {
 /// True iff the target URL's host is the loopback/localhost target the forwarder MAY reach — the exact
 /// carve-out `host_is_blocked` leaves un-blocked (parity with the old webhook policy, which allowed a
 /// loopback sidecar). Used to gate the plaintext-`http://` allowance to loopback only.
-pub(crate) fn host_is_loopback(url: &reqwest::Url) -> bool {
+pub fn host_is_loopback(url: &url::Url) -> bool {
     let Some(host) = host_of(url) else {
         return false;
     };
@@ -237,32 +234,13 @@ pub(crate) fn host_is_loopback(url: &reqwest::Url) -> bool {
     }
 }
 
-/// The loopback predicate over an IP address: a literal host ([`host_is_loopback`]) or a resolved
-/// answer for a plaintext target ([`check_plaintext_resolved`]). One function, so a `localhost`
-/// name and the literal it resolves to cannot get different answers.
+/// The loopback predicate over an IP literal ([`host_is_loopback`]): v4 loopback, `::1`, and the
+/// IPv4-mapped/compatible spellings of a v4 loopback.
 fn ip_is_loopback(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_loopback(),
         IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4().is_some_and(|v4| v4.is_loopback()),
     }
-}
-
-/// The plaintext rule over a resolved answer: an `http://` target is allowed only because its name
-/// is a loopback one (`localhost`, `*.localhost`), so EVERY address its name resolves to must be
-/// loopback. RFC 6761 asks resolvers to answer those names with loopback but does not guarantee
-/// it; a resolver that answers `svc.localhost` with a remote address would otherwise receive the
-/// envelope in cleartext. `Err` names the first non-loopback address.
-pub(crate) fn check_plaintext_resolved(addrs: &[SocketAddr]) -> Result<(), String> {
-    for addr in addrs {
-        if !ip_is_loopback(&addr.ip()) {
-            return Err(format!(
-                "resolves to the non-loopback address {} (plaintext http:// is only permitted \
-                 for a loopback sidecar)",
-                addr.ip()
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// SSRF block predicate for the target URL: identical to a full internal check EXCEPT loopback and the
@@ -272,11 +250,12 @@ pub(crate) fn check_plaintext_resolved(addrs: &[SocketAddr]) -> Result<(), Strin
 /// addresses embedded in IPv4-mapped, IPv4-compatible, NAT64 and 6to4 IPv6 forms, and the
 /// alternate-IPv4 encodings that resolve to those.
 ///
-/// This inspects the URL's literal host TEXT only and never resolves a name — that is
-/// [`resolve_and_check`]'s job, and the two are used together by [`checked_addrs_for`]. Keeping the
-/// textual check separate matters: it is total (no I/O, no failure mode), so it can run first and
-/// reject the IP-literal spellings before anything touches the network.
-pub(crate) fn host_is_blocked(url: &reqwest::Url) -> bool {
+/// This inspects the URL's literal host TEXT only and never resolves a name: this plugin opens no
+/// socket and resolves nothing. A NAME that resolves to an internal address is refused by the host's
+/// loopback-allowed egress class when the connection is opened (THE DESIGN §5), which also pins the
+/// approved addresses. The check here is total (no I/O, no failure mode), so it runs at
+/// open/configure and rejects the IP-literal spellings before anything reaches the host.
+pub fn host_is_blocked(url: &url::Url) -> bool {
     let Some(host) = host_of(url) else {
         return true; // a URL with no host is unusable as a target
     };
@@ -287,176 +266,16 @@ pub(crate) fn host_is_blocked(url: &reqwest::Url) -> bool {
         return !is_alternate_loopback_v4(&host);
     }
     match host.parse::<IpAddr>() {
-        // The ONE internal-address rule, shared with the resolved-address path, so a literal and a
-        // name that resolves to the same address cannot get different answers.
+        // The ONE internal-address rule over an IP literal (every v4/v6 spelling of one address
+        // gets one answer).
         Ok(ip) => ip_is_internal(&ip),
         // DNS name: metadata names blocked above; `localhost` and any external host allowed.
         Err(_) => false,
     }
 }
 
-/// Resolve `host:port` and reject the result if ANY address is internal.
-///
-/// This is the half [`host_is_blocked`] cannot do. That one reads the URL's literal host text, so it
-/// stops `https://169.254.169.254/` and every alternate spelling of it — the misconfiguration and
-/// copy-paste case — but a NAME pointed at an internal address sails straight through, because a
-/// name is not an address until something resolves it.
-///
-/// ANY, not all: a name that resolves to one external and one internal address is rejected outright.
-/// Connecting would be a coin flip between them, and "sometimes reaches the metadata service" is not
-/// a weaker problem than "always does".
-///
-/// A resolution FAILURE is deliberately NOT an error here (`Ok(None)`). A target whose DNS is
-/// briefly down is an availability event, not a security one, and failing the plugin's load over it
-/// would take the whole gateway down for a transient blip. That is safe only because this is not
-/// the last check: every connect resolves again and checks that answer ([`TargetResolver`]).
-fn resolve_and_check(
-    host: &str,
-    port: u16,
-    lookup: &Lookup,
-) -> Result<Option<Vec<SocketAddr>>, String> {
-    let Ok(addrs) = lookup(host, port) else {
-        return Ok(None);
-    };
-    if addrs.is_empty() {
-        return Ok(None);
-    }
-    check_resolved(&addrs)?;
-    Ok(Some(addrs))
-}
-
-/// The ANY rule over a resolved answer: `Err` naming the first internal address, `Ok` when every
-/// address may be dialed (loopback included, the sidecar carve-out). Pure, so the rule is testable
-/// without a resolver.
-pub(crate) fn check_resolved(addrs: &[SocketAddr]) -> Result<(), String> {
-    for addr in addrs {
-        if ip_is_internal(&addr.ip()) {
-            return Err(format!(
-                "resolves to the internal address {} (SSRF guard; loopback sidecars are allowed)",
-                addr.ip()
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The guarded target's answer rules: [`check_resolved`] always, and [`check_plaintext_resolved`]
-/// for a plaintext target.
-fn check_answer(addrs: &[SocketAddr], plaintext: bool) -> Result<(), String> {
-    check_resolved(addrs)?;
-    if plaintext {
-        check_plaintext_resolved(addrs)?;
-    }
-    Ok(())
-}
-
-/// A name lookup, `(host, port) -> addresses`. Production uses [`system_lookup`] (the OS resolver,
-/// the same `getaddrinfo` reqwest's default resolver calls); tests inject a fixed answer so no test
-/// depends on, or waits on, real DNS.
-pub(crate) type Lookup =
-    Arc<dyn Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static>;
-
-/// The OS resolver as a [`Lookup`].
-pub(crate) fn system_lookup() -> Lookup {
-    Arc::new(|host: &str, port: u16| (host, port).to_socket_addrs().map(Iterator::collect))
-}
-
-/// A connect-time refusal by [`TargetResolver`]: the target host's answer was internal (or empty).
-/// A distinct type so `post_op` can recognise it in a reqwest error's source chain.
-#[derive(Debug)]
-pub(crate) struct SsrfRefusal(String);
-
-impl std::fmt::Display for SsrfRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for SsrfRefusal {}
-
-/// The text of the first [`SsrfRefusal`] in `err`'s source chain, if there is one.
-pub(crate) fn ssrf_refusal_in(err: &(dyn std::error::Error + 'static)) -> Option<String> {
-    let mut cur = Some(err);
-    while let Some(e) = cur {
-        if let Some(r) = e.downcast_ref::<SsrfRefusal>() {
-            return Some(r.0.clone());
-        }
-        cur = e.source();
-    }
-    None
-}
-
-/// The forwarding client's DNS resolver. Every name the client dials is resolved through
-/// `lookup`; when the name is the GUARDED target host, the answer must pass [`check_resolved`]
-/// (and be non-empty) or the connect fails with an [`SsrfRefusal`] before anything is dialed. For
-/// a plaintext `http://` target it must also pass [`check_plaintext_resolved`]. Any other name (an
-/// environment proxy's host, say) is resolved unchecked.
-pub(crate) struct TargetResolver {
-    lookup: Lookup,
-    guarded: Option<String>,
-    plaintext: bool,
-}
-
-impl TargetResolver {
-    /// A resolver over `lookup` that checks the answers for `guarded` (a URL host; compared in the
-    /// canonical form [`canonical_name`] gives both sides). `None` checks nothing.
-    pub(crate) fn new(lookup: Lookup, guarded: Option<&str>) -> Self {
-        Self {
-            lookup,
-            guarded: guarded.map(canonical_name),
-            plaintext: false,
-        }
-    }
-
-    /// Mark the guarded target as a plaintext `http://` one: its answers must then be loopback
-    /// only ([`check_plaintext_resolved`]).
-    pub(crate) fn plaintext(mut self, plaintext: bool) -> Self {
-        self.plaintext = plaintext;
-        self
-    }
-}
-
-impl reqwest::dns::Resolve for TargetResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let lookup = Arc::clone(&self.lookup);
-        let name = name.as_str().to_string();
-        let guard = self.guarded.as_deref() == Some(canonical_name(&name).as_str());
-        let plaintext = guard && self.plaintext;
-        Box::pin(async move {
-            type BoxError = Box<dyn std::error::Error + Send + Sync>;
-            let host = name.clone();
-            // Port 0: the connector puts the URL's (or the scheme's) port on every address.
-            let addrs: Vec<SocketAddr> = tokio::task::spawn_blocking(move || lookup(&host, 0))
-                .await
-                .map_err(|e| -> BoxError { Box::new(e) })?
-                .map_err(|e| -> BoxError { Box::new(e) })?;
-            if guard {
-                let refusal = if addrs.is_empty() {
-                    Some(format!(
-                        "host '{name}' resolved to no addresses (SSRF guard)"
-                    ))
-                } else {
-                    check_answer(&addrs, plaintext)
-                        .err()
-                        .map(|why| format!("host '{name}' {why}"))
-                };
-                if let Some(refusal) = refusal {
-                    return Err(Box::new(SsrfRefusal(refusal)) as BoxError);
-                }
-            }
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
-/// A host name in the form the guard compares: ASCII-lowercased, one trailing FQDN-root `.` dropped.
-fn canonical_name(host: &str) -> String {
-    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
-}
-
-/// The internal-address predicate, over an IP address: a resolved answer, or the literal host
-/// [`host_is_blocked`] parsed. Both paths call this one function, so a name and a literal cannot
-/// disagree about the same address — the loopback carve-out for sidecars included.
+/// The internal-address predicate over the literal host [`host_is_blocked`] parsed, the loopback
+/// carve-out for sidecars included.
 fn ip_is_internal(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => !v4.is_loopback() && is_internal_v4(v4),
@@ -475,38 +294,9 @@ fn ip_is_internal(ip: &IpAddr) -> bool {
     }
 }
 
-/// The open/configure resolve check for a validated `url`: `Err` when its host is a name that
-/// resolves to an internal address, else the approved answer (`None` when the host is an IP literal,
-/// already checked textually, or did not resolve).
-///
-/// This is the EARLY NACK, so a misconfigured name fails the load or the push rather than every
-/// request. It is not what stops a connect: the answer is not kept, and every connect resolves and
-/// checks again through [`TargetResolver`].
-pub(crate) fn checked_addrs_for(
-    url: &reqwest::Url,
-    lookup: &Lookup,
-) -> Result<Option<Vec<SocketAddr>>, String> {
-    let Some(host) = host_of(url) else {
-        return Ok(None);
-    };
-    if host.parse::<IpAddr>().is_ok() || is_alternate_ipv4_encoding(&host) {
-        return Ok(None); // an IP literal: `host_is_blocked` already ruled on it
-    }
-    let port = url.port_or_known_default().unwrap_or(443);
-    let addrs = resolve_and_check(&host, port, lookup);
-    // A plaintext target's name is allowed only as a loopback name; its answer must agree.
-    let addrs = match addrs {
-        Ok(Some(addrs)) if scheme_is(url, "http") => {
-            check_plaintext_resolved(&addrs).map(|()| Some(addrs))
-        }
-        other => other,
-    };
-    addrs.map_err(|why| format!("webrequest: settings.url host '{host}' {why}"))
-}
-
 /// The URL's host with the IPv6 `[...]` brackets and a single trailing FQDN-root `.` stripped, so the
 /// predicates see the same canonical form the OTLP/webhook guard did. Returns `None` for a hostless URL.
-fn host_of(url: &reqwest::Url) -> Option<String> {
+fn host_of(url: &url::Url) -> Option<String> {
     let host = url.host_str()?;
     let host = host.strip_prefix('[').unwrap_or(host);
     let host = host.strip_suffix(']').unwrap_or(host);
@@ -515,18 +305,17 @@ fn host_of(url: &reqwest::Url) -> Option<String> {
 }
 
 /// Case-insensitive equality of a URL's scheme to `want` (an ASCII-lowercase literal).
-fn scheme_is(url: &reqwest::Url, want: &str) -> bool {
+fn scheme_is(url: &url::Url, want: &str) -> bool {
     url.scheme().eq_ignore_ascii_case(want)
 }
 
-/// Validate the operator-configured target URL against the SSRF guard, returning the parsed URL on
-/// success or a stable, credential-free error on rejection. Accepts `https://` for any allowed host
-/// and `http://` ONLY for a loopback host (parity with the old webhook policy: a plaintext hop must
-/// stay on loopback so a payload — which may carry granted prompt/user content — is never sent in
-/// cleartext to a remote host). Every error echoes the URL through [`reportable_url`], so neither an
-/// embedded `user:pass@` nor a `?token=` query reaches it.
-pub(crate) fn validate_target_url(raw: &str) -> Result<reqwest::Url, String> {
-    let url = reqwest::Url::parse(raw)
+/// Validate the operator-configured target URL against the SSRF guard, returning the canonicalized URL
+/// string on success or a stable, credential-free error on rejection. Accepts `https://` for any
+/// allowed host and `http://` ONLY for a loopback host (parity with the old webhook policy: a plaintext
+/// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
+/// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
+pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
+    let url = url::Url::parse(raw)
         .map_err(|e| format!("webrequest: settings.url is not a valid URL: {e}"))?;
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
@@ -555,8 +344,8 @@ pub(crate) fn validate_target_url(raw: &str) -> Result<reqwest::Url, String> {
 /// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is
 /// what every URL echo uses; this alone leaves a `?token=` query in place.
 ///
-/// Operates on the ALREADY-PARSED [`reqwest::Url`] rather than doing textual `find("://")` surgery on
-/// the raw input string. This matters: WHATWG URL parsing (which both `reqwest::Url::parse` and every
+/// Operates on the ALREADY-PARSED [`url::Url`] rather than doing textual `find("://")` surgery on
+/// the raw input string. This matters: WHATWG URL parsing (which both `url::Url::parse` and every
 /// real HTTP client use) silently strips embedded TAB/CR/LF from a URL before establishing the scheme
 /// separator, so a raw string like `"https:\t//svc:hunter2@10.0.0.1/route"` parses and connects
 /// completely normally (host `10.0.0.1`, userinfo `svc:hunter2`) even though the LITERAL substring
@@ -564,7 +353,7 @@ pub(crate) fn validate_target_url(raw: &str) -> Result<reqwest::Url, String> {
 /// it is a silent no-op — and the unmasked credential then lands verbatim in the SSRF-rejection error
 /// string. Masking the parsed `Url`'s username/password fields directly is correct regardless of what
 /// whitespace or control characters the raw input used to spell the scheme separator.
-pub(crate) fn mask_userinfo(url: &reqwest::Url) -> String {
+pub fn mask_userinfo(url: &url::Url) -> String {
     if url.username().is_empty() && url.password().is_none() {
         return url.to_string();
     }
@@ -588,7 +377,7 @@ pub(crate) fn mask_userinfo(url: &reqwest::Url) -> String {
 ///
 /// The fragment goes too: it never reaches the wire on an HTTP request, so it can only be noise or
 /// an accident, and there is no reason to echo it.
-pub(crate) fn reportable_url(url: &reqwest::Url) -> String {
+pub fn reportable_url(url: &url::Url) -> String {
     let mut safe = url.clone();
     safe.set_fragment(None);
     let had_query = safe.query().is_some();
