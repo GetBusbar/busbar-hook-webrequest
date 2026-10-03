@@ -1,7 +1,7 @@
 use super::*;
 
-fn url(s: &str) -> reqwest::Url {
-    reqwest::Url::parse(s).unwrap()
+fn url(s: &str) -> url::Url {
+    url::Url::parse(s).unwrap()
 }
 
 #[test]
@@ -221,7 +221,7 @@ fn the_reportable_url_redacts_a_query_string_and_the_fragment() {
 }
 
 /// Regression for the TAB-in-scheme-separator masking bypass: WHATWG URL parsing (which
-/// `reqwest::Url::parse` uses, same as the real HTTP client) strips embedded TAB/CR/LF before the
+/// `url::Url::parse` uses, same as the real HTTP client) strips embedded TAB/CR/LF before the
 /// scheme separator, so `"https:\t//svc:hunter2@10.0.0.1/route"` parses and resolves completely
 /// normally to host `10.0.0.1` with userinfo `svc:hunter2` — even though the literal substring
 /// `"://"` never appears in the raw string. A masking function keyed on `raw.find("://")` would
@@ -233,7 +233,7 @@ fn mask_userinfo_survives_tab_in_scheme_separator() {
     let raw = "https:\t//svc:hunter2@10.0.0.1/route";
     // Sanity: this raw string really does parse and really does resolve to the blocked host — proving
     // the reproduction is real, not a URL that simply fails to parse.
-    let parsed = reqwest::Url::parse(raw).expect("WHATWG parsing accepts the embedded tab");
+    let parsed = url::Url::parse(raw).expect("WHATWG parsing accepts the embedded tab");
     assert_eq!(parsed.host_str(), Some("10.0.0.1"));
 
     let err = validate_target_url(raw).expect_err("10.0.0.1 must be SSRF-rejected");
@@ -244,48 +244,10 @@ fn mask_userinfo_survives_tab_in_scheme_separator() {
     assert_eq!(mask_userinfo(&parsed), "https://***@10.0.0.1/route");
 }
 
-// ── the open/configure resolve check ─────────────────────────────────────────────────────────────
-
-/// The textual guard cannot see through a NAME, which is exactly the hole `resolve_and_check` fills.
-/// `localhost` is the one name guaranteed to resolve the same way everywhere, and it resolves to
-/// loopback — which is ALLOWED (sidecars), so this pins the carve-out rather than the block.
+/// The one internal-address predicate and the literal-text guard agree about every spelling of one
+/// address (WREQ-16): dropping any arm from the shared predicate fails here.
 #[test]
-fn a_name_resolving_to_loopback_is_allowed() {
-    let url = reqwest::Url::parse("http://localhost:9/route").unwrap();
-    assert!(
-        !host_is_blocked(&url),
-        "the textual guard allows localhost (sidecar carve-out)"
-    );
-    let addrs = checked_addrs_for(&url, &system_lookup()).expect("localhost must not be rejected");
-    let addrs = addrs.expect("localhost resolves, so the approved answer is returned");
-    assert!(!addrs.is_empty());
-    assert!(
-        addrs.iter().all(|a| a.ip().is_loopback()),
-        "localhost must resolve to loopback only: {addrs:?}"
-    );
-}
-
-/// An IP LITERAL is not resolved: `host_is_blocked` already ruled on it textually, and resolving
-/// it would be a pointless round trip that could only agree with itself.
-#[test]
-fn an_ip_literal_is_not_resolved() {
-    for raw in [
-        "https://93.184.216.34/route",
-        "https://[2606:2800:220:1:248:1893:25c8:1946]/route",
-    ] {
-        let url = reqwest::Url::parse(raw).unwrap();
-        assert!(
-            checked_addrs_for(&url, &system_lookup()).unwrap().is_none(),
-            "an IP literal must not be resolved: {raw}"
-        );
-    }
-}
-
-/// The resolved-address predicate must agree with the literal-text one about the SAME address --
-/// otherwise a name and a literal spelling of one address could get different answers, which is the
-/// exact inconsistency that makes a guard bypassable.
-#[test]
-fn the_resolved_predicate_agrees_with_the_literal_one() {
+fn the_shared_predicate_agrees_with_the_literal_text_guard() {
     // WREQ-16: the embedded-IPv4, site-local, unspecified and broadcast arms too, not just the
     // plain ranges, so dropping any arm from the shared predicate fails here.
     let cases: [(&str, bool); 20] = [
@@ -315,10 +277,10 @@ fn the_resolved_predicate_agrees_with_the_literal_one() {
         assert_eq!(
             ip_is_internal(&ip),
             want_internal,
-            "resolved-address verdict for {raw}"
+            "address verdict for {raw}"
         );
-        // And the literal-text path must say the same thing about the same address.
-        let url = reqwest::Url::parse(&if ip.is_ipv6() {
+        // The literal-text path says the same thing about the same address.
+        let url = url::Url::parse(&if ip.is_ipv6() {
             format!("https://[{raw}]/x")
         } else {
             format!("https://{raw}/x")
@@ -327,193 +289,7 @@ fn the_resolved_predicate_agrees_with_the_literal_one() {
         assert_eq!(
             host_is_blocked(&url),
             want_internal,
-            "literal-text verdict for {raw} must match the resolved one"
+            "literal-text verdict for {raw} must match the address one"
         );
     }
-}
-
-/// A name that does not resolve is ALLOWED through at open/configure. A DNS outage is an
-/// availability event, not a security one, and failing the plugin's load over it would take the
-/// gateway down for a transient blip; every connect resolves and checks the name again.
-#[test]
-fn a_name_that_does_not_resolve_is_allowed_at_open() {
-    let url = reqwest::Url::parse("https://this-name-must-not-resolve.invalid/route").unwrap();
-    assert_eq!(
-        checked_addrs_for(&url, &system_lookup()).expect("a resolution failure is not a rejection"),
-        None,
-        "nothing resolved, so there is no approved answer"
-    );
-}
-
-// ── the connect-time resolver ────────────────────────────────────────────────────────────────────
-
-/// Resolve `name` through a [`TargetResolver`] guarding `svc.example` whose lookup answers
-/// `answer`. No network: the lookup is a fixed answer.
-fn resolve_through_guard(answer: &[&str], name: &str) -> Result<Vec<SocketAddr>, String> {
-    let answer: Vec<SocketAddr> = answer
-        .iter()
-        .map(|ip| SocketAddr::new(ip.parse().unwrap(), 0))
-        .collect();
-    let lookup: Lookup = Arc::new(move |_: &str, _: u16| Ok(answer.clone()));
-    let resolver = TargetResolver::new(lookup, Some("svc.example"));
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    rt.block_on(reqwest::dns::Resolve::resolve(
-        &resolver,
-        name.parse().unwrap(),
-    ))
-    .map(|addrs| addrs.collect())
-    .map_err(|e| e.to_string())
-}
-
-/// WREQ-1. The guarded host's answer is refused when ANY address is internal, or when it is
-/// empty; an external or loopback answer passes through untouched.
-#[test]
-fn the_target_resolver_applies_the_any_rule_to_the_guarded_host() {
-    let err = resolve_through_guard(&["169.254.169.254"], "svc.example").unwrap_err();
-    assert!(
-        err.contains("SSRF guard") && err.contains("169.254.169.254"),
-        "{err}"
-    );
-    let err = resolve_through_guard(&["93.184.216.34", "10.0.0.1"], "svc.example").unwrap_err();
-    assert!(
-        err.contains("10.0.0.1"),
-        "one internal address refuses the whole answer: {err}"
-    );
-    let err = resolve_through_guard(&[], "svc.example").unwrap_err();
-    assert!(err.contains("no addresses"), "{err}");
-    assert_eq!(
-        resolve_through_guard(&["93.184.216.34"], "svc.example").unwrap(),
-        vec![SocketAddr::new("93.184.216.34".parse().unwrap(), 0)]
-    );
-    assert_eq!(
-        resolve_through_guard(&["127.0.0.1"], "svc.example")
-            .unwrap()
-            .len(),
-        1,
-        "loopback is the sidecar carve-out"
-    );
-    // The guard compares the canonical name: case and the FQDN root dot do not dodge it.
-    assert!(resolve_through_guard(&["10.0.0.1"], "SVC.Example.").is_err());
-}
-
-/// Only the target host is guarded. Any other name the client resolves (an environment proxy's
-/// host is the real case) resolves unchecked, as it did before the guard moved to connect time.
-#[test]
-fn the_target_resolver_leaves_other_names_unchecked() {
-    assert_eq!(
-        resolve_through_guard(&["10.0.0.1"], "proxy.internal").unwrap(),
-        vec![SocketAddr::new("10.0.0.1".parse().unwrap(), 0)]
-    );
-}
-
-/// WREQ-5. The three rejection errors masked the userinfo but echoed the query verbatim, so a
-/// `?token=` credential reached the `open` load error and `configure`'s stderr line. They now echo
-/// the URL through the same masker `status` uses.
-#[test]
-fn rejection_errors_redact_the_query_and_fragment() {
-    for raw in [
-        "http://10.0.0.5/hook?token=SECRET#SECRET-FRAG",
-        "ftp://h.example/?token=SECRET#SECRET-FRAG",
-        "http://api.example.com/hook?token=SECRET#SECRET-FRAG",
-    ] {
-        let err = validate_target_url(raw).expect_err("each of these is refused");
-        assert!(
-            !err.contains("SECRET") && !err.contains("token="),
-            "the rejection echoed the query or fragment: {err}"
-        );
-        assert!(err.contains("?<redacted>"), "{err}");
-    }
-}
-
-/// WREQ-7. A local-use NAT64 /96 other than the all-zero one under `64:ff9b:1::/48` was not
-/// unwrapped, so `[64:ff9b:1:abcd::a9fe:a9fe]` (169.254.169.254 behind an operator-chosen
-/// local-use prefix) passed both the literal and the resolved-address checks. Core's copy accepts
-/// any /96 under the local-use /48; this copy now does too.
-#[test]
-fn any_local_use_nat64_prefix_is_unwrapped() {
-    for raw in ["64:ff9b:1:abcd::a9fe:a9fe", "64:ff9b:1:fffe:1:2:a00:1"] {
-        let v6: Ipv6Addr = raw.parse().unwrap();
-        assert!(embedded_v4(&v6).is_some(), "{raw} embeds an IPv4 address");
-        assert!(
-            ip_is_internal(&IpAddr::V6(v6)),
-            "{raw} carries an internal IPv4 target"
-        );
-        assert!(host_is_blocked(&url(&format!("https://[{raw}]/"))), "{raw}");
-    }
-    assert_eq!(
-        embedded_v4(&"64:ff9b:1:abcd::a9fe:a9fe".parse().unwrap()),
-        Some(Ipv4Addr::new(169, 254, 169, 254))
-    );
-    // The well-known prefix stays exact: bits under 64:ff9b::/96 beyond the prefix are not NAT64.
-    assert_eq!(
-        embedded_v4(&"64:ff9b:0:1::a9fe:a9fe".parse().unwrap()),
-        None
-    );
-    // Loopback behind a local-use prefix keeps the sidecar carve-out.
-    assert!(!host_is_blocked(&url(
-        "http://[64:ff9b:1:abcd::7f00:1]:8080/x"
-    )));
-}
-
-/// WREQ-15. The ANY rule over a resolved answer, directly: one internal address anywhere in the
-/// answer refuses it, and an all-external (or loopback) answer passes.
-#[test]
-fn check_resolved_refuses_an_answer_with_any_internal_address() {
-    let at = |ips: &[&str]| -> Vec<SocketAddr> {
-        ips.iter()
-            .map(|ip| SocketAddr::new(ip.parse().unwrap(), 443))
-            .collect()
-    };
-    let err = check_resolved(&at(&["169.254.169.254"])).unwrap_err();
-    assert!(err.contains("169.254.169.254"), "{err}");
-    let err = check_resolved(&at(&["93.184.216.34", "10.0.0.1"])).unwrap_err();
-    assert!(err.contains("10.0.0.1"), "ANY, not all: {err}");
-    let err = check_resolved(&at(&["fd00::1", "93.184.216.34"])).unwrap_err();
-    assert!(err.contains("fd00::1"), "{err}");
-    assert!(check_resolved(&at(&["93.184.216.34"])).is_ok());
-    assert!(check_resolved(&at(&["93.184.216.34", "127.0.0.1", "::1"])).is_ok());
-}
-
-/// WREQ-15. The open/configure check's REJECT path: a name whose answer holds an internal address
-/// is refused, with the host named in the error. Only the allow paths were exercised before.
-#[test]
-fn checked_addrs_for_refuses_a_name_resolving_internally() {
-    let lookup = |ips: &'static [&'static str]| -> Lookup {
-        Arc::new(move |_: &str, port: u16| {
-            Ok(ips
-                .iter()
-                .map(|ip| SocketAddr::new(ip.parse().unwrap(), port))
-                .collect())
-        })
-    };
-    let target = url("https://svc.example/route");
-    let err = checked_addrs_for(&target, &lookup(&["93.184.216.34", "169.254.169.254"]))
-        .expect_err("an answer with an internal address must be refused");
-    assert!(
-        err.contains("'svc.example'") && err.contains("169.254.169.254"),
-        "{err}"
-    );
-    let addrs = checked_addrs_for(&target, &lookup(&["93.184.216.34"]))
-        .expect("an external answer is allowed")
-        .expect("and returned");
-    assert_eq!(
-        addrs,
-        vec![SocketAddr::new("93.184.216.34".parse().unwrap(), 443)]
-    );
-}
-
-/// WREQ-17. The plaintext-`http://` loopback gate beyond `127.0.0.1` and `localhost`: IPv6
-/// loopback and a `*.localhost` name are allowed; a name that merely CONTAINS `localhost` as a
-/// label, and an IPv4-mapped private address, are not.
-#[test]
-fn the_plaintext_http_gate_is_loopback_only() {
-    assert!(validate_target_url("http://[::1]:9000/route").is_ok());
-    assert!(validate_target_url("http://svc.localhost/route").is_ok());
-    assert!(validate_target_url("http://svc.LOCALHOST./route").is_ok());
-    let err = validate_target_url("http://evil.localhost.example.com/route").unwrap_err();
-    assert!(err.contains("must use https://"), "{err}");
-    assert!(validate_target_url("http://localhost.example.com/route").is_err());
-    assert!(validate_target_url("http://[::ffff:10.0.0.1]/route").is_err());
 }

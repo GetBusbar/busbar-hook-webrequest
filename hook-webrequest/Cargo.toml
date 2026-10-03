@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-hook-webrequest"
+version = "1.5.0"
+publish = false            # linked into busbar at a pinned rev, or shipped as a signed tarball; never to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The webrequest hook's logic and its hook-kind door: a transparent HTTP forwarder that POSTs each hook op envelope to an operator-configured URL through a declared egress need and returns the capped JSON reply. No socket, no TLS, no runtime of its own."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The ONE busbar crate this plugin names (contract only; the plugin SDK is
+# `busbar_contract::abi::sdk`): its door is the hook kind's (`hook_door!`). A git dependency on
+# GetBusbar/busbar pinned to the rev in `.busbar-ref` field 1.
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "4d473bbe8ca44b4af69606f18bf7da1ac8d0353a" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The one URL grammar (WHATWG), the same crate reqwest parsed the operator's URL with in 1.5.5.
+url = "2"
+# Status-code reason phrases for the 1.5.5 error text.
+http = "1"
+
+[dev-dependencies]
+# The byte-identity oracle: the request bytes this crate writes are compared with what the 1.5.5
+# client (reqwest, the version 1.5.5 shipped) put on the wire to a raw listener. Dev only.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }
