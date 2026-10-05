@@ -27,7 +27,7 @@ jobs:
     needs: ci
     uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@4abda5b63ee49c63b98b390de4ef4bfb72e7fd0e
     with:
-      plugin_crate: busbar-hook-webrequest
+      plugin_crate: busbar-hook-webrequest-plugin
       manifest_name: busbar-hook-webrequest
       plugin_alias: webrequest
       plugin_kind: hook
