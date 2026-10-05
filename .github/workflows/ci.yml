@@ -19,13 +19,13 @@ permissions:
 
 jobs:
   ci:
-    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@e1d3d8b097201859751d77208e66249d98b50a4b
+    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@4abda5b63ee49c63b98b390de4ef4bfb72e7fd0e
     with:
       service: none
       busbar_checkout: true
       macos_test: "cargo test --workspace --locked"
       extra_test: ""
-      plugin_crate: busbar-hook-webrequest
+      plugin_crate: busbar-hook-webrequest-plugin
       plugin_kind: hook
       plugin_alias: webrequest
     secrets: inherit
