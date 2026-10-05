@@ -12,7 +12,7 @@ Thanks for your interest in improving `busbar-hook-webrequest`.
 
 ## Layout
 
-Every busbar plugin repo has the same skeleton. This one is still a single crate at the repo root: `busbar-hook-webrequest` is the `cdylib` that packages the plugin as a droppable `kind: hook` plugin. busbar itself is a git dependency
+Every busbar plugin repo has the same skeleton. This one is a two-crate Cargo workspace: `hook-webrequest/` holds the plugin's logic and `hook-webrequest-plugin/` is the thin `cdylib` that packages it as a droppable `kind: hook` plugin. busbar itself is a git dependency
 pinned to the commit in `.busbar-ref`. The CI, release, dependency and lint configuration
 are rendered by `busbar-release plugin sync` from the fleet template (GetBusbar/busbar-release
 `template/`), [busbar's plugin registry](https://github.com/GetBusbar/busbar/blob/main/plugins.yaml)

@@ -6,7 +6,7 @@ name: consumer-verify
 
 on:
   schedule:
-    - cron: "6 9 * * *"
+    - cron: "20 9 * * *"
   workflow_dispatch:
     inputs:
       version:
