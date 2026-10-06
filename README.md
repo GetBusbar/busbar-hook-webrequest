@@ -5,7 +5,7 @@ A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/
 
 | kind | alias | crate | busbar | license |
 |---|---|---|---|---|
-| `hook` | `webrequest` | `busbar-hook-webrequest-plugin` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
+| `hook` | `webrequest` | `busbar-hook-webrequest` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
 
 [![ci](https://github.com/GetBusbar/busbar-hook-webrequest/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-hook-webrequest/actions/workflows/ci.yml)
 <!-- fleet:header:end -->

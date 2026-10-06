@@ -5,7 +5,7 @@
 #
 # One repo per plugin, every repo a twin: this workspace is exactly two crates, the logic (the rlib a
 # busbar build links) and the thin cdylib that packages it as a droppable `kind: hook` plugin
-# (crate `busbar-hook-webrequest-plugin`). Its one busbar dependency is busbar-contract (busbar-plugin-loader is dev-only,
+# (crate `busbar-hook-webrequest`). Its one busbar dependency is busbar-contract (busbar-plugin-loader is dev-only,
 # for the both-ways conformance test), both git dependencies on GetBusbar/busbar at the pin in
 # `.busbar-ref`; no sibling-checkout path dependency ships in any manifest.
 #

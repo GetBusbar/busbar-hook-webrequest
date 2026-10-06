@@ -25,7 +25,7 @@ jobs:
       busbar_checkout: true
       macos_test: "cargo test --workspace --locked"
       extra_test: ""
-      plugin_crate: busbar-hook-webrequest-plugin
+      plugin_crate: busbar-hook-webrequest
       plugin_kind: hook
       plugin_alias: webrequest
     secrets: inherit
