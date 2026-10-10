@@ -1,4 +1,4 @@
-# RENDERED by `busbar-release plugin sync busbar-hook-webrequest` from GetBusbar/busbar-release template/; a hand
+# RENDERED by `busbar-release plugin heal busbar-hook-webrequest` from GetBusbar/busbar-release template/; a hand
 # edit is overwritten by the next sync. On a v* tag: this repo's own ci.yml (the fleet harness) on the
 # tagged commit, then busbar's plugin-release.yml (build, sign, pack, publish), then the consumer
 # verification of what was published, each at the busbar commit this repo pins.
@@ -25,7 +25,7 @@ jobs:
     secrets: inherit
   release:
     needs: ci
-    uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@4abda5b63ee49c63b98b390de4ef4bfb72e7fd0e
+    uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@7356bbfb6baeb0e9245a59dc74f8b4bfadb2c5a4
     with:
       plugin_crate: busbar-hook-webrequest-plugin
       manifest_name: busbar-hook-webrequest
@@ -33,15 +33,16 @@ jobs:
       plugin_kind: hook
       asset_prefix: busbar-hook-webrequest
       description: "A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/notify/configure/describe/status) to an operator-configured URL and returns the capped JSON reply: a busbar first-party kind:hook plugin (dlopen cdylib)."
-      lib_only: true
+      lib_only: false
       needs_prompt: "rw"
       needs_user: "ro"
       declares_file: "declares.json"
+      former_names: "busbar-webrequest"
     secrets: inherit
   consumer-verify:
     needs: release
     if: ${{ !cancelled() }}
-    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@4abda5b63ee49c63b98b390de4ef4bfb72e7fd0e
+    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@7356bbfb6baeb0e9245a59dc74f8b4bfadb2c5a4
     with:
       version: ${{ github.ref_name }}
       asset_prefix: busbar-hook-webrequest
