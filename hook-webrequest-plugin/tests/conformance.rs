@@ -50,7 +50,7 @@ use busbar_contract::transport::ConnFacts;
 use busbar_contract::SignalBag;
 use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Called,
+    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Called, ConnTable,
     DispatchConfig, Dispatcher, Done, Frame, InFrame, LinkedRow, NoSink, OutFrame, Plugin,
 };
 use serde_json::{json, Value};
@@ -169,7 +169,14 @@ impl Conns for Upstream {
         self.reads.lock().unwrap().insert(id, 0);
         Ok(ConnId(id))
     }
-    fn write(&self, _: InstanceId, _: ConnId, _: &[u8], _: bool) -> Result<usize, ConnError> {
+    fn write(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
         Err(ConnError::Closed)
     }
     fn read(
@@ -239,6 +246,7 @@ impl DeclaredConns for Upstream {
         _: NeedId,
         _: &ReadNeed,
         _: Option<&str>,
+        _: Option<&str>,
     ) -> Result<(), ConnError> {
         Ok(())
     }
@@ -299,7 +307,7 @@ impl Arm {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: Some(conns),
+            conns: ConnTable::Host(conns),
         };
         let plugin = match self {
             Arm::Linked => load_linked::<Hook>(
@@ -438,6 +446,7 @@ fn request() -> RoutingRequest<'static> {
         }),
         identity: None,
         signals: SignalBag::new(),
+        session: None,
     }
 }
 
