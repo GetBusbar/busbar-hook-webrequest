@@ -1,0 +1,53 @@
+{
+  "settings": { "url": "https://localhost:53586/hook" },
+  "dialing_steps": ["forward: decide over three"],
+  "hook": {
+    "bad_settings": [
+      "not json",
+      "{\"url\": \"\"}",
+      "{\"url\": 5}",
+      "{\"url\": \"http://169.254.169.254/\"}"
+    ],
+    "order_cap": 2,
+    "requests": [
+      {
+        "label": "forward: decide over three",
+        "op": "decide",
+        "candidates": [
+          { "idx": 3, "cost_per_mtok": 5.0, "latency_ms": 200.0, "available_concurrency": 2 },
+          { "idx": 9, "cost_per_mtok": 2.0, "latency_ms": 50.0, "available_concurrency": 1 },
+          { "idx": 7, "latency_ms": 90.0, "available_concurrency": 4, "rate_headroom": 0.8 }
+        ],
+        "expect": { "verb": "prefer", "order": [7, 9, 3] }
+      },
+      {
+        "label": "forward: transform, nothing to rewrite",
+        "op": "transform",
+        "candidates": [],
+        "expect": { "verb": "abstain" }
+      },
+      {
+        "label": "forward: decide over two",
+        "op": "decide",
+        "candidates": [
+          { "idx": 3, "cost_per_mtok": 5.0, "available_concurrency": 2 },
+          { "idx": 9, "cost_per_mtok": 2.0, "available_concurrency": 1 }
+        ],
+        "expect": { "verb": "prefer", "order": [9, 3] }
+      }
+    ],
+    "refresh": {
+      "settings": { "url": "https://localhost:53586/hook", "timeout_ms": 2000 },
+      "request": {
+        "label": "forward: decide over three, refreshed",
+        "op": "decide",
+        "candidates": [
+          { "idx": 3, "cost_per_mtok": 5.0, "available_concurrency": 2 },
+          { "idx": 9, "cost_per_mtok": 2.0, "available_concurrency": 1 },
+          { "idx": 7, "available_concurrency": 4 }
+        ],
+        "expect": { "verb": "prefer", "order": [7, 9, 3] }
+      }
+    }
+  }
+}
