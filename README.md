@@ -14,7 +14,7 @@ A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/
 
 [![Coverage](https://codecov.io/gh/GetBusbar/busbar-hook-webrequest/branch/dev/graph/badge.svg)](https://codecov.io/gh/GetBusbar/busbar-hook-webrequest)
 
-**v1.5.0.** The first-party, signed `kind: hook` plugin for
+**v1.0.0.** The first-party, signed `kind: hook` plugin for
 [busbar](https://getbusbar.com): a transparent HTTP forwarder that POSTs
 each hook op envelope (`decide` / `transform` / `notify` / `configure` /
 `describe` / `status`) to an operator-configured URL and returns the
@@ -115,10 +115,10 @@ in busbar for the full reference (`busbar-plugin-pack` is built with
 BUSBAR_SIGN_KEY=<signing key> busbar-plugin-pack pack \
     --lib target/release/libbusbar_hook_webrequest.so \
     --name busbar-hook-webrequest --alias webrequest --kind hook \
-    --version 1.5.0 --publisher busbar \
+    --version 1.0.0 --publisher busbar \
     --license Apache-2.0 \
     --needs-prompt rw --needs-user ro \
-    --out busbar-hook-webrequest-1.5.0-x86_64-linux.tar.gz
+    --out busbar-hook-webrequest-1.0.0-x86_64-linux.tar.gz
 ```
 
 `--needs-prompt` / `--needs-user` declare this plugin's grant intent in
