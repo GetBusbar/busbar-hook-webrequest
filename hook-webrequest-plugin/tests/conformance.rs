@@ -694,3 +694,71 @@ fn red_a_ticketless_decide_fails_at_once() {
     );
     assert!(b.upstream.sent.lock().unwrap().is_empty());
 }
+
+// ── THE PUBLISHED CONFORMANCE SUITE ─────────────────────────────────────────────────────────────
+//
+// busbar's suite, at the commit this repo pins (`.busbar-ref`), drives the forwarder two ways
+// through the one loader: LINKED (the logic crate's `door::door`) and DROPPED IN (this crate's
+// built cdylib), over the hook kind's script with the inputs in `conformance.json` (refused
+// settings, `decide` and `transform` forwarded to the far end and its reply lowered, the short
+// buffer's ONE re-call, a refresh); every step's crossings exactly at the script's pin, the two
+// folds equal, and the suite's RED arms kept. `plugin-ci.yml` runs it under `--release`.
+//
+// THE HOST (ARCHITECT Q-P4-9): the forwarder's `http` need is served by busbar's own connector,
+// composed as the root composes it (`conformance_host`, rendered by the fleet template), and every
+// op reaches a REAL local HTTPS endpoint (the suite's far end, its certificate chained to the
+// suite's test anchors, which only the host trusts): the URL in `conformance.json`'s settings.
+
+#[path = "support/conformance_host.rs"]
+mod conformance_host;
+
+/// The far end's answer, once a whole request (its head, then the `content-length` body it
+/// states) has been read: to a `decide`, a 1.5.5 `order` reply naming the candidates it was sent in
+/// reverse; to anything else, `{}` (abstain).
+fn forwarded(seen: &[u8]) -> Option<Vec<u8>> {
+    let end = seen.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+    let head = String::from_utf8_lossy(&seen[..end]).to_ascii_lowercase();
+    let len = head
+        .lines()
+        .find_map(|l| l.strip_prefix("content-length:"))
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let body = seen.get(end..end + len)?;
+    let envelope: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let reply = if envelope["op"] == "decide" {
+        let order: Vec<Value> = envelope["candidates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .map(|c| c["idx"].clone())
+            .collect();
+        json!({ "order": order }).to_string()
+    } else {
+        "{}".to_string()
+    };
+    Some(
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}",
+            reply.len()
+        )
+        .into_bytes(),
+    )
+}
+
+/// The host the suite binds the forwarder over, with the far end its settings name listening.
+fn suite_host(
+    wake: Arc<dyn Fn(u64) + Send + Sync>,
+    anchors: Option<&str>,
+) -> Arc<dyn DeclaredConns> {
+    conformance_host::far_end(forwarded);
+    conformance_host::host(wake, anchors)
+}
+
+busbar_plugin_loader::conformance_suite! {
+    door: busbar_hook_webrequest::door::door,
+    cdylib: "busbar_hook_webrequest_plugin",
+    inputs: include_str!("conformance.json"),
+    host: suite_host,
+    tls: conformance_host::anchors(),
+}
