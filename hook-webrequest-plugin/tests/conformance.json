@@ -3,6 +3,7 @@
   "dialing_steps": ["forward: decide over three"],
   "hook": {
     "bad_settings": [
+      "not json",
       "{\"url\": \"\"}",
       "{\"url\": 5}",
       "{\"url\": \"http://169.254.169.254/\"}"
