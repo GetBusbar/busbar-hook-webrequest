@@ -50,7 +50,7 @@ use busbar_contract::transport::ConnFacts;
 use busbar_contract::SignalBag;
 use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Called,
+    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Called, ConnTable,
     DispatchConfig, Dispatcher, Done, Frame, InFrame, LinkedRow, NoSink, OutFrame, Plugin,
 };
 use serde_json::{json, Value};
@@ -97,7 +97,7 @@ struct Sent {
 }
 
 /// The dispatcher's connection-table wake.
-type Wake = Arc<dyn Fn(u64) + Send + Sync>;
+type Wake = busbar_contract::conn::ConnWake;
 
 /// THE FAR END, as a connection table: every need is framed; an open is the whole request (kept
 /// in `sent`); each reply is the scripted `(status, reason, body)`, its first read PENDING with
@@ -147,7 +147,9 @@ fn piece(kind: PieceKind, len: usize) -> Piece {
         status_code: None,
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason: None,
+        declared_len: None,
     }
 }
 
@@ -169,12 +171,19 @@ impl Conns for Upstream {
         self.reads.lock().unwrap().insert(id, 0);
         Ok(ConnId(id))
     }
-    fn write(&self, _: InstanceId, _: ConnId, _: &[u8], _: bool) -> Result<usize, ConnError> {
+    fn write(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
         Err(ConnError::Closed)
     }
     fn read(
         &self,
-        _: InstanceId,
+        caller: InstanceId,
         conn: ConnId,
         ticket: u64,
         buf: &mut [u8],
@@ -198,7 +207,7 @@ impl Conns for Upstream {
                     .expect("the table is armed");
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(5));
-                    wake(ticket);
+                    wake(caller, ticket);
                 });
                 Err(ConnError::Pending)
             }
@@ -238,6 +247,7 @@ impl DeclaredConns for Upstream {
         _: InstanceId,
         _: NeedId,
         _: &ReadNeed,
+        _: Option<&str>,
         _: Option<&str>,
     ) -> Result<(), ConnError> {
         Ok(())
@@ -299,7 +309,7 @@ impl Arm {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: Some(conns),
+            conns: ConnTable::Host(conns),
         };
         let plugin = match self {
             Arm::Linked => load_linked::<Hook>(
@@ -438,6 +448,7 @@ fn request() -> RoutingRequest<'static> {
         }),
         identity: None,
         signals: SignalBag::new(),
+        session: None,
     }
 }
 
