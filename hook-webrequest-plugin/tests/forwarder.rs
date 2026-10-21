@@ -376,7 +376,7 @@ impl Bound {
 
     /// A leased JSON blob's document, then its lease released.
     fn leased(&self, blob: Blob, lease: u64) -> Value {
-        assert!(!blob.is_absent() && lease != 0, "a leased document");
+        assert!(!blob.ptr().is_null() && lease != 0, "a leased document");
         // SAFETY: the plugin's leased bytes, held until the release below.
         #[allow(unused_unsafe)]
         let bytes = unsafe { blob.bytes() }.to_vec();
