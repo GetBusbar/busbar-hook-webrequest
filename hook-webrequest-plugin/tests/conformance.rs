@@ -57,7 +57,7 @@ fn host(
 }
 
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_hook_webrequest::door::door,
+    door: busbar_hook_webrequest::door::MACRO_DOOR,
     cdylib: "busbar_hook_webrequest_plugin",
     inputs: include_str!("conformance.json"),
     host: host,
