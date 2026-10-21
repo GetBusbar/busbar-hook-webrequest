@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 /// Default per-op wall-clock timeout when the operator does not set `timeout_ms`. Tight on purpose: a
-/// gate is on the request path, so a slow target must fail fast (the engine then applies `on_error`).
+/// gate is on the request path, so a slow target must fail fast (a `decide` that times out abstains, as in 1.5.5).
 pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
 /// Upper bound an operator-supplied `timeout_ms` is clamped to: the engine's reference hook budget. A
@@ -56,6 +56,7 @@ impl Target {
 
     /// The `(host, port)` the one connection need is opened to: the URL's host with its IPv6 brackets
     /// stripped, and its port (the scheme's default when the URL names none).
+    #[cfg(test)]
     #[must_use]
     pub fn endpoint(&self) -> (String, u16) {
         let host = self.url.host_str().unwrap_or("");
@@ -68,6 +69,7 @@ impl Target {
     }
 
     /// Whether the hop is TLS (`https`); plaintext is only ever a loopback sidecar.
+    #[cfg(test)]
     #[must_use]
     pub fn is_tls(&self) -> bool {
         self.url.scheme().eq_ignore_ascii_case("https")

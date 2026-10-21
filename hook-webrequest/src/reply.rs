@@ -19,6 +19,7 @@ pub const MAX_REPLY_DEPTH: usize = 128;
 pub const REQUEST_FAILED: &str = "webrequest: request failed: error sending request";
 
 /// The body-read failure text (a truncated or malformed body).
+#[cfg(test)]
 pub const READ_FAILED: &str = "webrequest: response read failed: error decoding response body";
 
 /// The failure for a body past [`MAX_REPLY_BYTES`].
@@ -113,13 +114,13 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
     parse_reply(body)
 }
 
-/// `decide`: a failure means this hook COULD NOT ANSWER, which is not the same as having no opinion; the
-/// engine resolves the operator's `on_error` chain on it. So the failure stays a failure.
-///
-/// # Errors
-/// The failure text, unchanged.
-pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
-    reply
+/// `decide`: any failure (transport, timeout, status, parse) is `{}` (abstain), as in 1.5.5's shipped
+/// plugin (v1.0.6, tag commit 6386041, src/lib.rs:384-388: `Err(_) => serde_json::json!({})`). A target
+/// that is down therefore never reaches the operator's `on_error`: with `on_error: reject` the request
+/// still proceeds, as it did in 1.5.5.
+#[must_use]
+pub fn decide(reply: Result<Value, String>) -> Value {
+    reply.unwrap_or_else(|_| serde_json::json!({}))
 }
 
 /// `transform`: any failure is `{}` (abstain, proceed with the ORIGINAL body); a parsed `reject` in the

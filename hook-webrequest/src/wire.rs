@@ -65,6 +65,7 @@ pub struct Request {
     /// The request target: the URL's path and query (`/` when it has neither).
     pub target: String,
     /// The `host` header value: the host, and the port only when the URL names a non-default one.
+    #[cfg(test)]
     pub authority: String,
     /// The fields, in order: `authorization` (only when the URL carries userinfo), `content-type`,
     /// `accept`.
@@ -87,12 +88,14 @@ pub fn request(target: &Target, body: Vec<u8>) -> Request {
     Request {
         method: "POST",
         target: if path.is_empty() { "/" } else { path }.to_string(),
+        #[cfg(test)]
         authority: host_header(url),
         fields,
         body,
     }
 }
 
+#[cfg(test)]
 /// `host` or `host:port`: the port only when the URL names a non-default one.
 fn host_header(url: &url::Url) -> String {
     let host = url.host_str().unwrap_or("");

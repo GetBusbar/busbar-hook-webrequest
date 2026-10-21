@@ -56,8 +56,15 @@ fn host(
     conformance_host::host(wake, anchors)
 }
 
+/// This crate's own door, as the loader names a compiled-in one.
+#[allow(unused_unsafe)]
+fn loaded() -> busbar_plugin_loader::dispatch::LoadedDoor {
+    // SAFETY: `door` is this crate's own `plugin_door!` entry.
+    unsafe { busbar_plugin_loader::dispatch::LoadedDoor::from_raw(busbar_hook_webrequest::door) }
+}
+
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_hook_webrequest::door::door,
+    loaded: loaded(),
     cdylib: "busbar_hook_webrequest_plugin",
     inputs: include_str!("conformance.json"),
     host: host,
