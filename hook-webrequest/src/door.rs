@@ -60,12 +60,25 @@ const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 /// How many ops one instance holds in flight; the host clamps.
 pub const MAX_INFLIGHT: u32 = 64;
 
-/// THE STATEMENT: name, version, the hook tail and the one outbound need.
-pub const STATEMENT: Statement = statement_with_tail(
-    statement(crate::NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT),
-    TAIL,
-)
-.with_needs(NEEDS);
+busbar_contract::statement_extensions!(
+    /// The Statement's extensions: this plugin's whole `declares` document (BUSBAR-1.6.0.md l.246); the
+    /// signed tarball carries the same file (`--declares-file`).
+    EXTENSIONS: [(
+        busbar_contract::abi::mechanism::extensions::EXT_DECLARES,
+        include_bytes!("../../declares.json")
+    )]
+);
+
+/// THE STATEMENT: name, version, the hook tail, the one outbound need and the `declares` document.
+pub const STATEMENT: Statement = {
+    let mut s = statement_with_tail(
+        statement(crate::NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT),
+        TAIL,
+    )
+    .with_needs(NEEDS);
+    s.extensions = EXTENSIONS;
+    s
+};
 
 /// The forwarder: the live target, swapped whole by `configure`.
 #[derive(Debug)]

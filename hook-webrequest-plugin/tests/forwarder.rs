@@ -50,14 +50,17 @@ use busbar_contract::transport::ConnFacts;
 use busbar_contract::SignalBag;
 use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of_macro, Bind, Called,
-    ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, LinkedRow, NoSink, OutFrame,
-    Plugin,
+    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of_loaded, Bind, Called,
+    ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, LinkedRow, LoadedDoor, NoSink,
+    OutFrame, Plugin,
 };
 use serde_json::{json, Value};
 
 #[path = "support/net_ban.rs"]
 mod net_ban;
+
+/// The failure text a refused or failed exchange raises (1.5.5's).
+const REQUEST_FAILED: &str = "webrequest: request failed: error sending request";
 
 /// The URL every opened forwarder is configured with: loopback plaintext, userinfo, a query.
 const URL: &str = "http://user:pa%20ss@127.0.0.1:9/hook?x=1";
@@ -79,10 +82,16 @@ fn cdylib() -> PathBuf {
         .unwrap_or_else(|| panic!("the busbar-hook-webrequest-plugin cdylib ({file}) is not built"))
 }
 
+/// This crate's own door, as the loader names a compiled-in one.
+#[allow(unused_unsafe)]
+fn loaded() -> LoadedDoor {
+    // SAFETY: `door` is this crate's own `plugin_door!` entry.
+    unsafe { LoadedDoor::from_raw(busbar_hook_webrequest::door) }
+}
+
 /// The door's Statement rendering, as the pack tool signs it into the manifest.
 fn stated() -> Vec<u8> {
-    rendering_of_macro(busbar_hook_webrequest::door::MACRO_DOOR)
-        .expect("the door renders its Statement")
+    rendering_of_loaded(loaded()).expect("the door renders its Statement")
 }
 
 // ── the far end ──────────────────────────────────────────────────────────────────────────────────
@@ -314,8 +323,7 @@ impl Arm {
         };
         let plugin = match self {
             Arm::Linked => load_linked::<Hook>(
-                &LinkedRow::of_macro(busbar_hook_webrequest::door::MACRO_DOOR)
-                    .expect("the row renders"),
+                &LinkedRow::of_loaded(loaded()).expect("the row renders"),
                 bind,
             ),
             Arm::Dropped(path) => load_dropped::<Hook>(path, &stated(), bind),
@@ -509,7 +517,16 @@ fn envelope_155(op: &'static str) -> Vec<u8> {
         &context(),
     ))
     .expect("the projection serializes");
-    busbar_hook_webrequest::wire::envelope(op, &projection).expect("the envelope serializes")
+    // The projection with its own top-level `op` skipped and the `op` discriminator last.
+    let Value::Object(map) = &projection else {
+        panic!("the projection is an object");
+    };
+    let mut body = String::from("{");
+    for (k, v) in map.iter().filter(|(k, _)| k.as_str() != "op") {
+        body.push_str(&format!("{}:{},", json!(k), v));
+    }
+    body.push_str(&format!("\"op\":{}}}", json!(op)));
+    body.into_bytes()
 }
 
 /// The request every op must put on the wire for `op`: the 1.5.5 client's.
@@ -690,9 +707,6 @@ fn red_a_ticketless_decide_fails_at_once() {
     let mut f = Frame::new(frame.input(), blank_out::<DecideOut>());
     let called = b.plugin.call(slot::DECIDE, &mut f);
     assert_eq!(called.outcome, Outcome::Failed);
-    assert_eq!(
-        error_of(called.error.as_deref()),
-        busbar_hook_webrequest::reply::REQUEST_FAILED
-    );
+    assert_eq!(error_of(called.error.as_deref()), REQUEST_FAILED);
     assert!(b.upstream.sent.lock().unwrap().is_empty());
 }

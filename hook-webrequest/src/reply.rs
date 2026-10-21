@@ -19,6 +19,7 @@ pub const MAX_REPLY_DEPTH: usize = 128;
 pub const REQUEST_FAILED: &str = "webrequest: request failed: error sending request";
 
 /// The body-read failure text (a truncated or malformed body).
+#[cfg(test)]
 pub const READ_FAILED: &str = "webrequest: response read failed: error decoding response body";
 
 /// The failure for a body past [`MAX_REPLY_BYTES`].

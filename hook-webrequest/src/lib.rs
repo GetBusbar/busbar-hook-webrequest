@@ -23,18 +23,19 @@
 
 #![forbid(unsafe_code)]
 
-pub mod config;
-pub mod door;
-pub mod net_guard;
-pub mod reply;
-pub mod report;
-pub mod wire;
+mod config;
+mod door;
+mod net_guard;
+mod reply;
+mod report;
+mod wire;
+
+/// THE DOOR: this plugin's one public item (BUSBAR-1.6.0.md l.3567, Crate shape); the one a
+/// compiled-in build links and the dropped-in image exports.
+pub use door::door;
 
 /// The package name a signed tarball of this plugin states (`manifest.name`).
-pub const NAME: &str = "busbar-hook-webrequest";
-
-/// The alias a hook reference names this plugin by (`module: webrequest`).
-pub const ALIAS: &str = "webrequest";
+const NAME: &str = "busbar-hook-webrequest";
 
 #[cfg(test)]
 #[path = "tests/config_tests.rs"]

@@ -56,6 +56,7 @@ impl Target {
 
     /// The `(host, port)` the one connection need is opened to: the URL's host with its IPv6 brackets
     /// stripped, and its port (the scheme's default when the URL names none).
+    #[cfg(test)]
     #[must_use]
     pub fn endpoint(&self) -> (String, u16) {
         let host = self.url.host_str().unwrap_or("");
@@ -68,6 +69,7 @@ impl Target {
     }
 
     /// Whether the hop is TLS (`https`); plaintext is only ever a loopback sidecar.
+    #[cfg(test)]
     #[must_use]
     pub fn is_tls(&self) -> bool {
         self.url.scheme().eq_ignore_ascii_case("https")
