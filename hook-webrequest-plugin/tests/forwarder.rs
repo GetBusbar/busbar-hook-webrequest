@@ -50,8 +50,9 @@ use busbar_contract::transport::ConnFacts;
 use busbar_contract::SignalBag;
 use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Called, ConnTable,
-    DispatchConfig, Dispatcher, Done, Frame, InFrame, LinkedRow, NoSink, OutFrame, Plugin,
+    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of_macro, Bind, Called,
+    ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, LinkedRow, NoSink, OutFrame,
+    Plugin,
 };
 use serde_json::{json, Value};
 
@@ -80,7 +81,8 @@ fn cdylib() -> PathBuf {
 
 /// The door's Statement rendering, as the pack tool signs it into the manifest.
 fn stated() -> Vec<u8> {
-    rendering_of(busbar_hook_webrequest::door::door).expect("the door renders its Statement")
+    rendering_of_macro(busbar_hook_webrequest::door::MACRO_DOOR)
+        .expect("the door renders its Statement")
 }
 
 // ── the far end ──────────────────────────────────────────────────────────────────────────────────
@@ -264,11 +266,10 @@ impl DeclaredConns for Upstream {
 
 /// A JSON blob over `text` (the host's bytes, alive for the call).
 fn json_blob(text: &str) -> Blob {
-    Blob {
-        ptr: text.as_ptr(),
-        len: text.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
+    // SAFETY: the host's bytes, alive for the call; callers hold the &str across `plugin.call`.
+    #[allow(unused_unsafe)]
+    unsafe {
+        Blob::from_raw_parts(text.as_ptr(), text.len(), BLOB_JSON, 0)
     }
 }
 
@@ -313,7 +314,8 @@ impl Arm {
         };
         let plugin = match self {
             Arm::Linked => load_linked::<Hook>(
-                &LinkedRow::of(busbar_hook_webrequest::door::door).expect("the row renders"),
+                &LinkedRow::of_macro(busbar_hook_webrequest::door::MACRO_DOOR)
+                    .expect("the row renders"),
                 bind,
             ),
             Arm::Dropped(path) => load_dropped::<Hook>(path, &stated(), bind),
@@ -374,9 +376,10 @@ impl Bound {
 
     /// A leased JSON blob's document, then its lease released.
     fn leased(&self, blob: Blob, lease: u64) -> Value {
-        assert!(!blob.ptr.is_null() && lease != 0, "a leased document");
+        assert!(!blob.ptr().is_null() && lease != 0, "a leased document");
         // SAFETY: the plugin's leased bytes, held until the release below.
-        let bytes = unsafe { std::slice::from_raw_parts(blob.ptr, blob.len) }.to_vec();
+        #[allow(unused_unsafe)]
+        let bytes = unsafe { blob.bytes() }.to_vec();
         let mut f = Frame::new(
             ReleaseIn {
                 head: in_head(),
@@ -412,10 +415,7 @@ impl Bound {
                 head: in_head(),
                 version,
                 settings: json_blob(settings),
-                name: AbiStr {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                },
+                name: AbiStr::ABSENT,
             },
             blank_out::<ConfigureOut>(),
         );
