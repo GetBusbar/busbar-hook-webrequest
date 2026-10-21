@@ -99,12 +99,9 @@ fn depth_and_parse_errors_are_length_only() {
 #[test]
 fn a_failure_means_a_different_thing_per_op() {
     let fail: Result<serde_json::Value, String> = Err("webrequest: request failed".into());
-    // decide: still a failure, so on_error runs.
-    assert!(decide(fail.clone()).is_err());
-    assert_eq!(
-        decide(Ok(json!({"order":[0]}))).unwrap(),
-        json!({"order":[0]})
-    );
+    // decide: abstain, as 1.5.5's v1.0.6 (src/lib.rs:384-388), so on_error never runs.
+    assert_eq!(decide(fail.clone()), json!({}));
+    assert_eq!(decide(Ok(json!({"order":[0]}))), json!({"order":[0]}));
     // transform: abstain.
     assert_eq!(transform(fail.clone()), json!({}));
     assert_eq!(transform(Ok(json!({"reject":"x"}))), json!({"reject":"x"}));

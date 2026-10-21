@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 /// Default per-op wall-clock timeout when the operator does not set `timeout_ms`. Tight on purpose: a
-/// gate is on the request path, so a slow target must fail fast (the engine then applies `on_error`).
+/// gate is on the request path, so a slow target must fail fast (a `decide` that times out abstains, as in 1.5.5).
 pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
 /// Upper bound an operator-supplied `timeout_ms` is clamped to: the engine's reference hook budget. A

@@ -16,8 +16,9 @@
 //! the URL's path, its fields, the 1.5.5 op envelope byte for byte.
 //!
 //! THE RED ARMS: a configuration the forwarder refuses never opens, in 1.5.5's words; a configure
-//! that names a blocked URL is a NACK and leaves the live target; a far end's error status is a
-//! FAILED `decide` and an abstaining `transform`; and the Statement declares exactly one need,
+//! that names a blocked URL is a NACK and leaves the live target; a far end's error status, or a
+//! target that is down, is an abstaining `decide` and `transform` (1.5.5's v1.0.6 answered `{}` to
+//! every failure, so `on_error` never ran); and the Statement declares exactly one need,
 //! outbound, in the loopback-allowed egress class, over the host's `http` framer.
 //!
 //! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
@@ -25,7 +26,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -58,9 +59,6 @@ use serde_json::{json, Value};
 
 #[path = "support/net_ban.rs"]
 mod net_ban;
-
-/// The failure text a refused or failed exchange raises (1.5.5's).
-const REQUEST_FAILED: &str = "webrequest: request failed: error sending request";
 
 /// The URL every opened forwarder is configured with: loopback plaintext, userinfo, a query.
 const URL: &str = "http://user:pa%20ss@127.0.0.1:9/hook?x=1";
@@ -120,6 +118,8 @@ struct Upstream {
     reads: Mutex<HashMap<u64, u8>>,
     next: AtomicU64,
     pended: AtomicU32,
+    /// The target is down: every open is refused.
+    down: AtomicBool,
 }
 
 impl Upstream {
@@ -131,6 +131,7 @@ impl Upstream {
             reads: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             pended: AtomicU32::new(0),
+            down: AtomicBool::new(false),
         })
     }
 
@@ -166,6 +167,9 @@ fn piece(kind: PieceKind, len: usize) -> Piece {
 
 impl Conns for Upstream {
     fn open(&self, _: InstanceId, _: NeedId, desc: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(ConnError::Fault);
+        }
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         self.sent.lock().unwrap().push(Sent {
             target: desc.target.to_owned(),
@@ -599,20 +603,22 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(b.upstream.last(), expected("decide"));
     t.push("decide 200: prefer [9, 3]".into());
 
-    // RED: an error status is a FAILED decide, in 1.5.5's words with the far end's own phrase.
+    // RED: an error status abstains: 1.5.5's v1.0.6 answered `{}` to any failed decide, so the
+    // operator's on_error never ran on it.
     b.upstream.answer(503, "Busy", b"");
     let done = b.submit(
         slot::DECIDE,
         decide_frame().input(),
         blank_out::<DecideOut>(),
     );
-    assert_eq!(done.outcome, Outcome::Failed);
-    let e = error_of(done.error.as_deref());
     assert_eq!(
-        e,
-        "webrequest: target returned an error status: HTTP status server error (503 Busy)"
+        done.outcome,
+        Outcome::Ready,
+        "{}",
+        error_of(done.error.as_deref())
     );
-    t.push(format!("decide 503: {e}"));
+    assert_eq!(done.frame.expect("the frame").out.verbs, VERB_ABSTAIN);
+    t.push("decide 503: abstain".into());
 
     // transform: the far end's rewrite crosses as its JSON; a failure abstains.
     let frame = decide_frame();
@@ -698,15 +704,42 @@ fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     assert_eq!(dropped, stated());
 }
 
-/// RED: a `decide` that cannot pend (no ticket) fails at once; it never blocks a thread.
+/// RED: the target is down and the operator's `on_error` is `reject`: the `decide` still abstains
+/// (READY, no verb), so the request proceeds, as in 1.5.5's v1.0.6 (src/lib.rs:384-388: every
+/// transport, timeout, status or parse error returned `{}`). A FAILED `decide` is what hands the
+/// request to `on_error`; this one must never fail.
 #[test]
-fn red_a_ticketless_decide_fails_at_once() {
+fn red_a_down_target_abstains_so_on_error_reject_lets_the_request_through() {
+    for arm in [Arm::Linked, Arm::Dropped(cdylib())] {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        b.upstream.down.store(true, Ordering::SeqCst);
+        let done = b.submit(
+            slot::DECIDE,
+            decide_frame().input(),
+            blank_out::<DecideOut>(),
+        );
+        assert_eq!(
+            done.outcome,
+            Outcome::Ready,
+            "a down target must not FAIL the decide: {}",
+            error_of(done.error.as_deref())
+        );
+        assert_eq!(done.frame.expect("the frame").out.verbs, VERB_ABSTAIN);
+        assert!(b.upstream.sent.lock().unwrap().is_empty());
+    }
+}
+
+/// RED: a `decide` that cannot pend (no ticket) abstains at once, as any failed `decide` does; it
+/// never blocks a thread.
+#[test]
+fn red_a_ticketless_decide_abstains_at_once() {
     let b = Arm::Linked.bind();
     b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
     let frame = decide_frame();
     let mut f = Frame::new(frame.input(), blank_out::<DecideOut>());
     let called = b.plugin.call(slot::DECIDE, &mut f);
-    assert_eq!(called.outcome, Outcome::Failed);
-    assert_eq!(error_of(called.error.as_deref()), REQUEST_FAILED);
+    assert_eq!(called.outcome, Outcome::Ready);
+    assert_eq!(f.out.verbs, VERB_ABSTAIN);
     assert!(b.upstream.sent.lock().unwrap().is_empty());
 }

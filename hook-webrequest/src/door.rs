@@ -145,7 +145,7 @@ impl Forwarder {
 impl Hook for Forwarder {
     fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
         self.post(op, OP_DECIDE, || view.projection_json(OP_DECIDE))
-            .map(|r| lower_decide_reply(reply::decide(r)))
+            .map(|r| lower_decide_reply(Ok(reply::decide(r))))
     }
 
     fn transform(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
