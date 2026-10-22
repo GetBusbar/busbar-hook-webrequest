@@ -113,13 +113,17 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
     parse_reply(body)
 }
 
-/// `decide`: a failure means this hook COULD NOT ANSWER, which is not the same as having no opinion; the
-/// engine resolves the operator's `on_error` chain on it. So the failure stays a failure.
-///
-/// # Errors
-/// The failure text, unchanged.
-pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
-    reply
+/// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply) is
+/// `{}`, abstain: the request routes as if this hook had no opinion. That is the 1.5.5 forwarder's
+/// contract (busbar-webrequest v1.0.6 `decide`: "On any transport/parse error, return `{}`"), and
+/// hook behaviour stays 1.5.5's, `on_error` included (BUSBAR-1.6.0.md §11.7, #85; the owner-signed
+/// exceptions are transform-only). The operator's `on_error` chain still resolves what the ENGINE
+/// observes about the call (its deadline, a fault, a refusal), exactly as it did in 1.5.5; the oracle
+/// cell `webrequest|gate|sidecar-500-reject` records a far-end 500 under `on_error: reject` serving
+/// the chat.
+#[must_use]
+pub fn decide(reply: Result<Value, String>) -> Value {
+    reply.unwrap_or_else(|_| serde_json::json!({}))
 }
 
 /// `transform`: any failure is `{}` (abstain, proceed with the ORIGINAL body); a parsed `reject` in the

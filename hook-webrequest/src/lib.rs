@@ -15,7 +15,7 @@
 //! * [`wire`] — the op envelope and the HTTP/1.1 request bytes (byte-identical to what 1.5.5's client
 //!   wrote);
 //! * [`reply`] — the response reader: the status rule, the 64 KiB body cap, the depth guard, and the
-//!   per-op meaning of a failure (`decide` fails, `transform` abstains, `notify` swallows);
+//!   per-op meaning of a failure (`decide` and `transform` abstain, `notify` swallows);
 //! * [`report`] — the `describe` and `status` documents;
 //! * [`net_guard`] — the textual half of the SSRF guard, kept so every refusal text is 1.5.5's;
 //! * [`door`] — the hook kind's door over all of it (`door::door`): what a busbar build that links
