@@ -16,8 +16,9 @@
 //! the URL's path, its fields, the 1.5.5 op envelope byte for byte.
 //!
 //! THE RED ARMS: a configuration the forwarder refuses never opens, in 1.5.5's words; a configure
-//! that names a blocked URL is a NACK and leaves the live target; a far end's error status is a
-//! FAILED `decide` and an abstaining `transform`; and the Statement declares exactly one need,
+//! that names a blocked URL is a NACK and leaves the live target; a far end's error status is an
+//! abstaining `decide` and an abstaining `transform`, as 1.5.5's forwarder answered (v1.0.6); and the
+//! Statement declares exactly one need,
 //! outbound, in the loopback-allowed egress class, over the host's `http` framer.
 //!
 //! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
@@ -582,20 +583,24 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(b.upstream.last(), expected("decide"));
     t.push("decide 200: prefer [9, 3]".into());
 
-    // RED: an error status is a FAILED decide, in 1.5.5's words with the far end's own phrase.
+    // RED: an error status is an ABSTAINING decide, as the 1.5.5 forwarder answered it (v1.0.6
+    // `decide` returned `{}` on any error), so the operator's `on_error` never sees it: the oracle
+    // cell `webrequest|gate|sidecar-500-reject` serves the chat under `on_error: reject`.
     b.upstream.answer(503, "Busy", b"");
     let done = b.submit(
         slot::DECIDE,
         decide_frame().input(),
         blank_out::<DecideOut>(),
     );
-    assert_eq!(done.outcome, Outcome::Failed);
-    let e = error_of(done.error.as_deref());
     assert_eq!(
-        e,
-        "webrequest: target returned an error status: HTTP status server error (503 Busy)"
+        done.outcome,
+        Outcome::Ready,
+        "{}",
+        error_of(done.error.as_deref())
     );
-    t.push(format!("decide 503: {e}"));
+    assert_eq!(done.frame.expect("the frame").out.verbs, VERB_ABSTAIN);
+    assert_eq!(b.upstream.last(), expected("decide"));
+    t.push("decide 503: abstain".into());
 
     // transform: the far end's rewrite crosses as its JSON; a failure abstains.
     let frame = decide_frame();
@@ -681,18 +686,21 @@ fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     assert_eq!(dropped, stated());
 }
 
-/// RED: a `decide` that cannot pend (no ticket) fails at once; it never blocks a thread.
+/// RED: a `decide` that cannot pend (no ticket) answers at once, abstaining as the 1.5.5 forwarder
+/// did on a request it could not send; it never blocks a thread and puts nothing on the wire.
 #[test]
-fn red_a_ticketless_decide_fails_at_once() {
+fn red_a_ticketless_decide_abstains_at_once() {
     let b = Arm::Linked.bind();
     b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
     let frame = decide_frame();
     let mut f = Frame::new(frame.input(), blank_out::<DecideOut>());
     let called = b.plugin.call(slot::DECIDE, &mut f);
-    assert_eq!(called.outcome, Outcome::Failed);
     assert_eq!(
-        error_of(called.error.as_deref()),
-        busbar_hook_webrequest::reply::REQUEST_FAILED
+        called.outcome,
+        Outcome::Ready,
+        "{}",
+        error_of(called.error.as_deref())
     );
+    assert_eq!(f.out.verbs, VERB_ABSTAIN);
     assert!(b.upstream.sent.lock().unwrap().is_empty());
 }
