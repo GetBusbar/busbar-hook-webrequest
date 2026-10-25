@@ -1,4 +1,6 @@
-use crate::config::{clamp_timeout, configure, open, Target, MAX_TIMEOUT_MS};
+use crate::config::{
+    clamp_timeout, configure, open, unknown_keys, unknown_keys_in, Target, MAX_TIMEOUT_MS,
+};
 use std::time::Duration;
 
 fn map(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -123,4 +125,33 @@ fn configure_nacks_wrong_types_and_blocked_urls_and_never_half_applies() {
         &map(serde_json::json!({"url":"https://other.example/","timeout_ms":"x"}))
     )
     .is_err());
+}
+
+#[test]
+fn an_unknown_key_is_named_and_the_known_ones_are_not() {
+    let map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(r#"{"url":"https://h/","timeout":100,"timeout_ms":5,"headers":{}}"#)
+            .unwrap();
+    let w = unknown_keys(&map);
+    assert_eq!(w.len(), 2, "{w:?}");
+    for k in ["'timeout'", "'headers'"] {
+        assert!(
+            w.iter()
+                .any(|m| m.contains(&format!("unknown setting {k}"))),
+            "{w:?}"
+        );
+    }
+    assert!(
+        w.iter()
+            .all(|m| m.contains("url") && m.contains("timeout_ms")),
+        "{w:?}"
+    );
+    assert!(unknown_keys_in(br#"{"url":"https://h/"}"#).is_empty());
+    assert!(unknown_keys_in(b"").is_empty());
+    assert!(unknown_keys_in(b"[1]").is_empty());
+}
+
+#[test]
+fn an_unknown_key_still_opens_as_1_5_5_did() {
+    assert!(open(br#"{"url":"https://h/","timeout":100}"#).is_ok());
 }

@@ -17,6 +17,31 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 /// hook, never past it.
 pub const MAX_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_MS;
 
+/// The settings keys the forwarder reads. Any other key is ignored, as 1.5.5 ignored it (refusing
+/// it would break a 1.5.5 document on upgrade), and never silently: the door logs it
+/// ([`unknown_keys`]).
+pub const KEYS: [&str; 2] = ["url", "timeout_ms"];
+
+/// The keys of a settings object the forwarder does not read, each as the warning the door logs.
+#[must_use]
+pub fn unknown_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    settings
+        .keys()
+        .filter(|k| !KEYS.contains(&k.as_str()))
+        .map(|k| format!("webrequest: ignoring unknown setting '{k}' (the settings are {KEYS:?})"))
+        .collect()
+}
+
+/// [`unknown_keys`] over a settings document as `open` reads it; none for a document that is not
+/// a JSON object (`open` refuses those).
+#[must_use]
+pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
+    match serde_json::from_slice::<serde_json::Value>(settings) {
+        Ok(serde_json::Value::Object(map)) => unknown_keys(&map),
+        _ => Vec::new(),
+    }
+}
+
 /// The plugin's settings (the operator-owned `settings:` map, passed at `open` and re-pushed on
 /// `configure`).
 #[derive(Deserialize, Default)]
