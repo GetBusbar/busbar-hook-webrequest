@@ -22,11 +22,11 @@ capped JSON reply verbatim. Busbar's own `hooks::wire` normalizers parse
 that reply, so this plugin is a pure network relay — it adds a hop, never
 a second copy of the hook wire semantics.
 
-It implements busbar's `HookHandler` trait (via
+It implements the hook kind's `Hook` trait (via
 [`busbar-contract`](https://github.com/GetBusbar/busbar/tree/main/crates/busbar-contract)'s
-`abi::sdk`) and has both doors: built as a `cdylib` it is a signed tarball
+`abi::sdk::hook`) and has both doors: built as a `cdylib` it is a signed tarball
 busbar `dlopen`s in-process (never spawned as a separate process), and as
-an `rlib` a busbar build can link it (`linked::HOOK`) — the same boundary
+an `rlib` a busbar build can link it (`door::door`) — the same boundary
 either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors are one hook.
 
 
@@ -36,7 +36,8 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
   `{order|abstain|reject|restrict|rewrite}` reply).
 - **Isolation** of untrusted hook logic: the untrusted brain runs
   *remotely* behind this trusted, signed, `dlopen`'d forwarder. The
-  forwarder — not busbar core — owns the outbound HTTP call.
+  forwarder decides what is POSTed and where; the host's `http` framer
+  carries it over the forwarder's one declared need.
 
 ### The security stance
 
@@ -57,8 +58,8 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
 - **Tight timeouts**; a reply body over 64 KiB is refused (the exchange
   buffers up to busbar-contract's `REPLY_MAX` first, and the plugin refuses
   the body after it is read), and the reply is depth-guarded before parse
-  (128 levels, `MAX_REPLY_DEPTH`; serde_json's own recursion limit also
-  applies) — a hostile or buggy target cannot blow the stack or get an
+  (past 128 levels, `MAX_REPLY_DEPTH`; serde_json's own recursion limit
+  binds first and refuses a 128-deep reply as invalid JSON) — a hostile or buggy target cannot blow the stack or get an
   oversized reply relayed.
 - **Userinfo stripped** from every error string, so a `user:pass@`
   embedded in the operator's URL never reaches a logged error.
@@ -75,7 +76,7 @@ See the doc comments at the top of [`hook-webrequest/src/lib.rs`](hook-webreques
 | Setting | Required | Default | Notes |
 |---|---|---|---|
 | `url` | yes | — | The `https://` (or loopback `http://`) URL each hook op envelope is POSTed to. Validated against the SSRF guard at load and on every `configure` push; a committed push takes effect immediately (the next `decide`/`transform`/`notify` uses it), not only after a future plugin reload. |
-| `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget, since a hook FFI call holds a process-wide permit until the blocking call returns (see `MAX_TIMEOUT_MS`'s doc comment in `hook-webrequest/src/config.rs`). Independently pushable via `configure`, applied immediately. |
+| `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget (see `MAX_TIMEOUT_MS`'s doc comment in `hook-webrequest/src/config.rs`). Independently pushable via `configure`, applied immediately. |
 
 ## Build
 
