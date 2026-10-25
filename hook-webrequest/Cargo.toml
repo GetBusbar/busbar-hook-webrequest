@@ -2,14 +2,17 @@
 [package]
 name = "busbar-hook-webrequest"
 version = "1.6.0"
-publish = false            # linked into busbar at a pinned rev, or shipped as a signed tarball; never to crates.io
-edition = "2021"
-rust-version = "1.97"
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "The webrequest hook's logic and its hook-kind door: a transparent HTTP forwarder that POSTs each hook op envelope to an operator-configured URL through a declared egress need and returns the capped JSON reply. No socket, no TLS, no runtime of its own."
-license = "Apache-2.0"
+license.workspace = true
 
 [lib]
 crate-type = ["rlib"]
+
+[lints]
+workspace = true
 
 [dependencies]
 # The ONE busbar crate this plugin names (contract only; the plugin SDK is
