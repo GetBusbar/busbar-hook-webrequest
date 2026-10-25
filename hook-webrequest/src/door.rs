@@ -12,6 +12,8 @@
 //!   the exchange pends and is re-entered on the wake (THE DESIGN, the plugin ABI: Ready|Pending(wake)).
 //!   The reply means what it meant in 1.5.5 ([`crate::reply`]).
 //! * `configure` — [`crate::config::configure`]'s commit-on-ack merge; a NACK is FAILED.
+//! * A settings key the forwarder does not read ([`crate::config::KEYS`]) is ignored, as 1.5.5
+//!   ignored it, and logged as a warning at `open`, `refresh` and an acknowledged `configure`.
 //! * `status` / `describe` — the forwarder's own documents ([`crate::report`]), never the target's.
 
 use std::cell::Cell;
@@ -172,7 +174,13 @@ impl Hook for Forwarder {
         _version: u64,
     ) -> bool {
         let mut live = self.live.write().unwrap_or_else(PoisonError::into_inner);
-        match config::configure(&live, settings) {
+        let result = config::configure(&live, settings);
+        if result.is_ok() {
+            for warning in config::unknown_keys(settings) {
+                tracing::warn!("{warning}");
+            }
+        }
+        match result {
             Ok(None) => true,
             Ok(Some(next)) => {
                 *live = next;
@@ -201,6 +209,9 @@ pub struct Open;
 impl HookOpen for Open {
     fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
         let target = config::open(settings.as_bytes())?;
+        for warning in config::unknown_keys_in(settings.as_bytes()) {
+            tracing::warn!("{warning}");
+        }
         Ok(Box::new(Forwarder {
             live: RwLock::new(target),
         }))

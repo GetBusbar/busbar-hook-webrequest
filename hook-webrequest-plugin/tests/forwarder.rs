@@ -791,6 +791,32 @@ fn red_a_configure_refusal_is_logged() {
     }
 }
 
+/// RED: a settings key the forwarder does not read is not refused (1.5.5 ignored it, so a 1.5.5
+/// document still opens), and not silent either: `open` and an acknowledged `configure` each log
+/// it by name.
+#[test]
+fn red_an_unknown_setting_is_ignored_and_logged() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}", "timeout": 100}}"#))
+            .expect("an unknown key opens, as in 1.5.5");
+        assert!(
+            warned(&b, &["webrequest: ignoring unknown setting 'timeout'"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        assert_eq!(
+            b.configure(r#"{"timeout_ms": 900, "retries": 3}"#, 2),
+            Ok(2)
+        );
+        assert!(
+            warned(&b, &["webrequest: ignoring unknown setting 'retries'"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+    }
+}
+
 /// RED: an error status still abstains, and the reason is logged.
 #[test]
 fn red_a_failed_decide_abstains_and_is_logged() {
