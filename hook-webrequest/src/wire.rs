@@ -102,31 +102,41 @@ fn host_header(url: &url::Url) -> String {
     }
 }
 
-/// `Basic base64(user:pass)` from the URL's percent-decoded userinfo; `None` when the URL has none.
+/// `Basic base64(user:pass)` from the URL's percent-decoded userinfo, as the 1.5.5 client built it:
+/// a username that is not UTF-8 once decoded sends no header at all, a password that is not UTF-8
+/// counts as absent, and the header goes only for a non-empty username or a present password.
 fn basic_authorization(url: &url::Url) -> Option<String> {
-    if url.username().is_empty() && url.password().is_none() {
+    let username = String::from_utf8(percent_decode(url.username())).ok()?;
+    let password = url
+        .password()
+        .and_then(|p| String::from_utf8(percent_decode(p)).ok());
+    if username.is_empty() && password.is_none() {
         return None;
     }
-    let mut raw = percent_decode(url.username());
+    let mut raw = username.into_bytes();
     raw.push(b':');
-    if let Some(p) = url.password() {
-        raw.extend(percent_decode(p));
+    if let Some(p) = password {
+        raw.extend(p.into_bytes());
     }
     Some(format!("Basic {}", base64(&raw)))
 }
 
+/// Percent-decoding as `percent_encoding::percent_decode` does it: `%` decodes only when followed by
+/// two ASCII hex digits, otherwise it stays literal.
 fn percent_decode(s: &str) -> Vec<u8> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            let hex = std::str::from_utf8(&b[i + 1..i + 3]).ok();
-            if let Some(v) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && b[i + 1].is_ascii_hexdigit()
+            && b[i + 2].is_ascii_hexdigit()
+        {
+            let hex = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8;
+            out.push(hex(b[i + 1]) << 4 | hex(b[i + 2]));
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;

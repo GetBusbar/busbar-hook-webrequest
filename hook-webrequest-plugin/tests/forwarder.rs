@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,7 +52,8 @@ use busbar_contract::SignalBag;
 use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{
     in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Called, ConnTable,
-    DispatchConfig, Dispatcher, Done, Frame, InFrame, LinkedRow, NoSink, OutFrame, Plugin,
+    Diagnostic, DispatchConfig, Dispatcher, Done, Dropped, EnvelopeSink, Frame, InFrame, LinkedRow,
+    Metric, OutFrame, Plugin,
 };
 use serde_json::{json, Value};
 
@@ -110,6 +111,8 @@ struct Upstream {
     reads: Mutex<HashMap<u64, u8>>,
     next: AtomicU64,
     pended: AtomicU32,
+    /// While set, every open is refused (the exchange fails to establish).
+    fail_open: AtomicBool,
 }
 
 impl Upstream {
@@ -121,6 +124,7 @@ impl Upstream {
             reads: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             pended: AtomicU32::new(0),
+            fail_open: AtomicBool::new(false),
         })
     }
 
@@ -156,6 +160,9 @@ fn piece(kind: PieceKind, len: usize) -> Piece {
 
 impl Conns for Upstream {
     fn open(&self, _: InstanceId, _: NeedId, desc: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+        if self.fail_open.load(Ordering::SeqCst) {
+            return Err(ConnError::Refused);
+        }
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         self.sent.lock().unwrap().push(Sent {
             target: desc.target.to_owned(),
@@ -289,8 +296,39 @@ enum Arm {
     Dropped(PathBuf),
 }
 
+/// The host's envelope sink, recording every diagnostic as `(severity, text)`.
+#[derive(Default)]
+struct Recorder {
+    diags: Mutex<Vec<(u8, String)>>,
+}
+
+impl Recorder {
+    /// The texts of the warn (severity 1) diagnostics so far.
+    fn warns(&self) -> Vec<String> {
+        self.diags
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, _)| *s == 1)
+            .map(|(_, t)| t.clone())
+            .collect()
+    }
+}
+
+impl EnvelopeSink for Recorder {
+    fn metric(&self, _: Metric<'_>) {}
+    fn diag(&self, d: Diagnostic<'_>) {
+        self.diags
+            .lock()
+            .unwrap()
+            .push((d.severity, String::from_utf8_lossy(d.text).into_owned()));
+    }
+    fn dropped(&self, _: Dropped) {}
+}
+
 /// One arm, bound: the dispatcher, the far end and the plugin (not yet opened).
 struct Bound {
+    recorder: Arc<Recorder>,
     dispatcher: Arc<Dispatcher>,
     upstream: Arc<Upstream>,
     plugin: Plugin<Hook>,
@@ -305,10 +343,11 @@ impl Arm {
         let upstream = Upstream::new();
         *upstream.wake.lock().unwrap() = Some(dispatcher.conn_waker());
         let conns: Arc<dyn DeclaredConns> = upstream.clone();
+        let recorder = Arc::new(Recorder::default());
         let bind = Bind {
             instance: Arc::from("webrequest-conformance"),
             max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
+            sink: recorder.clone(),
             dispatcher: dispatcher.adopter(),
             conns: ConnTable::Host(conns),
         };
@@ -321,6 +360,7 @@ impl Arm {
         }
         .expect("the door loads");
         Bound {
+            recorder,
             dispatcher,
             upstream,
             plugin,
@@ -703,4 +743,152 @@ fn red_a_ticketless_decide_abstains_at_once() {
     );
     assert_eq!(f.out.verbs, VERB_ABSTAIN);
     assert!(b.upstream.sent.lock().unwrap().is_empty());
+}
+
+// ── nothing silent: every refusal is explained in the plugin's log ───────────────────────────────
+
+fn arms() -> [Arm; 2] {
+    [Arm::Linked, Arm::Dropped(cdylib())]
+}
+
+/// A `decide` through the dispatcher; its verbs.
+fn decide_verbs(b: &Bound) -> u32 {
+    let done = b.submit(
+        slot::DECIDE,
+        decide_frame().input(),
+        blank_out::<DecideOut>(),
+    );
+    assert_eq!(
+        done.outcome,
+        Outcome::Ready,
+        "{}",
+        error_of(done.error.as_deref())
+    );
+    done.frame.expect("the frame").out.verbs
+}
+
+/// Some warn diagnostic contains every one of `parts`.
+fn warned(b: &Bound, parts: &[&str]) -> bool {
+    b.recorder
+        .warns()
+        .iter()
+        .any(|w| parts.iter().all(|p| w.contains(p)))
+}
+
+/// RED: a configure refusal is a NACK and says why in the plugin's log (1.5.5 wrote it to stderr).
+#[test]
+fn red_a_configure_refusal_is_logged() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        b.configure(r#"{"url": "http://169.254.169.254/"}"#, 2)
+            .expect_err("a blocked URL is a NACK");
+        let warns = b.recorder.warns();
+        assert!(
+            warned(&b, &["webrequest: configure() rejected:"]),
+            "{warns:?}"
+        );
+    }
+}
+
+/// RED: an error status still abstains, and the reason is logged.
+#[test]
+fn red_a_failed_decide_abstains_and_is_logged() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        b.upstream.answer(503, "Busy", b"");
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        let warns = b.recorder.warns();
+        assert!(
+            warned(&b, &["HTTP status server error (503", "decide abstains"]),
+            "{warns:?}"
+        );
+    }
+}
+
+/// RED: a transport failure (the exchange cannot establish) reaches the plugin as a failure it
+/// answers itself (not a FAILED op): the decide abstains and the request failure is logged.
+#[test]
+fn red_a_transport_failure_abstains_and_is_logged() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        b.upstream.fail_open.store(true, Ordering::SeqCst);
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        let warns = b.recorder.warns();
+        assert!(
+            warned(
+                &b,
+                &[
+                    // The host's cause rides after the 1.5.5 prefix, not only the prefix.
+                    "webrequest: request failed: error sending request: ",
+                    "decide abstains"
+                ]
+            ),
+            "{warns:?}"
+        );
+    }
+}
+
+/// RED: no diagnostic carries the URL's userinfo or query, through a configure refusal, an error
+/// status and a failed open.
+#[test]
+fn red_the_log_never_leaks_the_url_secrets() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(r#"{"url": "http://user:hunter2@127.0.0.1:9/hook?token=SECRET123"}"#)
+            .expect("opens");
+        b.configure(r#"{"timeout_ms": "soon"}"#, 2)
+            .expect_err("a bad timeout is a NACK");
+        b.upstream.answer(503, "Busy", b"");
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        b.upstream.fail_open.store(true, Ordering::SeqCst);
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        // Guard against a vacuous pass: the three refusals were logged.
+        let warns = b.recorder.warns();
+        assert!(warns.len() >= 3, "{warns:?}");
+        let all = format!("{:?}", b.recorder.diags.lock().unwrap());
+        assert!(!all.contains("hunter2"), "{all}");
+        assert!(!all.contains("SECRET123"), "{all}");
+        // Nor the Authorization the userinfo becomes (base64 of `user:hunter2`).
+        assert!(!all.contains("dXNlcjpodW50ZXIy"), "{all}");
+    }
+}
+
+/// GREEN twin: a successful decide logs no warning.
+#[test]
+fn a_successful_decide_logs_no_warning() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        b.upstream.answer(200, "OK", br#"{"order":[9,3]}"#);
+        assert_eq!(decide_verbs(&b) & VERB_PREFER, VERB_PREFER);
+        assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+    }
+}
+
+/// A committed configure moves the NEXT op's origin, path and timeout: the target is read per op,
+/// never cached at open.
+#[test]
+fn a_committed_configure_moves_the_next_decide() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}", "timeout_ms": 2000}}"#))
+            .expect("opens");
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        assert_eq!(b.upstream.last().target, "http://127.0.0.1:9");
+        assert_eq!(
+            b.configure(
+                r#"{"url": "http://127.0.0.2:8123/moved?y=2", "timeout_ms": 777}"#,
+                2
+            ),
+            Ok(2)
+        );
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        let sent = b.upstream.last();
+        assert_eq!(sent.target, "http://127.0.0.2:8123");
+        assert_eq!(sent.path, b"/moved?y=2".to_vec());
+        assert_eq!(sent.timeout_ms, 777);
+    }
 }
