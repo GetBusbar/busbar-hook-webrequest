@@ -147,9 +147,17 @@ impl Forwarder {
                 let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
                 reply::interpret(got.status, phrase.as_deref(), &got.body)
             }
-            Err(failure) => Err(format!("{}: {failure}", reply::REQUEST_FAILED)),
+            Err(failure) => Err(transport_failure(&target, &failure)),
         })
     }
+}
+
+/// The text a transport failure is logged in: 1.5.5's prefix, then the host's cause with every
+/// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
+/// words may quote the URL (CREDENTIAL-LOCKDOWN H3).
+pub(crate) fn transport_failure(target: &Target, failure: &ConnFailure) -> String {
+    let cause = crate::net_guard::scrub(&failure.to_string(), &target.url);
+    format!("{}: {cause}", reply::REQUEST_FAILED)
 }
 
 impl Hook for Forwarder {
