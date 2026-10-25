@@ -98,13 +98,13 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
 /// held to [`MAX_REPLY_BYTES`] by the exchange's cap; the check here is the plugin's own, so a host that
 /// hands more is refused too).
 ///
-/// The status rule is the 1.5.5 client's `error_for_status`: 4xx/5xx is a failure, everything else
-/// (redirects are never followed) carries its body as the reply.
+/// The status rule is the 1.5.5 client's `error_for_status`: 4xx/5xx (400..=599) is a failure, everything
+/// else (redirects are never followed) carries its body as the reply.
 ///
 /// # Errors
 /// The 1.5.5 failure text.
 pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value, String> {
-    if status >= 400 {
+    if (400..600).contains(&status) {
         return Err(error_status(status, phrase));
     }
     if body.len() > MAX_REPLY_BYTES {
