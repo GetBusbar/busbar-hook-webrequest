@@ -22,6 +22,7 @@
 //!   this crate registers, and what the droppable cdylib (`busbar-hook-webrequest-plugin`) exports.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
 pub mod config;
 pub mod door;

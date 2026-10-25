@@ -78,6 +78,8 @@ See the doc comments at the top of [`hook-webrequest/src/lib.rs`](hook-webreques
 | `url` | yes | — | The `https://` (or loopback `http://`) URL each hook op envelope is POSTed to. Validated against the SSRF guard at load and on every `configure` push; a committed push takes effect immediately (the next `decide`/`transform`/`notify` uses it), not only after a future plugin reload. |
 | `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget (see `MAX_TIMEOUT_MS`'s doc comment in `hook-webrequest/src/config.rs`). Independently pushable via `configure`, applied immediately. |
 
+Any other key is ignored, as 1.5.5 ignored it (so a 1.5.5 document still opens), and logged by name as a warning in the plugin's own log at `open` and on an acknowledged `configure`. A `configure` refusal is a NACK whose reason is written to the same log.
+
 ## Build
 
 Needs a Rust toolchain ([rustup](https://rustup.rs); `rust-toolchain.toml`
