@@ -1,6 +1,6 @@
 use crate::config::open;
 use crate::reply::{error_status, READ_FAILED, REQUEST_FAILED};
-use crate::wire::{envelope, request};
+use crate::wire::envelope;
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -247,4 +247,21 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
             srv.join().unwrap();
         }
     });
+}
+
+/// The wire request with the `authorization` the userinfo becomes, read back through the dev-only
+/// test support (the plugin never reads it), first as the 1.5.5 client sent it.
+fn request(target: &crate::config::Target, body: Vec<u8>) -> crate::wire::Request {
+    let mut r = crate::wire::request(target, body);
+    if let Some(auth) = crate::wire::basic_authorization(target) {
+        let value = busbar_contract::abi::sdk::test_support::chip::sealed_bytes(&auth);
+        r.fields.insert(
+            0,
+            (
+                "authorization",
+                String::from_utf8(value).expect("base64 is text"),
+            ),
+        );
+    }
+    r
 }

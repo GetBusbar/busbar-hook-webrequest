@@ -7,7 +7,6 @@
 
 use crate::config::{self, Target};
 use crate::door::transport_failure;
-use crate::wire;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 
 const CANARY: &str = "CANARYd41c07";
@@ -22,7 +21,7 @@ fn target() -> Target {
 
 /// The Basic value the userinfo becomes, which must not render either.
 fn basic() -> String {
-    wire::request(&target(), Vec::new())
+    request(&target(), Vec::new())
         .fields
         .into_iter()
         .find(|(n, _)| *n == "authorization")
@@ -33,7 +32,7 @@ fn basic() -> String {
 #[test]
 fn debug_of_the_target_and_the_wire_request_carries_no_credential() {
     let t = target();
-    let r = wire::request(&t, b"{}".to_vec());
+    let r = request(&t, b"{}".to_vec());
     let token = basic();
     let token = token.trim_start_matches("Basic ");
     for text in [
@@ -76,4 +75,21 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_url() {
             "1.5.5's prefix is kept: {text}"
         );
     }
+}
+
+/// The wire request with the `authorization` the userinfo becomes, read back through the dev-only
+/// test support (the plugin never reads it), first as the 1.5.5 client sent it.
+fn request(target: &crate::config::Target, body: Vec<u8>) -> crate::wire::Request {
+    let mut r = crate::wire::request(target, body);
+    if let Some(auth) = crate::wire::basic_authorization(target) {
+        let value = busbar_contract::abi::sdk::test_support::chip::sealed_bytes(&auth);
+        r.fields.insert(
+            0,
+            (
+                "authorization",
+                String::from_utf8(value).expect("base64 is text"),
+            ),
+        );
+    }
+    r
 }

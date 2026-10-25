@@ -7,6 +7,7 @@
 //! hyper) wrote.
 
 use crate::config::Target;
+use busbar_contract::abi::sdk::cred::{Cred, Seal};
 use url::Position;
 
 /// The POST envelope for a per-request op: the engine's opaque `payload` projection (BORROWED, not
@@ -66,9 +67,8 @@ pub struct Request {
     pub target: String,
     /// The `host` header value: the host, and the port only when the URL names a non-default one.
     pub authority: String,
-    /// The fields, in order (`Debug` redacts the target and the `authorization` value):
-    /// `authorization` (only when the URL carries userinfo), `content-type`,
-    /// `accept`.
+    /// The public fields, in order: `content-type`, `accept`. The `authorization` the URL's userinfo
+    /// becomes goes first, sealed ([`basic_authorization`]).
     pub fields: Vec<(&'static str, String)>,
     /// The op envelope.
     pub body: Vec<u8>,
@@ -102,10 +102,7 @@ impl std::fmt::Debug for Request {
 pub fn request(target: &Target, body: Vec<u8>) -> Request {
     let url = &target.url;
     let path = &url[Position::BeforePath..Position::AfterQuery];
-    let mut fields = Vec::with_capacity(3);
-    if let Some(auth) = basic_authorization(url) {
-        fields.push(("authorization", auth));
-    }
+    let mut fields = Vec::with_capacity(2);
     fields.push(("content-type", "application/json".to_string()));
     fields.push(("accept", "*/*".to_string()));
     Request {
@@ -126,23 +123,23 @@ fn host_header(url: &url::Url) -> String {
     }
 }
 
-/// `Basic base64(user:pass)` from the URL's percent-decoded userinfo, as the 1.5.5 client built it:
-/// a username that is not UTF-8 once decoded sends no header at all, a password that is not UTF-8
-/// counts as absent, and the header goes only for a non-empty username or a present password.
-fn basic_authorization(url: &url::Url) -> Option<String> {
-    let username = String::from_utf8(percent_decode(url.username())).ok()?;
-    let password = url
-        .password()
-        .and_then(|p| String::from_utf8(percent_decode(p)).ok());
+/// `Basic base64(user:pass)` from the URL's percent-decoded user and the sealed password, as the
+/// 1.5.5 client built it, made by the chip: a username that is not UTF-8 once decoded sends no
+/// header at all, a password that is not UTF-8 counts as absent, and the header goes only for a
+/// non-empty username or a present password.
+#[must_use]
+pub fn basic_authorization(target: &Target) -> Option<Seal> {
+    let username = String::from_utf8(percent_decode(target.url.username())).ok()?;
+    let password = target.password.as_ref().filter(|p| p.is_text());
     if username.is_empty() && password.is_none() {
         return None;
     }
-    let mut raw = username.into_bytes();
-    raw.push(b':');
-    if let Some(p) = password {
-        raw.extend(p.into_bytes());
-    }
-    Some(format!("Basic {}", base64(&raw)))
+    Some(
+        password
+            .cloned()
+            .unwrap_or_else(Cred::empty)
+            .basic(&username),
+    )
 }
 
 /// Percent-decoding as `percent_encoding::percent_decode` does it: `%` decodes only when followed by
@@ -164,29 +161,6 @@ pub(crate) fn percent_decode(s: &str) -> Vec<u8> {
         }
         out.push(b[i]);
         i += 1;
-    }
-    out
-}
-
-fn base64(bytes: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = (u32::from(c[0]) << 16)
-            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*c.get(2).unwrap_or(&0));
-        out.push(A[(n >> 18) as usize & 63] as char);
-        out.push(A[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 {
-            A[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if c.len() > 2 {
-            A[n as usize & 63] as char
-        } else {
-            '='
-        });
     }
     out
 }

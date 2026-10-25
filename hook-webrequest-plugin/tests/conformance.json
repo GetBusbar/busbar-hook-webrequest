@@ -1,5 +1,6 @@
 {
-  "settings": { "url": "https://localhost:53586/route", "timeout_ms": 2000 },
+  "settings": { "url": "https://conf:CANARY-wr-0c7d@localhost:53586/route", "timeout_ms": 2000 },
+  "credentials": ["CANARY-wr-0c7d"],
   "hook": {
     "bad_settings": ["not json", "{}", "{\"url\": \"\"}", "{\"url\": 5}", "{\"url\": \"http://169.254.169.254/\"}"],
     "order_cap": 2,

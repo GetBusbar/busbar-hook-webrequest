@@ -28,7 +28,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
-use busbar_contract::abi::sdk::exchange::{Op, Request};
+use busbar_contract::abi::sdk::exchange::{Op, Request, SealedField};
 use busbar_contract::abi::sdk::hook::{
     lower_decide_reply, lower_transform_reply, statement_with_tail, tail, Decoded, DecodedTap,
     Hook, HookOpen, RewriteVerdict, Verdict,
@@ -97,9 +97,13 @@ pub struct Forwarder {
 }
 
 /// The exchange's request for `body`: the 1.5.5 client's method, target and fields.
-fn request(target: &Target, body: Vec<u8>) -> Request {
+fn request(target: &Target, body: Vec<u8>) -> (Request, Vec<SealedField>) {
     let r = wire::request(target, body);
-    Request {
+    let sealed = wire::basic_authorization(target)
+        .map(|auth| (0, b"authorization".to_vec(), auth))
+        .into_iter()
+        .collect();
+    let request = Request {
         method: r.method.as_bytes().to_vec(),
         target: r.target.into_bytes(),
         fields: r
@@ -109,7 +113,8 @@ fn request(target: &Target, body: Vec<u8>) -> Request {
             .collect(),
         body: r.body,
         timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
-    }
+    };
+    (request, sealed)
 }
 
 impl Forwarder {
@@ -131,7 +136,7 @@ impl Forwarder {
         let target = self.target();
         let unsendable = Cell::new(None);
         let origin = target.url.origin().ascii_serialization();
-        let answer = on.exchange(NEED, Some(&origin), || {
+        let answer = on.exchange_sealed(NEED, Some(&origin), || {
             wire::envelope(op, &payload())
                 .map(|body| request(&target, body))
                 .map_err(|e| {
@@ -157,6 +162,10 @@ impl Forwarder {
 /// words may quote the URL (CREDENTIAL-LOCKDOWN H3).
 pub(crate) fn transport_failure(target: &Target, failure: &ConnFailure) -> String {
     let cause = crate::net_guard::scrub(&failure.to_string(), &target.url);
+    let cause = match &target.password {
+        Some(p) => p.redact_echo(&cause),
+        None => cause,
+    };
     format!("{}: {cause}", reply::REQUEST_FAILED)
 }
 

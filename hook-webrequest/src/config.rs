@@ -5,6 +5,7 @@
 //! text is 1.5.5's.
 
 use crate::net_guard;
+use busbar_contract::abi::sdk::cred::{Cred, CredUrl, UserinfoUrl};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -44,9 +45,10 @@ pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
 
 /// The plugin's settings (the operator-owned `settings:` map, passed at `open` and re-pushed on
 /// `configure`).
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 struct Config {
-    url: String,
+    /// The target; its userinfo password is sealed as it is read.
+    url: UserinfoUrl,
     #[serde(default)]
     timeout_ms: Option<u64>,
 }
@@ -56,8 +58,10 @@ struct Config {
 /// path and query masked.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Target {
-    /// The validated URL every op envelope is POSTed to.
+    /// The validated URL every op envelope is POSTed to, its password taken out.
     pub url: url::Url,
+    /// The URL's userinfo password, sealed: the chip makes the `authorization` of it.
+    pub password: Option<Cred>,
     /// The wall-clock bound of one op, in `[1ms, MAX_TIMEOUT_MS]`.
     pub timeout: Duration,
 }
@@ -79,12 +83,14 @@ pub fn clamp_timeout(ms: u64) -> Duration {
 
 impl Target {
     fn validate(cfg: &Config) -> Result<Self, String> {
-        if cfg.url.trim().is_empty() {
+        let input = &cfg.url;
+        if input.public().trim().is_empty() {
             return Err("webrequest: settings.url is required".to_string());
         }
-        let url = net_guard::validate_target_url(&cfg.url)?;
+        let url = net_guard::validate_target_url(input.public())?;
         Ok(Self {
             url,
+            password: input.password().cloned(),
             timeout: clamp_timeout(cfg.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         })
     }
@@ -117,11 +123,11 @@ impl Target {
 pub fn open(settings: &[u8]) -> Result<Target, String> {
     let text = std::str::from_utf8(settings)
         .map_err(|e| format!("webrequest: invalid plugin config: {e}"))?;
-    let config: Config = if text.trim().is_empty() {
-        Config::default()
-    } else {
-        serde_json::from_str(text).map_err(|e| format!("webrequest: invalid plugin config: {e}"))?
-    };
+    if text.trim().is_empty() {
+        return Err("webrequest: settings.url is required".to_string());
+    }
+    let config: Config = serde_json::from_str(text)
+        .map_err(|e| format!("webrequest: invalid plugin config: {e}"))?;
     Target::validate(&config)
 }
 
@@ -146,10 +152,13 @@ pub fn configure(
                 "webrequest: configure() rejected: settings.url is present but not a string ({v})"
             ))
             }
-            Some(raw) => Some(
-                net_guard::validate_target_url(raw)
-                    .map_err(|reason| format!("webrequest: configure() rejected: {reason}"))?,
-            ),
+            Some(raw) => {
+                let input = CredUrl::parse_userinfo(raw)
+                    .map_err(|reason| format!("webrequest: configure() rejected: {reason}"))?;
+                let url = net_guard::validate_target_url(input.public())
+                    .map_err(|reason| format!("webrequest: configure() rejected: {reason}"))?;
+                Some((url, input.password().cloned()))
+            }
         },
     };
     let new_timeout = match settings.get("timeout_ms") {
@@ -167,8 +176,9 @@ pub fn configure(
         return Ok(None);
     }
     let mut next = live.clone();
-    if let Some(url) = new_url {
+    if let Some((url, password)) = new_url {
         next.url = url;
+        next.password = password;
     }
     if let Some(timeout) = new_timeout {
         next.timeout = timeout;
