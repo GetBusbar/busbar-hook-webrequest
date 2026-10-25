@@ -22,6 +22,8 @@ serde_json = { workspace = true }
 url = { workspace = true }
 # Status-code reason phrases for the 1.5.5 error text.
 http = { workspace = true }
+# The plugin's log: `tracing` events are captured by the SDK into the plugin's own log file.
+tracing = { workspace = true }
 
 [dev-dependencies]
 # The byte-identity oracle: the request bytes this crate writes are compared with what the 1.5.5
