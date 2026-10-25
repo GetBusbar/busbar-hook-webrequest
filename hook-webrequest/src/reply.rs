@@ -94,9 +94,9 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
     false
 }
 
-/// The endpoint's answer as the framed http exchange hands it back: the status, its reason phrase and the body (already
-/// held to [`MAX_REPLY_BYTES`] by the exchange's cap; the check here is the plugin's own, so a host that
-/// hands more is refused too).
+/// The endpoint's answer as the framed http exchange hands it back: the status, its reason phrase and the body (the
+/// exchange holds it only to its own bound, busbar-contract's `REPLY_MAX`, and `Op::exchange` offers no way to
+/// lower it; the check here is what holds it to [`MAX_REPLY_BYTES`]).
 ///
 /// The status rule is the 1.5.5 client's `error_for_status`: 4xx/5xx is a failure, everything else
 /// (redirects are never followed) carries its body as the reply.
