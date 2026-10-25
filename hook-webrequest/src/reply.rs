@@ -139,8 +139,9 @@ pub fn transform(reply: Result<Value, String>) -> Value {
     })
 }
 
-/// `notify`: fire-and-forget. The reply is not read for meaning and every error is dropped from the verdict: a tap can
-/// NEVER delay or fail the served request. A failure is logged to the plugin's log (a warn).
+/// `notify`: fire-and-forget. The reply is not read for meaning and every error is dropped from the
+/// verdict: a tap can NEVER delay or fail the served request. A failure is logged to the plugin's log
+/// (a warn).
 pub fn notify(reply: Result<Value, String>) {
     if let Err(e) = reply {
         tracing::warn!("{e}; notify dropped");

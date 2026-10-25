@@ -821,7 +821,8 @@ fn red_a_transport_failure_abstains_and_is_logged() {
             warned(
                 &b,
                 &[
-                    "webrequest: request failed: error sending request",
+                    // The host's cause rides after the 1.5.5 prefix, not only the prefix.
+                    "webrequest: request failed: error sending request: ",
                     "decide abstains"
                 ]
             ),
@@ -850,6 +851,8 @@ fn red_the_log_never_leaks_the_url_secrets() {
         let all = format!("{:?}", b.recorder.diags.lock().unwrap());
         assert!(!all.contains("hunter2"), "{all}");
         assert!(!all.contains("SECRET123"), "{all}");
+        // Nor the Authorization the userinfo becomes (base64 of `user:hunter2`).
+        assert!(!all.contains("dXNlcjpodW50ZXIy"), "{all}");
     }
 }
 
