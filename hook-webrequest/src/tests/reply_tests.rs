@@ -43,6 +43,23 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
 }
 
 #[test]
+fn only_4xx_and_5xx_are_failures_so_a_600_status_relays_its_body() {
+    // reqwest 0.12.28 `error_for_status` fails only 400..=599; hyper accepts 600..=999, so the
+    // 1.5.5 client relayed such a body (a `reject` in it was honoured).
+    assert_eq!(
+        interpret(
+            600,
+            Some("Custom"),
+            br#"{"reject":{"status":403,"message":"no"}}"#
+        )
+        .unwrap(),
+        json!({"reject": {"status": 403, "message": "no"}})
+    );
+    assert!(interpret(599, None, b"{}").is_err());
+    assert!(interpret(400, None, b"{}").is_err());
+}
+
+#[test]
 fn the_cap_is_exact() {
     let mut body = vec![b' '; MAX_REPLY_BYTES - 2];
     body.extend_from_slice(b"{}");

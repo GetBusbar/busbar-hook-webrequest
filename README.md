@@ -14,7 +14,7 @@ A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/
 
 [![Coverage](https://codecov.io/gh/GetBusbar/busbar-hook-webrequest/branch/dev/graph/badge.svg)](https://codecov.io/gh/GetBusbar/busbar-hook-webrequest)
 
-**v1.5.0.** The first-party, signed `kind: hook` plugin for
+**v1.6.0.** The first-party, signed `kind: hook` plugin for
 [busbar](https://getbusbar.com): a transparent HTTP forwarder that POSTs
 each hook op envelope (`decide` / `transform` / `notify` / `configure` /
 `describe` / `status`) to an operator-configured URL and returns the
@@ -22,12 +22,12 @@ capped JSON reply verbatim. Busbar's own `hooks::wire` normalizers parse
 that reply, so this plugin is a pure network relay — it adds a hop, never
 a second copy of the hook wire semantics.
 
-It implements busbar's `HookHandler` trait (via
+It implements the hook kind's `Hook` trait (via
 [`busbar-contract`](https://github.com/GetBusbar/busbar/tree/main/crates/busbar-contract)'s
-`abi::sdk`) and has both doors: built as a `cdylib` it is a signed tarball
+`abi::sdk::hook`) and has both doors: built as a `cdylib` it is a signed tarball
 busbar `dlopen`s in-process (never spawned as a separate process), and as
-an `rlib` a busbar build can link it (`linked::HOOK`) — the same boundary
-either way. `tests/conformance.rs` proves the two doors are one hook.
+an `rlib` a busbar build can link it (`door::door`) — the same boundary
+either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors are one hook.
 
 
 - **Migration** off the retired socket/webhook hook transport: point
@@ -36,25 +36,31 @@ either way. `tests/conformance.rs` proves the two doors are one hook.
   `{order|abstain|reject|restrict|rewrite}` reply).
 - **Isolation** of untrusted hook logic: the untrusted brain runs
   *remotely* behind this trusted, signed, `dlopen`'d forwarder. The
-  forwarder — not busbar core — owns the outbound HTTP call.
+  forwarder decides what is POSTed and where; the host's `http` framer
+  carries it over the forwarder's one declared need.
 
 ### The security stance
 
-- **SSRF-guarded** (`src/net_guard/mod.rs`): the configured URL is validated
-  at `open`/`configure` — loopback sidecars are allowed; link-local /
-  IMDS / RFC1918 / CGNAT / ULA / cloud-metadata / alternate-IPv4
-  encodings are blocked; plaintext `http://` is permitted only to
-  loopback. A host NAME is resolved and checked again on every connect,
-  so an answer that turns internal later (DNS rebinding) is refused
-  before anything is dialed, and a target whose addresses rotate is
-  followed.
-- **Redirects disabled** on the client (`redirect::none`): a target
-  cannot 30x-redirect the plugin to an internal host at runtime.
-- **Tight timeouts**; the reply body is capped before allocation (64
-  KiB) and depth-guarded before parse (127 levels — one below
-  serde_json's own internal recursion limit, which binds first) — a
-  hostile or buggy target can neither exhaust memory nor blow the
-  stack.
+- **SSRF-guarded** (`hook-webrequest/src/net_guard/mod.rs`): the plugin
+  validates the literal host of the configured URL at `open`/`configure` —
+  loopback sidecars are allowed; link-local / IMDS / RFC1918 / CGNAT / ULA /
+  cloud-metadata / alternate-IPv4 encodings are blocked; plaintext `http://`
+  is permitted only to loopback. A host NAME is resolved, checked and
+  pinned by the host's loopback-allowed egress class, not by the plugin, so
+  an answer that turns internal later (DNS rebinding) is refused before
+  anything is dialed.
+- **Redirects are never followed.** The plugin has no HTTP client of its own:
+  it hands a framed request to the host's `http` framer through its one
+  declared need, and a 3xx reply is relayed as the reply, never followed
+  (see `interpret` in `hook-webrequest/src/reply.rs` and
+  `hook-webrequest/src/door.rs`). A target cannot redirect the plugin to an
+  internal host.
+- **Tight timeouts**; a reply body over 64 KiB is refused (the exchange
+  buffers up to busbar-contract's `REPLY_MAX` first, and the plugin refuses
+  the body after it is read), and the reply is depth-guarded before parse
+  (past 128 levels, `MAX_REPLY_DEPTH`; serde_json's own recursion limit
+  binds first and refuses a 128-deep reply as invalid JSON) — a hostile or buggy target cannot blow the stack or get an
+  oversized reply relayed.
 - **Userinfo stripped** from every error string, so a `user:pass@`
   embedded in the operator's URL never reaches a logged error.
 - **Grants are core-enforced, never plugin-driven**: this forwarder only
@@ -62,15 +68,15 @@ either way. `tests/conformance.rs` proves the two doors are one hook.
   manifest declares `needs` (the intent it must relay); core still sends
   content only if the operator also grants it.
 
-See the doc comments at the top of [`src/lib.rs`](src/lib.rs) and
-[`src/net_guard/mod.rs`](src/net_guard/mod.rs) for the full design rationale.
+See the doc comments at the top of [`hook-webrequest/src/lib.rs`](hook-webrequest/src/lib.rs) and
+[`hook-webrequest/src/net_guard/mod.rs`](hook-webrequest/src/net_guard/mod.rs) for the full design rationale.
 
 ## Config
 
 | Setting | Required | Default | Notes |
 |---|---|---|---|
 | `url` | yes | — | The `https://` (or loopback `http://`) URL each hook op envelope is POSTed to. Validated against the SSRF guard at load and on every `configure` push; a committed push takes effect immediately (the next `decide`/`transform`/`notify` uses it), not only after a future plugin reload. |
-| `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget, since a hook FFI call holds a process-wide permit until the blocking call returns (see `MAX_TIMEOUT_MS`'s doc comment in `src/lib.rs`). Independently pushable via `configure`, applied immediately. |
+| `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget (see `MAX_TIMEOUT_MS`'s doc comment in `hook-webrequest/src/config.rs`). Independently pushable via `configure`, applied immediately. |
 
 ## Build
 
@@ -78,9 +84,8 @@ Needs a Rust toolchain ([rustup](https://rustup.rs); `rust-toolchain.toml`
 pins the version CI uses).
 
 ```sh
-cargo build --release      # cdylib: target/release/libbusbar_hook_webrequest.{so,dylib}
-cargo test                 # unit tests, the loader-seam e2e, the linked/dropped-in conformance,
-                           # and the full-stack e2e (needs a busbar checkout, below)
+cargo build --release      # cdylib: target/release/libbusbar_hook_webrequest_plugin.{so,dylib}
+cargo test                 # unit tests, the loader-seam forwarder test, and the linked/dropped-in conformance
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
@@ -88,20 +93,11 @@ cargo fmt --all -- --check
 ### Dependencies
 
 The one busbar crate this plugin names is `busbar-contract` (plus
-`busbar-plugin-loader`, dev-only, for the conformance and e2e tests) — a
+`busbar-plugin-loader` and the host connector/transport crates, dev-only, for
+the conformance and forwarder tests) — a
 `git` dependency on [GetBusbar/busbar](https://github.com/GetBusbar/busbar)
 pinned to the rev in field 1 of `.busbar-ref`. CI checks that every
 manifest rev and the lockfile agree with that pin.
-
-`tests/full_stack_e2e.rs` builds and boots the real `busbar` binary, so it
-needs a busbar checkout at that same rev: `BUSBAR_CHECKOUT=<path>`, or a
-sibling checkout beside this repo:
-
-```
-some-parent-dir/
-├── busbar/            # at the .busbar-ref rev
-└── busbar-hook-webrequest/
-```
 
 ### Pack and sign
 
@@ -113,12 +109,12 @@ in busbar for the full reference (`busbar-plugin-pack` is built with
 
 ```sh
 BUSBAR_SIGN_KEY=<signing key> busbar-plugin-pack pack \
-    --lib target/release/libbusbar_hook_webrequest.so \
+    --lib target/release/libbusbar_hook_webrequest_plugin.so \
     --name busbar-hook-webrequest --alias webrequest --kind hook \
-    --version 1.5.0 --publisher busbar \
+    --version 1.6.0 --publisher busbar \
     --license Apache-2.0 \
     --needs-prompt rw --needs-user ro \
-    --out busbar-hook-webrequest-1.5.0-x86_64-linux.tar.gz
+    --out busbar-hook-webrequest-1.6.0-x86_64-linux.tar.gz
 ```
 
 `--needs-prompt` / `--needs-user` declare this plugin's grant intent in
@@ -136,16 +132,16 @@ for the `hooks:` wiring (`kind: hook`, `settings: { url: ... }`).
 
 ## Tests
 
-`cargo test` runs both the pure unit tests (`src/lib.rs`, `src/net_guard/mod.rs`
-— SSRF predicates, reply parsing/depth guard, envelope shaping) and the
-end-to-end test in `tests/e2e.rs`, which loads the *built* cdylib over
-the real `busbar-plugin-loader` ABI seam against a local mock HTTP
-target — the same seam busbar's engine uses, so it exercises the actual
-`dlopen`/FFI path rather than calling Rust functions directly. Build
-under `cargo test --workspace`-equivalent (i.e. a normal `cargo build`
-first, or just `cargo test`, which builds the cdylib as part of the
-test run) so the e2e test finds the library; it self-skips with a
-message if the cdylib isn't present.
+`cargo test` runs the pure unit tests (`hook-webrequest/src/tests/*` —
+config, reply parsing/depth guard, envelope shaping, report — and
+`hook-webrequest/src/net_guard/tests.rs` for the SSRF predicates) and the
+plugin crate's integration tests: `hook-webrequest-plugin/tests/conformance.rs`
+(the linked and dropped-in doors are one hook) and
+`hook-webrequest-plugin/tests/forwarder.rs`, which loads the *built* cdylib
+over the real `busbar-plugin-loader` ABI seam against a scripted far end —
+the same seam busbar's engine uses, so it exercises the actual `dlopen`/FFI
+path rather than calling Rust functions directly. `cargo test` builds the
+cdylib as part of the run.
 
 ## License
 
