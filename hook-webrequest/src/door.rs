@@ -145,9 +145,14 @@ impl Forwarder {
                 let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
                 reply::interpret(got.status, phrase.as_deref(), &got.body)
             }
-            Err(failure) => Err(format!("{}: {failure}", reply::REQUEST_FAILED)),
+            Err(failure) => Err(transport_failure(&target, &failure)),
         })
     }
+}
+
+/// The text a transport failure is logged in: 1.5.5's prefix, then the host's cause.
+pub(crate) fn transport_failure(_target: &Target, failure: &ConnFailure) -> String {
+    format!("{}: {failure}", reply::REQUEST_FAILED)
 }
 
 impl Hook for Forwarder {
