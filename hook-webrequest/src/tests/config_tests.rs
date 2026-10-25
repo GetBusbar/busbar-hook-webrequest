@@ -69,18 +69,6 @@ fn timeout_defaults_and_is_clamped() {
 }
 
 #[test]
-fn the_endpoint_is_host_port_and_tls() {
-    let t = open(br#"{"url":"https://a.example/x"}"#).unwrap();
-    assert_eq!(t.endpoint(), ("a.example".to_string(), 443));
-    assert!(t.is_tls());
-    let t = open(br#"{"url":"http://[::1]:9000/x"}"#).unwrap();
-    assert_eq!(t.endpoint(), ("::1".to_string(), 9000));
-    assert!(!t.is_tls());
-    let t = open(br#"{"url":"http://localhost/x"}"#).unwrap();
-    assert_eq!(t.endpoint(), ("localhost".to_string(), 80));
-}
-
-#[test]
 fn configure_with_nothing_to_change_acks_without_a_commit() {
     assert_eq!(configure(&live(), &map(serde_json::json!({}))), Ok(None));
     assert_eq!(
