@@ -116,6 +116,11 @@ fn the_request_bytes_are_what_the_1_5_5_client_wrote() {
         "http://svc:hunter2@127.0.0.1:PORT/route",
         "http://us%40er:p%3Ass@127.0.0.1:PORT/route",
         "http://only@127.0.0.1:PORT/route",
+        "http://svc:p%+4ss@127.0.0.1:PORT/route",
+        "http://svc%FF:pw@127.0.0.1:PORT/route",
+        "http://svc:%FF@127.0.0.1:PORT/route",
+        "http://:%FF@127.0.0.1:PORT/route",
+        "http://svc:p%4@127.0.0.1:PORT/route",
         "http://localhost:PORT/route",
     ] {
         let want = client_bytes(url, 2_000, body);
