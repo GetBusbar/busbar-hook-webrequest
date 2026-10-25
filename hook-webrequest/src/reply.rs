@@ -120,19 +120,29 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
 /// exceptions are transform-only). The operator's `on_error` chain still resolves what the ENGINE
 /// observes about the call (its deadline, a fault, a refusal), exactly as it did in 1.5.5; the oracle
 /// cell `webrequest|gate|sidecar-500-reject` records a far-end 500 under `on_error: reject` serving
-/// the chat.
+/// the chat. The failure is logged to the plugin's log (a warn), never silent.
 #[must_use]
 pub fn decide(reply: Result<Value, String>) -> Value {
-    reply.unwrap_or_else(|_| serde_json::json!({}))
+    reply.unwrap_or_else(|e| {
+        tracing::warn!("{e}; decide abstains");
+        serde_json::json!({})
+    })
 }
 
 /// `transform`: any failure is `{}` (abstain, proceed with the ORIGINAL body); a parsed `reject` in the
-/// reply is honoured by the engine.
+/// reply is honoured by the engine. The failure is logged to the plugin's log (a warn).
 #[must_use]
 pub fn transform(reply: Result<Value, String>) -> Value {
-    reply.unwrap_or_else(|_| serde_json::json!({}))
+    reply.unwrap_or_else(|e| {
+        tracing::warn!("{e}; transform abstains");
+        serde_json::json!({})
+    })
 }
 
-/// `notify`: fire-and-forget. The reply is not read for meaning and every error is swallowed: a tap can
-/// NEVER delay or fail the served request.
-pub fn notify(_reply: Result<Value, String>) {}
+/// `notify`: fire-and-forget. The reply is not read for meaning and every error is dropped from the verdict: a tap can
+/// NEVER delay or fail the served request. A failure is logged to the plugin's log (a warn).
+pub fn notify(reply: Result<Value, String>) {
+    if let Err(e) = reply {
+        tracing::warn!("{e}; notify dropped");
+    }
+}

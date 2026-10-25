@@ -145,7 +145,7 @@ impl Forwarder {
                 let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
                 reply::interpret(got.status, phrase.as_deref(), &got.body)
             }
-            Err(_) => Err(reply::REQUEST_FAILED.to_string()),
+            Err(failure) => Err(format!("{}: {failure}", reply::REQUEST_FAILED)),
         })
     }
 }
@@ -178,7 +178,10 @@ impl Hook for Forwarder {
                 *live = next;
                 true
             }
-            Err(_) => false,
+            Err(reason) => {
+                tracing::warn!("{reason}");
+                false
+            }
         }
     }
 
