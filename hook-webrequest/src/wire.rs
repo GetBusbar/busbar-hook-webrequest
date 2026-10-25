@@ -58,7 +58,7 @@ pub fn envelope(op: &str, payload: &serde_json::Value) -> Result<Vec<u8>, String
 /// writes the bytes, so they are hyper's, the 1.5.5 client's own library). The framer adds
 /// `content-length` from the body and `host` from the request's authority; the fields here are the ones
 /// the forwarder itself sets, in the 1.5.5 client's order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Request {
     /// Always `POST`.
     pub method: &'static str,
@@ -66,11 +66,35 @@ pub struct Request {
     pub target: String,
     /// The `host` header value: the host, and the port only when the URL names a non-default one.
     pub authority: String,
-    /// The fields, in order: `authorization` (only when the URL carries userinfo), `content-type`,
+    /// The fields, in order (`Debug` redacts the target and the `authorization` value):
+    /// `authorization` (only when the URL carries userinfo), `content-type`,
     /// `accept`.
     pub fields: Vec<(&'static str, String)>,
     /// The op envelope.
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fields: Vec<(&str, &str)> = self
+            .fields
+            .iter()
+            .map(|(n, v)| {
+                if n.eq_ignore_ascii_case("authorization") {
+                    (*n, "<redacted>")
+                } else {
+                    (*n, v.as_str())
+                }
+            })
+            .collect();
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("target", &"<redacted>")
+            .field("authority", &self.authority)
+            .field("fields", &fields)
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 /// The request for `body` to `target`.
@@ -123,7 +147,7 @@ fn basic_authorization(url: &url::Url) -> Option<String> {
 
 /// Percent-decoding as `percent_encoding::percent_decode` does it: `%` decodes only when followed by
 /// two ASCII hex digits, otherwise it stays literal.
-fn percent_decode(s: &str) -> Vec<u8> {
+pub(crate) fn percent_decode(s: &str) -> Vec<u8> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
