@@ -390,5 +390,59 @@ pub fn reportable_url(url: &url::Url) -> String {
     }
 }
 
+/// The target URL as a `Debug` rendering or a log line names it: [`reportable_url`] with the path
+/// cut too (`/***`), for a sidecar may take its key in the path as well as the query.
+#[must_use]
+pub fn loggable_url(url: &url::Url) -> String {
+    let mut safe = url.clone();
+    if !matches!(safe.path(), "" | "/") {
+        safe.set_path("/***");
+    }
+    reportable_url(&safe)
+}
+
+/// Every part of `url` that can carry a credential, longest first, each also percent-decoded: the
+/// URL as written and as echoed, its path, query, username and password. What [`scrub`] cuts.
+#[must_use]
+pub fn secret_parts(url: &url::Url) -> Vec<String> {
+    let mut parts = vec![
+        url.as_str().to_string(),
+        mask_userinfo(url),
+        reportable_url(url),
+    ];
+    if !matches!(url.path(), "" | "/") {
+        parts.push(url.path().to_string());
+    }
+    if let Some(q) = url.query().filter(|q| !q.is_empty()) {
+        parts.push(q.to_string());
+    }
+    if let Some(p) = url.password() {
+        parts.push(p.to_string());
+    }
+    parts.push(url.username().to_string());
+    let decoded: Vec<String> = parts
+        .iter()
+        .map(|p| String::from_utf8_lossy(&crate::wire::percent_decode(p)).into_owned())
+        .collect();
+    parts.extend(decoded);
+    parts.retain(|p| !p.is_empty());
+    parts.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    parts.dedup();
+    parts
+}
+
+/// `text` (the host's words, which may quote the target) with every [`secret_parts`] of `url`
+/// replaced by `***`.
+#[must_use]
+pub fn scrub(text: &str, url: &url::Url) -> String {
+    let mut out = text.to_string();
+    for p in secret_parts(url) {
+        if out.contains(p.as_str()) {
+            out = out.replace(p.as_str(), "***");
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests;

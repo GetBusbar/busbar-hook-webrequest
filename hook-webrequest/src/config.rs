@@ -27,13 +27,23 @@ struct Config {
 }
 
 /// The forwarding target: a validated URL and its timeout, taken together so `configure` swaps both
-/// atomically.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// atomically. Its `Debug` names the URL as a log line does ([`net_guard::loggable_url`]): userinfo,
+/// path and query masked.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Target {
     /// The validated URL every op envelope is POSTed to.
     pub url: url::Url,
     /// The wall-clock bound of one op, in `[1ms, MAX_TIMEOUT_MS]`.
     pub timeout: Duration,
+}
+
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Target")
+            .field("url", &net_guard::loggable_url(&self.url))
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 /// Bound an operator timeout to `[1ms, MAX_TIMEOUT_MS]`.
