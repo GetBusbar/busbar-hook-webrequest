@@ -179,6 +179,19 @@ fn validate_rejects_scheme_and_plaintext_remote() {
 }
 
 #[test]
+fn plaintext_loopback_carve_out_covers_dot_localhost_and_mapped_v6() {
+    // `*.localhost` (RFC 6761) is loopback: plaintext is allowed, any case, with or without a port.
+    assert!(validate_target_url("http://sidecar.localhost:8080/h").is_ok());
+    assert!(validate_target_url("http://SIDECAR.LOCALHOST/h").is_ok());
+    // An IPv4-mapped v6 loopback literal is loopback (`host_is_blocked` allows it too).
+    assert!(validate_target_url("http://[::ffff:127.0.0.1]:9000/h").is_ok());
+    // `localhost` only as a whole trailing label: lookalikes are plaintext to a non-loopback host.
+    assert!(validate_target_url("http://evil.localhost.example/h").is_err());
+    assert!(validate_target_url("http://localhost.example.com/h").is_err());
+    assert!(validate_target_url("http://notlocalhost/h").is_err());
+}
+
+#[test]
 fn errors_mask_embedded_userinfo() {
     let err = validate_target_url("https://svc:hunter2@10.0.0.1/route").unwrap_err();
     assert!(
