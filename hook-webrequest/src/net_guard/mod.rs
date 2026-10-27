@@ -17,146 +17,28 @@
 //! plaintext `http://` is permitted ONLY for a loopback host. This module keeps that policy bit-for-bit
 //! so a hook currently on `route: webhook` can migrate by pointing this plugin at the same URL.
 //!
-//! ## Why the predicates are COPIED, not shared
+//! ## Shared predicates
 //!
-//! The pure context-free predicates below (`is_cgnat_shared_v4`, `is_unique_local_v6`,
-//! `is_link_local_v6`, `is_alternate_ipv4_encoding`) are lifted verbatim from
-//! `busbar/src/net_guard.rs`. A plugin cdylib must NOT depend on the `busbar` core crate (it would pull
-//! the whole engine into a leaf `cdylib` and invert the plugin/core boundary), so the identical
-//! security atoms are copied here; the SSRF guard belongs in the plugin that opens the socket.
-//! If these are ever hoisted into a tiny no-dep shared leaf crate, this copy should reference
-//! it; until then the copies must be kept byte-identical — a contributor hardening one against a new
-//! obfuscation form must harden both. The tests below pin THIS COPY's behaviour against fixed test
-//! vectors (obfuscated-encoding forms, RFC1918/CGNAT/ULA/link-local/metadata hosts, the loopback
-//! carve-out); they do NOT diff against the core copy in `busbar/src/net_guard.rs`, so drift between
-//! the two copies would not by itself turn any test here red — keeping the two byte-identical is a
-//! manual review discipline at PR time, not something this test module enforces automatically.
+//! The context-free address predicates (`is_cgnat_shared_v4`, `is_unique_local_v6`,
+//! `is_link_local_v6`, `embedded_ipv4`, `is_alternate_ipv4_encoding`) and the cloud-metadata host
+//! list are the contract's (`busbar_contract::net`), the same ones the host's own guard reads. Only
+//! the policy lives here: loopback sidecars are carved out. The tests pin this module's verdicts
+//! against fixed vectors.
 //!
 //! Note also: these predicates validate the URL's literal host text at open/configure time. Name
 //! resolution, the resolved-address check and the address pin (DNS rebinding / TOCTOU) belong to the
 //! host's loopback-allowed egress class, which every connection this plugin opens goes through.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-// ── Pure context-free predicates (copied verbatim from busbar/src/net_guard.rs) ────────────────────
-
-/// IPv6 unique-local range `fc00::/7` (the first 7 bits are `1111110`).
-pub fn is_unique_local_v6(addr: &Ipv6Addr) -> bool {
-    (addr.segments()[0] & 0xfe00) == 0xfc00
-}
-
-/// IPv6 link-local range `fe80::/10` (the first 10 bits are `1111111010`).
-pub fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
-    (addr.segments()[0] & 0xffc0) == 0xfe80
-}
+use busbar_contract::net::{
+    embedded_ipv4, is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6,
+    is_unique_local_v6, IpAddr, Ipv4Addr, Ipv6Addr, METADATA_HOSTS,
+};
 
 /// IPv6 site-local `fec0::/10`. Deprecated by RFC 3879 but still routed on plenty of real networks,
 /// and NOT covered by the ULA or link-local masks (`0xfec0 & 0xfe00` is `0xfe00`, not `0xfc00`;
 /// `0xfec0 & 0xffc0` is `0xfec0`, not `0xfe80`), so without this it was simply allowed.
 pub fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfec0
-}
-
-/// The IPv4 address embedded in an IPv6 TRANSLATION or TUNNELLING address, if there is one.
-///
-/// `Ipv6Addr::to_ipv4` only unwraps the `::a.b.c.d` and `::ffff:a.b.c.d` forms, which leaves two
-/// widely-deployed embeddings that carry the same internal IPv4 targets straight past the guard:
-///
-/// - **NAT64, `64:ff9b::/96`** (RFC 6052). Standard on IPv6-only clusters with a NAT64 gateway, so
-///   `[64:ff9b::a9fe:a9fe]` is a live route to `169.254.169.254`.
-/// - **6to4, `2002::/16`** (RFC 3056), which carries the IPv4 address in the next 32 bits, so
-///   `[2002:a00:1::]` is `10.0.0.1`.
-///
-/// Returning the embedded address lets the caller run it through the same `is_internal_v4` policy
-/// as any other IPv4 target, rather than maintaining a second, divergent list.
-pub fn embedded_v4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
-    if let Some(v4) = addr.to_ipv4() {
-        return Some(v4);
-    }
-    let s = addr.segments();
-    // NAT64 with the last 32 bits carrying the IPv4 address. Two prefixes, not one:
-    //   - the RFC 6052 WELL-KNOWN prefix `64:ff9b::/96`;
-    //   - the RFC 8215 LOCAL-USE prefix `64:ff9b:1::/48`, which exists precisely because the
-    //     well-known prefix may not be used with non-global IPv4 addresses. That is exactly the
-    //     RFC1918 case this guard cares about, so a deployment translating to internal space is
-    //     using the local-use prefix, not the well-known one. Matching only the well-known prefix
-    //     would have missed the deployments most likely to reach somewhere internal.
-    // Both embed at /96 (the last two segments hold the address), but they differ in how much of
-    // the leading 96 bits is FIXED. RFC 6052 pins the whole well-known /96, so `seg[3..6]` must be
-    // zero there. RFC 8215 pins only the top 48 bits of the local-use prefix and leaves an operator
-    // free to choose any /96 under it (its own Section 6 example is `64:ff9b:1:fffe::/96`), so
-    // every `seg[3..6]` is accepted there. `64:ff9b:1::/48` is reserved for this translation and
-    // never globally routable (RFC 8215 Section 3), so accepting all of it cannot mis-flag real
-    // public traffic. Ported from core's hardened rule (busbar-kernel-egress trust/net.rs,
-    // `embedded_ipv4`), per this module's harden-both-copies rule.
-    const NAT64_WELL_KNOWN: u16 = 0; // RFC 6052 `64:ff9b::/96`
-    const NAT64_LOCAL_USE: u16 = 1; // RFC 8215 `64:ff9b:1::/48`, /96 instantiation
-    if s[0] == 0x0064 && s[1] == 0xff9b {
-        let embeds_v4 = match s[2] {
-            NAT64_WELL_KNOWN => s[3] == 0 && s[4] == 0 && s[5] == 0,
-            NAT64_LOCAL_USE => true,
-            _ => false,
-        };
-        if embeds_v4 {
-            let [a, b] = s[6].to_be_bytes();
-            let [c, d] = s[7].to_be_bytes();
-            return Some(Ipv4Addr::new(a, b, c, d));
-        }
-    }
-    // 6to4: 2002:AABB:CCDD::/48 encodes A.B.C.D.
-    if s[0] == 0x2002 {
-        return Some(Ipv4Addr::new(
-            (s[1] >> 8) as u8,
-            (s[1] & 0xff) as u8,
-            (s[2] >> 8) as u8,
-            (s[2] & 0xff) as u8,
-        ));
-    }
-    None
-}
-
-/// RFC 6598 Shared Address Space `100.64.0.0/10` (CGNAT) — routable inside AWS/GCP VPCs and k8s
-/// clusters, so an SSRF target the private/link-local checks miss. `Ipv4Addr::is_private()` misses it.
-pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
-    let o = v4.octets();
-    o[0] == 100 && (o[1] & 0xC0) == 64
-}
-
-/// True when `host` is an alternate (non-dotted-quad) IPv4 encoding that `IpAddr::from_str` rejects
-/// but the OS resolver still maps to an IPv4 address (bare decimal `2130706433`, `0x`/`0X` hex, a
-/// leading-zero octal, or a dotted form with fewer than four octets). A canonical dotted-quad is NOT
-/// matched here (handled by the `parse::<IpAddr>()` path); a normal DNS hostname is not matched either.
-pub fn is_alternate_ipv4_encoding(host: &str) -> bool {
-    if host.is_empty() {
-        return false;
-    }
-    if !host.contains('.') {
-        if let Some(hex) = host.strip_prefix("0x").or_else(|| host.strip_prefix("0X")) {
-            return !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit());
-        }
-    }
-    if host.contains('.') {
-        let parts: Vec<&str> = host.split('.').collect();
-        let all_numeric = parts.iter().all(|p| {
-            if let Some(hex) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
-                !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())
-            } else {
-                !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())
-            }
-        });
-        if !all_numeric {
-            return false;
-        }
-        if parts.len() < 4 {
-            return true;
-        }
-        return parts.iter().any(|p| {
-            p.starts_with("0x")
-                || p.starts_with("0X")
-                || (p.len() > 1 && p.starts_with('0') && p.bytes().all(|b| b.is_ascii_digit()))
-        });
-    }
-    host.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// True iff `host` is an alternate (non-dotted-quad) IPv4 encoding that unambiguously denotes the
@@ -191,9 +73,6 @@ pub fn is_alternate_loopback_v4(host: &str) -> bool {
 }
 
 // ── Context-specific block/loopback wrappers (parity with the old webhook/OTLP guard) ──────────────
-
-/// The cloud-metadata DNS names blocked case-insensitively. Mirrors `observability::METADATA_HOSTS`.
-const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metadata.internal"];
 
 /// True for an IPv4 literal the forwarder must not POST to (EXCEPT loopback, which the caller carves
 /// out): link-local (incl. `169.254.169.254` IMDS), RFC1918 private, RFC6598 CGNAT, unspecified,
@@ -283,7 +162,7 @@ fn ip_is_internal(ip: &IpAddr) -> bool {
             if v6.is_loopback() {
                 return false; // `::1` loopback sidecar — allowed
             }
-            if let Some(v4) = embedded_v4(v6) {
+            if let Some(v4) = embedded_ipv4(v6) {
                 return !v4.is_loopback() && is_internal_v4(&v4);
             }
             v6.is_unspecified()
