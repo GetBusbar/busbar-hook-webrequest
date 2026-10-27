@@ -27,7 +27,8 @@ busbar-contract = { workspace = true }
 # The conformance test loads the built cdylib over the REAL loader and the linked door through the
 # same loader — dev-only, never in the shipped artifact. Same pinned rev as busbar-contract above,
 # so one busbar source resolves.
-busbar-plugin-loader = { workspace = true, features = ["conformance"] }
+busbar-plugin-loader = { workspace = true }
+busbar-test-kit = { workspace = true }
 # THE SUITE'S HOST CONNECTOR (tests/support/conformance_host.rs, rendered): busbar's connector, its
 # TLS test kit, and the transport framers this plugin's needs name. Dev-only.
 busbar-core-connector = { workspace = true }

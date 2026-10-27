@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE BOTH-WAYS CONFORMANCE of `busbar-hook-webrequest`: busbar's PUBLISHED suite
-//! (`busbar_plugin_loader::conformance_suite!`, at the busbar commit this repo pins in `.busbar-ref`),
+//! (`busbar_test_kit::conformance_suite!`, at the busbar commit this repo pins in `.busbar-ref`),
 //! run by this repo. It loads the LINKED door (the logic crate's `door::door`) and the BUILT cdylib
 //! (`busbar-hook-webrequest-plugin`) through busbar's real plugin loader and drives both with the
 //! hook kind's script over `conformance.json`. The forwarder's one outbound need (`http`) is carried
@@ -56,7 +56,7 @@ fn host(
     conformance_host::host(wake, anchors)
 }
 
-busbar_plugin_loader::conformance_suite! {
+busbar_test_kit::conformance_suite! {
     door: busbar_hook_webrequest::door::door,
     cdylib: "busbar_hook_webrequest_plugin",
     inputs: include_str!("conformance.json"),
