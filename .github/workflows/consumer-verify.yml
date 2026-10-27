@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   consumer:
-    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@3af24229cbb500465440d7907039175c8f8db167
+    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@ee75bbda45bcc2bc618a8b9ad03b796e4db0bb18
     with:
       version: ${{ inputs.version || '' }}
       asset_prefix: busbar-hook-webrequest
