@@ -117,7 +117,7 @@ fn host_is_blocked_covers_the_classic_bypass_forms() {
 fn ipv6_embeddings_of_internal_ipv4_targets_are_blocked() {
     // NAT64, RFC 6052 well-known prefix.
     assert_eq!(
-        embedded_v4(&"64:ff9b::a9fe:a9fe".parse().unwrap()),
+        embedded_ipv4(&"64:ff9b::a9fe:a9fe".parse().unwrap()),
         Some(Ipv4Addr::new(169, 254, 169, 254))
     );
     assert!(host_is_blocked(&url("https://[64:ff9b::a9fe:a9fe]/latest")));
@@ -125,14 +125,14 @@ fn ipv6_embeddings_of_internal_ipv4_targets_are_blocked() {
                                                                   // RFC 8215 LOCAL-USE prefix. This is the one a deployment translating to RFC1918 space
                                                                   // actually uses, because the well-known prefix may not be used with non-global IPv4.
     assert_eq!(
-        embedded_v4(&"64:ff9b:1::a9fe:a9fe".parse().unwrap()),
+        embedded_ipv4(&"64:ff9b:1::a9fe:a9fe".parse().unwrap()),
         Some(Ipv4Addr::new(169, 254, 169, 254))
     );
     assert!(host_is_blocked(&url("https://[64:ff9b:1::a9fe:a9fe]/x")));
     assert!(host_is_blocked(&url("https://[64:ff9b:1::a00:1]/x")));
     // 6to4, RFC 3056.
     assert_eq!(
-        embedded_v4(&"2002:a00:1::".parse().unwrap()),
+        embedded_ipv4(&"2002:a00:1::".parse().unwrap()),
         Some(Ipv4Addr::new(10, 0, 0, 1))
     );
     assert!(host_is_blocked(&url("https://[2002:a00:1::]/x")));
@@ -142,7 +142,10 @@ fn ipv6_embeddings_of_internal_ipv4_targets_are_blocked() {
     assert!(host_is_blocked(&url("https://[fec0::1]/x")));
     // A genuinely external IPv6 address is still allowed, so the new checks are not a blanket deny.
     assert!(!host_is_blocked(&url("https://[2606:4700:4700::1111]/x")));
-    assert_eq!(embedded_v4(&"2606:4700:4700::1111".parse().unwrap()), None);
+    assert_eq!(
+        embedded_ipv4(&"2606:4700:4700::1111".parse().unwrap()),
+        None
+    );
     // ...and a NAT64/6to4 form carrying LOOPBACK keeps the sidecar carve-out.
     assert!(!host_is_blocked(&url("http://[64:ff9b::7f00:1]:8080/x")));
 }
