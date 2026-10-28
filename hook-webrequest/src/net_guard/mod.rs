@@ -72,8 +72,6 @@ pub fn is_alternate_loopback_v4(host: &str) -> bool {
     first == 127 && parts.iter().all(|p| p.parse::<u32>().is_ok())
 }
 
-// ── Context-specific block/loopback wrappers (parity with the old webhook/OTLP guard) ──────────────
-
 /// True for an IPv4 literal the forwarder must not POST to (EXCEPT loopback, which the caller carves
 /// out): link-local (incl. `169.254.169.254` IMDS), RFC1918 private, RFC6598 CGNAT, unspecified,
 /// broadcast, and the Azure WireServer / OCI IMDS public-but-metadata literals. Mirrors
