@@ -63,3 +63,18 @@ busbar_plugin_loader::conformance_suite! {
     host: host,
     tls: conformance_host::anchors(),
 }
+
+/// The hook's Statement declares exactly its secret fields (`secret_refs`): `url`, the one setting
+/// that can carry a credential (`user:password@host` userinfo or a `?token=` query; `timeout_ms` is
+/// not a secret). busbar resolves a secret reference only at a position the Statement declares
+/// secret and refuses one anywhere else (busbar #1699, ORACLE-SIGNOFF G14), so a 1.5.5 config's
+/// `url: {env: …}` keeps loading.
+#[test]
+fn the_statement_declares_exactly_its_secret_fields() {
+    let stated = busbar_contract::abi::mechanism::rendering::read(
+        &busbar_plugin_loader::dispatch::rendering_of(busbar_hook_webrequest::door::door)
+            .expect("the door renders"),
+    )
+    .expect("the rendering reads back");
+    assert_eq!(stated.secret_refs, ["url".to_string()]);
+}
