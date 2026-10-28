@@ -72,8 +72,6 @@ pub fn is_alternate_loopback_v4(host: &str) -> bool {
     first == 127 && parts.iter().all(|p| p.parse::<u32>().is_ok())
 }
 
-// ── Context-specific block/loopback wrappers (parity with the old webhook/OTLP guard) ──────────────
-
 /// True for an IPv4 literal the forwarder must not POST to (EXCEPT loopback, which the caller carves
 /// out): link-local (incl. `169.254.169.254` IMDS), RFC1918 private, RFC6598 CGNAT, unspecified,
 /// broadcast, and the Azure WireServer / OCI IMDS public-but-metadata literals. Mirrors
@@ -131,7 +129,7 @@ fn ip_is_loopback(ip: &IpAddr) -> bool {
 ///
 /// This inspects the URL's literal host TEXT only and never resolves a name: this plugin opens no
 /// socket and resolves nothing. A NAME that resolves to an internal address is refused by the host's
-/// loopback-allowed egress class when the connection is opened (THE DESIGN §5), which also pins the
+/// loopback-allowed egress class when the connection is opened, which also pins the
 /// approved addresses. The check here is total (no I/O, no failure mode), so it runs at
 /// open/configure and rejects the IP-literal spellings before anything reaches the host.
 pub fn host_is_blocked(url: &url::Url) -> bool {

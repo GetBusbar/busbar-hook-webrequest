@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The settings document, the validated [`Target`], and `configure`'s commit-on-ack merge. Every refusal
-//! text is 1.5.5's.
+//! The settings document, the validated [`Target`], and `configure`'s commit-on-ack merge.
 
 use crate::net_guard;
 use serde::Deserialize;
@@ -17,9 +16,8 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 /// hook, never past it.
 pub const MAX_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_MS;
 
-/// The settings keys the forwarder reads. Any other key is ignored, as 1.5.5 ignored it (refusing
-/// it would break a 1.5.5 document on upgrade), and never silently: the door logs it
-/// ([`unknown_keys`]).
+/// The settings keys the forwarder reads. Any other key is ignored (refusing it would break
+/// existing documents), and never silently: the door logs it ([`unknown_keys`]).
 pub const KEYS: [&str; 2] = ["url", "timeout_ms"];
 
 /// The keys of a settings object the forwarder does not read, each as the warning the door logs.
@@ -113,7 +111,7 @@ impl Target {
 /// blocked URL is a fail-closed load error, never a live forwarder.
 ///
 /// # Errors
-/// The 1.5.5 refusal text.
+/// The refusal text.
 pub fn open(settings: &[u8]) -> Result<Target, String> {
     let text = std::str::from_utf8(settings)
         .map_err(|e| format!("webrequest: invalid plugin config: {e}"))?;
@@ -130,7 +128,7 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
 /// blocked NACKs the WHOLE push and commits neither.
 ///
 /// `Ok(None)`: ACK, nothing changes. `Ok(Some(t))`: ACK, `t` is the new live target. `Err(reason)`: NACK,
-/// the live target is untouched (`reason` is the text 1.5.5 wrote to stderr).
+/// the live target is untouched (`reason` is the NACK text).
 ///
 /// # Errors
 /// The NACK reason.

@@ -5,15 +5,15 @@
 //! surface. No `unsafe` here.
 //!
 //! * `open` / `refresh` — [`crate::config::open`]: the settings to a live [`Target`], refused in
-//!   1.5.5's words.
-//! * `decide` / `transform` / `notify` — the op's 1.5.5 projection, enveloped ([`crate::wire`]) and
+//!   its words.
+//! * `decide` / `transform` / `notify` — the op's projection, enveloped ([`crate::wire`]) and
 //!   POSTed to the target through the ONE declared need ([`NEEDS`]: outbound, the loopback-allowed
 //!   egress class, over the host's `http` framer), one exchange per op. The op answers PENDING while
-//!   the exchange pends and is re-entered on the wake (THE DESIGN, the plugin ABI: Ready|Pending(wake)).
-//!   The reply means what it meant in 1.5.5 ([`crate::reply`]).
+//!   the exchange pends and is re-entered on the wake (Ready|Pending(wake)). The reply's meaning is
+//!   in [`crate::reply`].
 //! * `configure` — [`crate::config::configure`]'s commit-on-ack merge; a NACK is FAILED.
-//! * A settings key the forwarder does not read ([`crate::config::KEYS`]) is ignored, as 1.5.5
-//!   ignored it, and logged as a warning at `open`, `refresh` and an acknowledged `configure`.
+//! * A settings key the forwarder does not read ([`crate::config::KEYS`]) is ignored
+//!   and logged as a warning at `open`, `refresh` and an acknowledged `configure`.
 //! * `status` / `describe` — the forwarder's own documents ([`crate::report`]), never the target's.
 
 use std::cell::Cell;
@@ -74,7 +74,7 @@ pub const NEEDS: &[Need] = &[Need {
     deny_response_headers_len: 0,
 }];
 
-/// A gate that may see and rewrite the prompt and read the caller (1.5.5's `needs_prompt: rw`,
+/// A gate that may see and rewrite the prompt and read the caller (`needs_prompt: rw`,
 /// `needs_user: ro`); the operator's grant decides what it is handed.
 const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 
@@ -98,7 +98,7 @@ pub struct Forwarder {
 }
 
 /// A [`Target`] with what every op's exchange needs of it, built once when the target is set (at
-/// `open` and an acknowledged `configure`): the origin the need dials, and the 1.5.5 client's
+/// `open` and an acknowledged `configure`): the origin the need dials, and the
 /// method, request target and fields ([`wire::request`]) as the exchange takes them.
 struct Live {
     target: Target,
@@ -158,7 +158,7 @@ impl Forwarder {
     }
 
     /// POST `op`'s envelope over the projection `payload` builds to the live target: PENDING while
-    /// the exchange pends; READY with the reply, or the 1.5.5 failure text.
+    /// the exchange pends; READY with the reply, or the failure text.
     fn post(
         &self,
         on: &Op<'_>,
@@ -188,9 +188,9 @@ impl Forwarder {
     }
 }
 
-/// The text a transport failure is logged in: 1.5.5's prefix, then the host's cause with every
+/// The text a transport failure is logged in: a fixed prefix, then the host's cause with every
 /// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
-/// words may quote the URL (CREDENTIAL-LOCKDOWN H3).
+/// words may quote the URL.
 pub(crate) fn transport_failure(target: &Target, failure: &ConnFailure) -> String {
     let cause = crate::net_guard::scrub(&failure.to_string(), &target.url);
     format!("{}: {cause}", reply::REQUEST_FAILED)
