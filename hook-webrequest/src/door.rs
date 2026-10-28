@@ -5,19 +5,20 @@
 //! surface. No `unsafe` here.
 //!
 //! * `open` / `refresh` — [`crate::config::open`]: the settings to a live [`Target`], refused in
-//!   1.5.5's words.
-//! * `decide` / `transform` / `notify` — the op's 1.5.5 projection, enveloped ([`crate::wire`]) and
+//!   its words.
+//! * `decide` / `transform` / `notify` — the op's projection, enveloped ([`crate::wire`]) and
 //!   POSTed to the target through the ONE declared need ([`NEEDS`]: outbound, the loopback-allowed
 //!   egress class, over the host's `http` framer), one exchange per op. The op answers PENDING while
-//!   the exchange pends and is re-entered on the wake (THE DESIGN, the plugin ABI: Ready|Pending(wake)).
-//!   The reply means what it meant in 1.5.5 ([`crate::reply`]).
+//!   the exchange pends and is re-entered on the wake (Ready|Pending(wake)). The reply's meaning is
+//!   in [`crate::reply`].
 //! * `configure` — [`crate::config::configure`]'s commit-on-ack merge; a NACK is FAILED.
-//! * A settings key the forwarder does not read ([`crate::config::KEYS`]) is ignored, as 1.5.5
-//!   ignored it, and logged as a warning at `open`, `refresh` and an acknowledged `configure`.
+//! * A settings key the forwarder does not read ([`crate::config::KEYS`]) is ignored
+//!   and logged as a warning at `open`, `refresh` and an acknowledged `configure`.
 //! * `status` / `describe` — the forwarder's own documents ([`crate::report`]), never the target's.
 
 use std::cell::Cell;
-use std::sync::{PoisonError, RwLock};
+use std::ops::Deref;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::task::Poll;
 
 use busbar_contract::abi::hook::{Tail, CLASS_GATE, PROMPT_RW, USER_RO};
@@ -73,7 +74,7 @@ pub const NEEDS: &[Need] = &[Need {
     deny_response_headers_len: 0,
 }];
 
-/// A gate that may see and rewrite the prompt and read the caller (1.5.5's `needs_prompt: rw`,
+/// A gate that may see and rewrite the prompt and read the caller (`needs_prompt: rw`,
 /// `needs_user: ro`); the operator's grant decides what it is handed.
 const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 
@@ -93,47 +94,82 @@ pub const STATEMENT: Statement = Statement {
 /// The forwarder: the live target, swapped whole by `configure`.
 #[derive(Debug)]
 pub struct Forwarder {
-    live: RwLock<Target>,
+    live: RwLock<Arc<Live>>,
 }
 
-/// The exchange's request for `body`: the 1.5.5 client's method, target and fields.
-fn request(target: &Target, body: Vec<u8>) -> Request {
-    let r = wire::request(target, body);
-    Request {
-        method: r.method.as_bytes().to_vec(),
-        target: r.target.into_bytes(),
-        fields: r
-            .fields
-            .into_iter()
-            .map(|(n, v)| (n.as_bytes().to_vec(), v.into_bytes()))
-            .collect(),
-        body: r.body,
-        timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
+/// A [`Target`] with what every op's exchange needs of it, built once when the target is set (at
+/// `open` and an acknowledged `configure`): the origin the need dials, and the
+/// method, request target and fields ([`wire::request`]) as the exchange takes them.
+struct Live {
+    target: Target,
+    origin: String,
+    method: Vec<u8>,
+    request_target: Vec<u8>,
+    fields: Vec<(Vec<u8>, Vec<u8>)>,
+    timeout_ms: u64,
+}
+
+impl Deref for Live {
+    type Target = Target;
+    fn deref(&self) -> &Target {
+        &self.target
+    }
+}
+
+/// Names the target as a log line does; the request parts carry the credential and stay out.
+impl std::fmt::Debug for Live {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.target, f)
+    }
+}
+
+impl Live {
+    fn new(target: Target) -> Arc<Self> {
+        let r = wire::request(&target, Vec::new());
+        Arc::new(Self {
+            origin: target.url.origin().ascii_serialization(),
+            method: r.method.as_bytes().to_vec(),
+            request_target: r.target.into_bytes(),
+            fields: r
+                .fields
+                .into_iter()
+                .map(|(n, v)| (n.as_bytes().to_vec(), v.into_bytes()))
+                .collect(),
+            timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
+            target,
+        })
+    }
+
+    /// The exchange's request for `body`.
+    fn request(&self, body: Vec<u8>) -> Request {
+        Request {
+            method: self.method.clone(),
+            target: self.request_target.clone(),
+            fields: self.fields.clone(),
+            body,
+            timeout_ms: self.timeout_ms,
+        }
     }
 }
 
 impl Forwarder {
-    fn target(&self) -> Target {
-        self.live
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+    fn live(&self) -> Arc<Live> {
+        Arc::clone(&self.live.read().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// POST `op`'s envelope over the projection `payload` builds to the live target: PENDING while
-    /// the exchange pends; READY with the reply, or the 1.5.5 failure text.
+    /// the exchange pends; READY with the reply, or the failure text.
     fn post(
         &self,
         on: &Op<'_>,
         op: &str,
         payload: impl FnOnce() -> serde_json::Value,
     ) -> Poll<Result<serde_json::Value, String>> {
-        let target = self.target();
+        let live = self.live();
         let unsendable = Cell::new(None);
-        let origin = target.url.origin().ascii_serialization();
-        let answer = on.exchange(NEED, Some(&origin), || {
+        let answer = on.exchange(NEED, Some(&live.origin), || {
             wire::envelope(op, &payload())
-                .map(|body| request(&target, body))
+                .map(|body| live.request(body))
                 .map_err(|e| {
                     unsendable.set(Some(e));
                     ConnFailure::Refused(String::new())
@@ -147,14 +183,14 @@ impl Forwarder {
                 let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
                 reply::interpret(got.status, phrase.as_deref(), &got.body)
             }
-            Err(failure) => Err(transport_failure(&target, &failure)),
+            Err(failure) => Err(transport_failure(&live, &failure)),
         })
     }
 }
 
-/// The text a transport failure is logged in: 1.5.5's prefix, then the host's cause with every
+/// The text a transport failure is logged in: a fixed prefix, then the host's cause with every
 /// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
-/// words may quote the URL (CREDENTIAL-LOCKDOWN H3).
+/// words may quote the URL.
 pub(crate) fn transport_failure(target: &Target, failure: &ConnFailure) -> String {
     let cause = crate::net_guard::scrub(&failure.to_string(), &target.url);
     format!("{}: {cause}", reply::REQUEST_FAILED)
@@ -182,7 +218,7 @@ impl Hook for Forwarder {
         _version: u64,
     ) -> bool {
         let mut live = self.live.write().unwrap_or_else(PoisonError::into_inner);
-        let result = config::configure(&live, settings);
+        let result = config::configure(&live.target, settings);
         if result.is_ok() {
             for warning in config::unknown_keys(settings) {
                 tracing::warn!("{warning}");
@@ -191,7 +227,7 @@ impl Hook for Forwarder {
         match result {
             Ok(None) => true,
             Ok(Some(next)) => {
-                *live = next;
+                *live = Live::new(next);
                 true
             }
             Err(reason) => {
@@ -202,7 +238,7 @@ impl Hook for Forwarder {
     }
 
     fn status(&self) -> serde_json::Value {
-        report::status(&self.target())
+        report::status(&self.live())
     }
 
     fn describe(&self) -> serde_json::Value {
@@ -221,7 +257,7 @@ impl HookOpen for Open {
             tracing::warn!("{warning}");
         }
         Ok(Box::new(Forwarder {
-            live: RwLock::new(target),
+            live: RwLock::new(Live::new(target)),
         }))
     }
 }
