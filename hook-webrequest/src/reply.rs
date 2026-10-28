@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The reply rules: the 1.5.5 status rule, the body cap, the nesting-depth guard and the length-only
+//! The reply rules: the status rule, the body cap, the nesting-depth guard and the length-only
 //! parse error, and what a failure MEANS per op. The framed http exchange hands back `{status, body}`;
 //! [`interpret`] is what the plugin makes of it.
 
@@ -27,9 +27,9 @@ pub fn cap_exceeded() -> String {
     format!("webrequest: response exceeded {MAX_REPLY_BYTES} byte cap")
 }
 
-/// The failure for an error status (4xx/5xx), the 1.5.5 client's own wording without the URL. `phrase`
-/// is the reason phrase the server actually sent (the exchange's response head: the wire phrase on
-/// HTTP/1.1); when it is absent or empty (h2 has none) the canonical phrase stands, as it did in 1.5.5.
+/// The failure for an error status (4xx/5xx), worded without the URL. `phrase` is the reason phrase
+/// the server actually sent (the exchange's response head: the wire phrase on HTTP/1.1); when it is
+/// absent or empty (h2 has none) the canonical phrase stands.
 #[must_use]
 pub fn error_status(code: u16, phrase: Option<&str>) -> String {
     let (class, status) = match http::StatusCode::from_u16(code) {
@@ -49,7 +49,7 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
 /// reply must not splash it into an error the engine might log.
 ///
 /// # Errors
-/// The 1.5.5 text.
+/// The failure text.
 pub fn parse_reply(bytes: &[u8]) -> Result<Value, String> {
     if exceeds_max_depth(bytes, MAX_REPLY_DEPTH) {
         return Err(format!(
@@ -98,11 +98,11 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
 /// exchange holds it only to its own bound, busbar-contract's `REPLY_MAX`, and `Op::exchange` offers no way to
 /// lower it; the check here is what holds it to [`MAX_REPLY_BYTES`]).
 ///
-/// The status rule is the 1.5.5 client's `error_for_status`: 4xx/5xx (400..=599) is a failure, everything
-/// else (redirects are never followed) carries its body as the reply.
+/// The status rule: 4xx/5xx (400..=599) is a failure, everything else (redirects are never followed)
+/// carries its body as the reply.
 ///
 /// # Errors
-/// The 1.5.5 failure text.
+/// The failure text.
 pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value, String> {
     if (400..600).contains(&status) {
         return Err(error_status(status, phrase));
@@ -114,13 +114,10 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
 }
 
 /// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply) is
-/// `{}`, abstain: the request routes as if this hook had no opinion. That is the 1.5.5 forwarder's
-/// contract (busbar-webrequest v1.0.6 `decide`: "On any transport/parse error, return `{}`"), and
-/// hook behaviour stays 1.5.5's, `on_error` included (BUSBAR-1.6.0.md §11.7, #85; the owner-signed
-/// exceptions are transform-only). The operator's `on_error` chain still resolves what the ENGINE
-/// observes about the call (its deadline, a fault, a refusal), exactly as it did in 1.5.5; the oracle
-/// cell `webrequest|gate|sidecar-500-reject` records a far-end 500 under `on_error: reject` serving
-/// the chat. The failure is logged to the plugin's log (a warn), never silent.
+/// `{}`, abstain: the request routes as if this hook had no opinion. The operator's `on_error`
+/// chain still resolves what the ENGINE observes about the call (its deadline, a fault, a refusal),
+/// so a far-end 500 under `on_error: reject` serves the chat. The failure is logged to the plugin's
+/// log (a warn), never silent.
 #[must_use]
 pub fn decide(reply: Result<Value, String>) -> Value {
     reply.unwrap_or_else(|e| {
