@@ -78,10 +78,18 @@ const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 /// How many ops one instance holds in flight; the host clamps.
 pub const MAX_INFLIGHT: u32 = 64;
 
-/// THE STATEMENT: name, version, the hook tail and the one outbound need.
+/// The settings fields that may carry a credential, declared so the kernel resolves a
+/// `{env:}`/`{file:}`/`{module:}` reference written there (busbar #1699, G14: each plugin declares
+/// its secret fields): `url`, whose userinfo or `?token=` query can be a credential. The hook host
+/// lends nothing; the hook receives the resolved string.
+const SECRET_REFS: &[AbiStr] = &[abi_str("url")];
+
+/// THE STATEMENT: name, version, the hook tail, the one outbound need and the secret field.
 pub const STATEMENT: Statement = Statement {
     needs: NEEDS.as_ptr(),
     needs_len: NEEDS.len(),
+    secret_refs: SECRET_REFS.as_ptr(),
+    secret_refs_len: SECRET_REFS.len(),
     ..statement_with_tail(
         statement(crate::NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT),
         TAIL,
