@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What goes on the wire to the endpoint: the op envelope and the HTTP/1.1 request bytes. Both are
-//! byte-identical to 1.5.5 (the C0 CAP webrequest cell holds it): the envelope is the projection with
-//! the `op` key last, and the request's fields are the ones, in the order, the 1.5.5 client (reqwest over
-//! hyper) wrote.
+//! What goes on the wire to the endpoint: the op envelope and the HTTP/1.1 request bytes. The
+//! envelope is the projection with the `op` key last, and the request's fields are written in a
+//! fixed order.
 
 use crate::config::Target;
 use url::Position;
@@ -48,16 +47,15 @@ impl serde::Serialize for Envelope<'_> {
 /// The JSON body for `op` over `payload`.
 ///
 /// # Errors
-/// The 1.5.5 serialisation refusal text.
+/// The serialisation refusal text.
 pub fn envelope(op: &str, payload: &serde_json::Value) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&Envelope { op, payload })
         .map_err(|e| format!("webrequest: failed to serialize op envelope: {e}"))
 }
 
-/// One framed http exchange's request: what the exchange is handed (THE DESIGN §5: the http framer
-/// writes the bytes, so they are hyper's, the 1.5.5 client's own library). The framer adds
-/// `content-length` from the body and `host` from the request's authority; the fields here are the ones
-/// the forwarder itself sets, in the 1.5.5 client's order.
+/// One framed http exchange's request: what the exchange is handed (the http framer writes the
+/// bytes). The framer adds `content-length` from the body and `host` from the request's authority;
+/// the fields here are the ones the forwarder itself sets.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Request {
     /// Always `POST`.
@@ -126,7 +124,7 @@ fn host_header(url: &url::Url) -> String {
     }
 }
 
-/// `Basic base64(user:pass)` from the URL's percent-decoded userinfo, as the 1.5.5 client built it:
+/// `Basic base64(user:pass)` from the URL's percent-decoded userinfo:
 /// a username that is not UTF-8 once decoded sends no header at all, a password that is not UTF-8
 /// counts as absent, and the header goes only for a non-empty username or a present password.
 fn basic_authorization(url: &url::Url) -> Option<String> {

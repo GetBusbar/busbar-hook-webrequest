@@ -8,16 +8,15 @@
 //!
 //! Everything here but the door is a PURE function over bytes. The plugin opens no socket, dials
 //! nothing, does no TLS and runs no runtime: the connection to the endpoint is a declared need the
-//! host serves (THE DESIGN §5: the loopback-allowed egress class, https or loopback plaintext, the
-//! node's own ports refused), and the door drives it with these functions:
+//! host serves (the loopback-allowed egress class: https or loopback plaintext, the node's own
+//! ports refused), and the door drives it with these functions:
 //!
 //! * [`config`] — the settings document, the [`config::Target`], and `configure`'s commit-on-ack merge;
-//! * [`wire`] — the op envelope and the HTTP/1.1 request bytes (byte-identical to what 1.5.5's client
-//!   wrote);
+//! * [`wire`] — the op envelope and the HTTP/1.1 request bytes;
 //! * [`reply`] — the response reader: the status rule, the 64 KiB body cap, the depth guard, and the
 //!   per-op meaning of a failure (`decide` and `transform` abstain, `notify` swallows);
 //! * [`report`] — the `describe` and `status` documents;
-//! * [`net_guard`] — the textual half of the SSRF guard, kept so every refusal text is 1.5.5's;
+//! * [`net_guard`] — the textual half of the SSRF guard, kept so every refusal text is stable;
 //! * [`door`] — the hook kind's door over all of it (`door::door`): what a busbar build that links
 //!   this crate registers, and what the droppable cdylib (`busbar-hook-webrequest-plugin`) exports.
 

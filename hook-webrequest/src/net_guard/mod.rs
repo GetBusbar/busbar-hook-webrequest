@@ -131,7 +131,7 @@ fn ip_is_loopback(ip: &IpAddr) -> bool {
 ///
 /// This inspects the URL's literal host TEXT only and never resolves a name: this plugin opens no
 /// socket and resolves nothing. A NAME that resolves to an internal address is refused by the host's
-/// loopback-allowed egress class when the connection is opened (THE DESIGN §5), which also pins the
+/// loopback-allowed egress class when the connection is opened, which also pins the
 /// approved addresses. The check here is total (no I/O, no failure mode), so it runs at
 /// open/configure and rejects the IP-literal spellings before anything reaches the host.
 pub fn host_is_blocked(url: &url::Url) -> bool {
