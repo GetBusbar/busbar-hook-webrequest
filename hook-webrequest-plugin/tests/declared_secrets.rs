@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DECLARED SECRET FIELD (OWNER RULING, CHIP-REVIEW-v4 change 2): the hook's `url` can carry a
-//! credential (its userinfo becomes `Authorization: Basic`), so the Statement declares it. A
-//! `{env:}` reference there resolves in place, as the kernel resolves it; one anywhere else is
-//! refused. The linked door is loaded the way the host binds a hook.
+//! THE DECLARED FIELD (OWNER RULING, CHIP-REVIEW-v4 change 2; busbar lead ruling item 7a): the
+//! hook's `url` is declared REFERENCE-CAPABLE, not secret, so a `{env:}` reference there resolves in
+//! place, as the kernel resolves it; one anywhere else is refused. The linked door is loaded the way
+//! the host binds a hook.
 
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ fn a_reference_at_the_declared_url_resolves_as_the_kernel_resolves_it() {
         br#"{"url":{"env":"WEBREQUEST_URL_FOR_TEST"},"timeout_ms":500}"#,
         |_, _| Ok("https://user:pw@hooks.example/route".to_string()),
     )
-    .expect("`url` is declared as a secret field");
+    .expect("`url` is declared reference-capable");
     let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
     assert_eq!(v["url"], "https://user:pw@hooks.example/route");
     assert_eq!(v["timeout_ms"], 500);
@@ -52,6 +52,6 @@ fn a_reference_at_an_undeclared_field_is_refused() {
         br#"{"url":"https://hooks.example/route","timeout_ms":{"env":"X"}}"#,
         |_, _| Ok("500".to_string()),
     )
-    .expect_err("`timeout_ms` is not a declared secret field");
+    .expect_err("`timeout_ms` is not a declared field");
     assert!(e.contains("did not declare it as a secret"), "{e}");
 }
