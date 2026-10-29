@@ -81,18 +81,22 @@ const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 /// How many ops one instance holds in flight; the host clamps.
 pub const MAX_INFLIGHT: u32 = 64;
 
-/// THE DECLARED SECRET FIELDS: `url` can carry a credential (its userinfo becomes the
-/// `Authorization: Basic` header), so the kernel resolves a `{env:}`/`{file:}`/`{module:}` reference
-/// written there, in place, before the plugin sees the settings; a reference anywhere else is
-/// refused. OWNER RULING, CHIP-REVIEW-v4 change 2.
-pub const SECRET_REFS: &[AbiStr] = &[abi_str("url")];
+/// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS (busbar lead ruling item 7a), stated in the
+/// Statement's extensions under the contract's `EXT_REFERENCE_FIELDS` key: a `{env:}`/`{file:}`/
+/// `{module:}` reference written at `url` is resolved by the kernel IN PLACE to its string (a 1.5.5
+/// config's `url: {env: VAR}` keeps booting), and a literal url passes as written (never refused
+/// as a secret literal). The value is not a secret: it is never lent. A reference anywhere
+/// else is refused (OWNER RULING, CHIP-REVIEW-v4 change 2).
+busbar_contract::statement_extensions!(pub EXTENSIONS: [
+    (busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS, br#"["url"]"#),
+]);
 
-/// THE STATEMENT: name, version, the hook tail, the one outbound need and the declared secret fields.
+/// THE STATEMENT: name, version, the hook tail, the one outbound need and the reference-capable
+/// `url`.
 pub const STATEMENT: Statement = Statement {
     needs: NEEDS.as_ptr(),
     needs_len: NEEDS.len(),
-    secret_refs: SECRET_REFS.as_ptr(),
-    secret_refs_len: SECRET_REFS.len(),
+    extensions: EXTENSIONS,
     ..statement_with_tail(
         statement(crate::NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT),
         TAIL,
