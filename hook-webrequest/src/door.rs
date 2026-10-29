@@ -81,10 +81,18 @@ const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 /// How many ops one instance holds in flight; the host clamps.
 pub const MAX_INFLIGHT: u32 = 64;
 
-/// THE STATEMENT: name, version, the hook tail and the one outbound need.
+/// THE DECLARED SECRET FIELDS: `url` can carry a credential (its userinfo becomes the
+/// `Authorization: Basic` header), so the kernel resolves a `{env:}`/`{file:}`/`{module:}` reference
+/// written there, in place, before the plugin sees the settings; a reference anywhere else is
+/// refused. OWNER RULING, CHIP-REVIEW-v4 change 2.
+pub const SECRET_REFS: &[AbiStr] = &[abi_str("url")];
+
+/// THE STATEMENT: name, version, the hook tail, the one outbound need and the declared secret fields.
 pub const STATEMENT: Statement = Statement {
     needs: NEEDS.as_ptr(),
     needs_len: NEEDS.len(),
+    secret_refs: SECRET_REFS.as_ptr(),
+    secret_refs_len: SECRET_REFS.len(),
     ..statement_with_tail(
         statement(crate::NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT),
         TAIL,
