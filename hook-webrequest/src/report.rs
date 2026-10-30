@@ -28,14 +28,15 @@ pub fn describe() -> serde_json::Value {
 }
 
 /// `status`: the live target, reported under the SAME `url` key the operator pushes (the engine's drift
-/// check compares by name), with userinfo masked and the query redacted so a `?token=` never reaches the
-/// operator-visible admin surface.
+/// check compares by name), as a log line names it ([`crate::net_guard::loggable_url`]): userinfo masked, path cut and query
+/// redacted, so neither a `?token=` nor a key in the path (`/v1/<key>`) reaches the operator-visible
+/// admin surface.
 #[must_use]
 pub fn status(live: &Target) -> serde_json::Value {
     serde_json::json!({
         "status": {
             "settings": {
-                "url": crate::net_guard::reportable_url(&live.url),
+                "url": crate::net_guard::loggable_url(&live.url),
                 "target_host": live.url.host_str().unwrap_or(""),
                 "timeout_ms": live.timeout.as_millis() as u64
             },

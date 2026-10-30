@@ -198,14 +198,14 @@ pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
             "webrequest: settings.url must be an http:// or https:// URL (got '{}')",
-            reportable_url(&url)
+            loggable_url(&url)
         ));
     }
     if host_is_blocked(&url) {
         return Err(format!(
             "webrequest: settings.url must not target a link-local/private/CGNAT/cloud-metadata host \
              (SSRF guard; loopback sidecars are allowed); got '{}'",
-            reportable_url(&url)
+            loggable_url(&url)
         ));
     }
     if scheme_is(&url, "http") && !host_is_loopback(&url) {
@@ -213,7 +213,7 @@ pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
             "webrequest: settings.url must use https:// for a non-loopback target (plaintext http:// is \
              only permitted for a loopback sidecar; the payload could otherwise be sent in cleartext); \
              got '{}'",
-            reportable_url(&url)
+            loggable_url(&url)
         ));
     }
     Ok(url)
@@ -249,8 +249,8 @@ pub fn mask_userinfo(url: &url::Url) -> String {
 }
 
 /// The target URL in a form that is safe to echo ANYWHERE: the ONE masker every URL echo in this
-/// crate goes through (the `status` surface and every `validate_target_url` error, which reaches the
-/// `open` load error and `configure`'s stderr line).
+/// crate goes through (the `status` surface and every `validate_target_url` error go through [`loggable_url`], which
+/// is this with the path cut).
 ///
 /// `mask_userinfo` alone is not enough. It masks credentials in the userinfo, but a sidecar that
 /// authenticates by query parameter (`?token=...`) is a common enough shape that echoing the raw
