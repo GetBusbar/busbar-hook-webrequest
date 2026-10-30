@@ -1,4 +1,5 @@
 use super::*;
+use busbar_contract::net::{is_cgnat_shared_v4, Ipv4Addr};
 
 fn url(s: &str) -> url::Url {
     url::Url::parse(s).unwrap()
