@@ -57,7 +57,8 @@ fn a_resumed_op_runs_against_the_target_it_parked_on() {
     assert_eq!(f.entry_live(parked).origin, "http://127.0.0.2:9002");
 }
 
-/// A new generation on a recycled slot never inherits a cancelled op's entry.
+/// A new generation on a recycled slot never inherits a cancelled op's entry, and parking on it
+/// drops the cancelled op's entry (the slot's older generation), so entries do not pile up.
 #[test]
 fn a_recycled_slot_does_not_inherit_a_cancelled_ops_target() {
     let f = forwarder("http://127.0.0.1:9001/a");
@@ -70,4 +71,11 @@ fn a_recycled_slot_does_not_inherit_a_cancelled_ops_target() {
         generation: 2,
     };
     assert_eq!(f.entry_live(new).origin, "http://127.0.0.2:9002");
+    // The new generation's op parks; the cancelled generation's entry goes with it.
+    f.park_live(new, &f.entry_live(new));
+    assert_eq!(
+        f.entry_live(old).origin,
+        "http://127.0.0.2:9002",
+        "the cancelled op's entry was dropped"
+    );
 }
