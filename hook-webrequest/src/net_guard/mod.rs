@@ -31,8 +31,8 @@
 
 use busbar_contract::abi::sdk::url as sdk_url;
 use busbar_contract::net::{
-    embedded_ipv4, is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6,
-    is_unique_local_v6, IpAddr, Ipv4Addr, Ipv6Addr, METADATA_HOSTS,
+    embedded_ipv4, ipv4_is_internal, is_alternate_ipv4_encoding, is_link_local_v6,
+    is_unique_local_v6, IpAddr, Ipv6Addr, METADATA_HOSTS,
 };
 
 /// IPv6 site-local `fec0::/10`. Deprecated by RFC 3879 but still routed on plenty of real networks,
@@ -71,24 +71,6 @@ pub fn is_alternate_loopback_v4(host: &str) -> bool {
         return false;
     };
     first == 127 && parts.iter().all(|p| p.parse::<u32>().is_ok())
-}
-
-/// True for an IPv4 literal the forwarder must not POST to (EXCEPT loopback, which the caller carves
-/// out): link-local (incl. `169.254.169.254` IMDS), RFC1918 private, RFC6598 CGNAT, unspecified,
-/// broadcast, and the Azure WireServer / OCI IMDS public-but-metadata literals. Mirrors
-/// `observability::is_internal_v4` (loopback is checked by the caller so the localhost carve-out is
-/// visible at the call site).
-fn is_internal_v4(v4: &Ipv4Addr) -> bool {
-    const AZURE_WIRESERVER: Ipv4Addr = Ipv4Addr::new(168, 63, 129, 16);
-    const OCI_IMDS: Ipv4Addr = Ipv4Addr::new(192, 0, 0, 192);
-    v4.is_loopback()
-        || v4.is_link_local()
-        || v4.is_private()
-        || is_cgnat_shared_v4(v4)
-        || v4.is_unspecified()
-        || v4.is_broadcast()
-        || *v4 == AZURE_WIRESERVER
-        || *v4 == OCI_IMDS
 }
 
 /// True iff the target URL's host is the loopback/localhost target the forwarder MAY reach — the exact
@@ -156,13 +138,13 @@ pub fn host_is_blocked(url: &url::Url) -> bool {
 /// carve-out for sidecars included.
 fn ip_is_internal(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => !v4.is_loopback() && is_internal_v4(v4),
+        IpAddr::V4(v4) => !v4.is_loopback() && ipv4_is_internal(v4),
         IpAddr::V6(v6) => {
             if v6.is_loopback() {
                 return false; // `::1` loopback sidecar — allowed
             }
             if let Some(v4) = embedded_ipv4(v6) {
-                return !v4.is_loopback() && is_internal_v4(&v4);
+                return !v4.is_loopback() && ipv4_is_internal(&v4);
             }
             v6.is_unspecified()
                 || is_unique_local_v6(v6)
