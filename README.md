@@ -16,11 +16,13 @@ A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/
 
 **v1.6.0.** The first-party, signed `kind: hook` plugin for
 [busbar](https://getbusbar.com): a transparent HTTP forwarder that POSTs
-each hook op envelope (`decide` / `transform` / `notify` / `configure` /
-`describe` / `status`) to an operator-configured URL and returns the
-capped JSON reply verbatim. Busbar's own `hooks::wire` normalizers parse
-that reply, so this plugin is a pure network relay — it adds a hop, never
-a second copy of the hook wire semantics.
+each per-request hook op envelope (`decide` / `transform` / `notify`) to an
+operator-configured URL and returns the capped JSON reply verbatim. Busbar's
+own reply lowering (`busbar-contract`'s `abi::sdk::hook`) parses that reply,
+so this plugin is a pure network relay — it adds a hop, never a second copy
+of the hook wire semantics. `configure` is applied by the forwarder itself
+(the settings merge, never POSTed), and `describe` / `status` are the
+forwarder's own documents, never the endpoint's.
 
 It implements the hook kind's `Hook` trait (via
 [`busbar-contract`](https://github.com/GetBusbar/busbar/tree/main/crates/busbar-contract)'s
