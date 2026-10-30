@@ -1,5 +1,6 @@
 use crate::config::{
-    clamp_timeout, configure, open, unknown_keys, unknown_keys_in, Target, MAX_TIMEOUT_MS,
+    clamp_timeout, configure, open, unknown_keys, unknown_keys_in, warnings, warnings_in, Target,
+    MAX_TIMEOUT_MS,
 };
 use std::time::Duration;
 
@@ -40,9 +41,11 @@ fn the_refusal_texts_are_1_5_5s() {
         open(br#"{"url":"  "}"#).unwrap_err(),
         "webrequest: settings.url is required"
     );
-    assert!(open(b"{}")
-        .unwrap_err()
-        .starts_with("webrequest: invalid plugin config: missing field `url`"));
+    // `{}` says what a blank url says (R9), not serde's field text.
+    assert_eq!(
+        open(b"{}").unwrap_err(),
+        "webrequest: settings.url is required"
+    );
     assert!(open(b"{ nope")
         .unwrap_err()
         .starts_with("webrequest: invalid plugin config: "));
@@ -106,7 +109,7 @@ fn configure_nacks_wrong_types_and_blocked_urls_and_never_half_applies() {
     assert!(nack(serde_json::json!({"timeout_ms": "5"})).contains("not a non-negative integer"));
     assert!(nack(serde_json::json!({"timeout_ms": -1})).contains("not a non-negative integer"));
     assert!(nack(serde_json::json!({"url":"http://169.254.169.254/"}))
-        .starts_with("webrequest: configure() rejected: webrequest: settings.url must not target"));
+        .starts_with("webrequest: configure() rejected: settings.url must not target"));
     // A good url beside a bad timeout: the whole push is refused.
     assert!(configure(
         &live(),
@@ -142,4 +145,77 @@ fn an_unknown_key_is_named_and_the_known_ones_are_not() {
 #[test]
 fn an_unknown_key_still_opens_as_1_5_5_did() {
     assert!(open(br#"{"url":"https://h/","timeout":100}"#).is_ok());
+}
+
+/// R6: the NACK carries the `webrequest: ` prefix once.
+#[test]
+fn a_configure_nack_has_one_prefix() {
+    for v in [
+        serde_json::json!({"url":"http://169.254.169.254/"}),
+        serde_json::json!({"url":"ftp://x.example/"}),
+        serde_json::json!({"url":"http://api.example.com/"}),
+        serde_json::json!({"url": 5}),
+        serde_json::json!({"timeout_ms": "x"}),
+    ] {
+        let nack = configure(&live(), &map(v)).unwrap_err();
+        assert!(
+            nack.starts_with("webrequest: configure() rejected: "),
+            "{nack}"
+        );
+        assert_eq!(nack.matches("webrequest:").count(), 1, "{nack}");
+    }
+}
+
+/// R5: a wrong-typed value is named by its key and never echoed (it may be a credential url).
+#[test]
+fn a_configure_nack_never_echoes_a_settings_value() {
+    let nack = |v: serde_json::Value| configure(&live(), &map(v)).unwrap_err();
+    let t = nack(serde_json::json!({"url": ["https://u:PWSECRET@h.example/KEYSECRET"]}));
+    assert!(t.contains("settings.url") && !t.contains("SECRET"), "{t}");
+    let t = nack(serde_json::json!({"timeout_ms": "PWSECRET"}));
+    assert!(
+        t.contains("settings.timeout_ms") && !t.contains("SECRET"),
+        "{t}"
+    );
+    let t = nack(serde_json::json!({"timeout_ms": {"a": "PWSECRET"}}));
+    assert!(!t.contains("SECRET"), "{t}");
+}
+
+/// R8: `timeout_ms: null` is absent in `configure`, as it is default in `open`.
+#[test]
+fn configure_reads_a_null_timeout_as_absent() {
+    assert_eq!(
+        configure(&live(), &map(serde_json::json!({"timeout_ms": null}))),
+        Ok(None)
+    );
+    let next = configure(
+        &live(),
+        &map(serde_json::json!({"url":"https://other.example/","timeout_ms": null})),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(next.url.as_str(), "https://other.example/");
+    assert_eq!(next.timeout, Duration::from_millis(2000));
+    assert!(open(br#"{"url":"https://a.example/","timeout_ms":null}"#).is_ok());
+}
+
+/// R7: an out-of-range `timeout_ms` is still clamped, and says so once.
+#[test]
+fn a_clamped_timeout_is_warned_once() {
+    for (settings, ms) in [
+        (r#"{"url":"https://h/","timeout_ms":99999}"#, "99999"),
+        (r#"{"url":"https://h/","timeout_ms":0}"#, "0"),
+    ] {
+        let w = warnings_in(settings.as_bytes());
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("timeout_ms") && w[0].contains(ms) && w[0].contains("clamp"),
+            "{w:?}"
+        );
+    }
+    let in_range = warnings_in(br#"{"url":"https://h/","timeout_ms":5000}"#);
+    assert!(in_range.is_empty(), "{in_range:?}");
+    assert!(warnings_in(br#"{"url":"https://h/","timeout_ms":null}"#).is_empty());
+    let w = warnings(&map(serde_json::json!({"timeout_ms": 60000, "x": 1})));
+    assert_eq!(w.len(), 2, "{w:?}");
 }

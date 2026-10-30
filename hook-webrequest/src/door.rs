@@ -265,7 +265,7 @@ impl Hook for Forwarder {
         let mut live = self.live.write().unwrap_or_else(PoisonError::into_inner);
         let result = config::configure(&live.target, settings);
         if result.is_ok() {
-            for warning in config::unknown_keys(settings) {
+            for warning in config::warnings(settings) {
                 tracing::warn!("{warning}");
             }
         }
@@ -298,7 +298,7 @@ pub struct Open;
 impl HookOpen for Open {
     fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
         let target = config::open(settings.as_bytes())?;
-        for warning in config::unknown_keys_in(settings.as_bytes()) {
+        for warning in config::warnings_in(settings.as_bytes()) {
             tracing::warn!("{warning}");
         }
         Ok(Box::new(Forwarder::over(Live::new(target))))
