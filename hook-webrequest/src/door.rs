@@ -104,6 +104,9 @@ pub(crate) struct Live {
     request_target: Vec<u8>,
     fields: Vec<(Vec<u8>, Vec<u8>)>,
     timeout_ms: u64,
+    /// What a failure's text is scrubbed of ([`crate::net_guard::secret_parts`]), computed once with
+    /// the target rather than for every failed op.
+    secrets: Vec<String>,
 }
 
 impl Deref for Live {
@@ -133,6 +136,7 @@ impl Live {
                 .map(|(n, v)| (n.as_bytes().to_vec(), v.into_bytes()))
                 .collect(),
             timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
+            secrets: crate::net_guard::secret_parts(&target.url),
             target,
         })
     }
@@ -246,7 +250,7 @@ impl Forwarder {
 /// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
 /// words may quote the URL.
 pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
-    let cause = crate::net_guard::scrub(&failure.to_string(), &live.url);
+    let cause = crate::net_guard::scrub(&failure.to_string(), &live.secrets);
     format!("{}: {cause}", reply::REQUEST_FAILED)
 }
 

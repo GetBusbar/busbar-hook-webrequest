@@ -296,11 +296,11 @@ pub fn secret_parts(url: &url::Url) -> Vec<String> {
     sdk_url::and_decoded(parts)
 }
 
-/// `text` (the host's words, which may quote the target) with every [`secret_parts`] of `url`
-/// replaced by `***` ([`sdk_url::scrub`], unquoted).
+/// `text` (the host's words, which may quote the target) with every one of `parts`
+/// ([`secret_parts`], computed once per target) replaced by `***` ([`sdk_url::scrub`], unquoted).
 #[must_use]
-pub fn scrub(text: &str, url: &url::Url) -> String {
-    sdk_url::scrub(text, secret_parts(url), false)
+pub fn scrub(text: &str, parts: &[String]) -> String {
+    sdk_url::scrub(text, parts.to_vec(), false)
 }
 
 #[cfg(test)]
