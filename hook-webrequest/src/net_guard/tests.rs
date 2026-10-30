@@ -358,3 +358,21 @@ fn the_literal_host_check_refuses_every_contract_internal_ipv4() {
         );
     }
 }
+
+/// R11 (IPv6): a literal IPv6 is refused for every range the contract's `ipv6_is_internal` names
+/// (multicast included), with `::1` and the mapped loopback still the sidecar carve-out.
+#[test]
+fn the_literal_host_check_refuses_every_contract_internal_ipv6() {
+    for host in ["ff02::1", "ff00::1", "fc00::1", "fe80::1", "::", "fec0::1"] {
+        let raw = format!("https://[{host}]/x");
+        let err = validate_target_url(&raw).expect_err(&raw);
+        assert!(err.contains("SSRF guard"), "{raw}: {err}");
+    }
+    for host in ["::1", "::ffff:127.0.0.1", "2606:4700:4700::1111"] {
+        assert!(
+            validate_target_url(&format!("https://[{host}]/x")).is_ok(),
+            "{host}"
+        );
+    }
+    assert!(validate_target_url("http://[::1]:9000/x").is_ok());
+}
