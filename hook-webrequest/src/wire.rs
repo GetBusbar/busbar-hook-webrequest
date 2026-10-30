@@ -118,6 +118,6 @@ pub fn request(target: &Target, body: Vec<u8>) -> Request {
 /// 0.12 read it for 1.5.5 ([`Userinfo::Utf8`]): a username that is not UTF-8 once decoded sends no
 /// header at all, a password that is not UTF-8 counts as absent, and the header goes only for a
 /// non-empty username or a present password.
-fn basic_authorization(url: &url::Url) -> Option<String> {
+pub(crate) fn basic_authorization(url: &url::Url) -> Option<String> {
     sdk_url::basic_authorization(url.username(), url.password(), Userinfo::Utf8)
 }
