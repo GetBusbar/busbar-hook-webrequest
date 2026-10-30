@@ -17,8 +17,9 @@
 //! * `status` / `describe` — the forwarder's own documents ([`crate::report`]), never the target's.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::Poll;
 
 use busbar_contract::abi::hook::{Tail, CLASS_GATE, PROMPT_RW, USER_RO};
@@ -26,6 +27,7 @@ use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, KEEP_NAMED,
 };
 use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::exchange::{Op, Request};
@@ -88,14 +90,16 @@ pub const STATEMENT: Statement = Statement {
 #[derive(Debug)]
 pub struct Forwarder {
     live: RwLock<Arc<Live>>,
+    /// The [`Live`] each parked op's exchange was built from, by its ticket.
+    parked: Mutex<HashMap<Ticket, Arc<Live>>>,
 }
 
 /// A [`Target`] with what every op's exchange needs of it, built once when the target is set (at
 /// `open` and an acknowledged `configure`): the origin the need dials, and the
 /// method, request target and fields ([`wire::request`]) as the exchange takes them.
-struct Live {
+pub(crate) struct Live {
     target: Target,
-    origin: String,
+    pub(crate) origin: String,
     method: Vec<u8>,
     request_target: Vec<u8>,
     fields: Vec<(Vec<u8>, Vec<u8>)>,
@@ -117,7 +121,7 @@ impl std::fmt::Debug for Live {
 }
 
 impl Live {
-    fn new(target: Target) -> Arc<Self> {
+    pub(crate) fn new(target: Target) -> Arc<Self> {
         let r = wire::request(&target, Vec::new());
         Arc::new(Self {
             origin: target.url.origin().ascii_serialization(),
@@ -146,6 +150,25 @@ impl Live {
 }
 
 impl Forwarder {
+    /// A forwarder over `live`.
+    pub(crate) fn over(live: Arc<Live>) -> Self {
+        Self {
+            live: RwLock::new(live),
+            parked: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The [`Live`] an op entering on `ticket` runs against.
+    pub(crate) fn entry_live(&self, _ticket: Ticket) -> Arc<Live> {
+        self.live()
+    }
+
+    /// Record the [`Live`] a parked op's exchange was built from.
+    pub(crate) fn park_live(&self, _ticket: Ticket, _live: &Arc<Live>) {}
+
+    /// The op on `ticket` is done: forget what it parked.
+    pub(crate) fn release_live(&self, _ticket: Ticket) {}
+
     fn live(&self) -> Arc<Live> {
         Arc::clone(&self.live.read().unwrap_or_else(PoisonError::into_inner))
     }
@@ -184,8 +207,8 @@ impl Forwarder {
 /// The text a transport failure is logged in: a fixed prefix, then the host's cause with every
 /// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
 /// words may quote the URL.
-pub(crate) fn transport_failure(target: &Target, failure: &ConnFailure) -> String {
-    let cause = crate::net_guard::scrub(&failure.to_string(), &target.url);
+pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
+    let cause = crate::net_guard::scrub(&failure.to_string(), &live.url);
     format!("{}: {cause}", reply::REQUEST_FAILED)
 }
 
@@ -249,9 +272,7 @@ impl HookOpen for Open {
         for warning in config::unknown_keys_in(settings.as_bytes()) {
             tracing::warn!("{warning}");
         }
-        Ok(Box::new(Forwarder {
-            live: RwLock::new(Live::new(target)),
-        }))
+        Ok(Box::new(Forwarder::over(Live::new(target))))
     }
 }
 

@@ -6,7 +6,7 @@
 //! transport failure, even when the host's failure text quotes the URL back.
 
 use crate::config::{self, Target};
-use crate::door::transport_failure;
+use crate::door::{transport_failure, Live};
 use crate::wire;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 
@@ -66,7 +66,7 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_url() {
             t.url.query().unwrap_or("")
         )),
     ] {
-        let text = transport_failure(&t, &failure);
+        let text = transport_failure(&Live::new(t.clone()), &failure);
         assert!(
             !text.contains(CANARY),
             "the logged failure carried the credential: {text}"
