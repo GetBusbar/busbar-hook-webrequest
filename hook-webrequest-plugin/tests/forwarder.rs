@@ -1004,3 +1004,17 @@ fn an_ipv6_loopback_sidecar_opens_and_is_dialled_by_its_bracketed_origin() {
         assert_eq!(b.upstream.last().target, "http://[::1]:9000");
     }
 }
+
+/// RED: only a `204` is an abstaining "no opinion"; an empty body on a `200` is a FAILED decide.
+#[test]
+fn red_only_a_204_is_an_empty_abstain() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        b.upstream.answer(204, "No Content", b"");
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        b.upstream.answer(200, "OK", b"");
+        let failed = decide_failure(&b);
+        assert!(failed.contains("empty reply (HTTP status 200)"), "{failed}");
+    }
+}
