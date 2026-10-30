@@ -32,9 +32,17 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
         );
         assert!(!text.contains("invalid JSON"), "{text}");
     }
-    // An empty 2xx body is a deliberate "no opinion": `{}`.
+    // A 204 (No Content) is a deliberate "no opinion": `{}`.
     assert_eq!(interpret(204, None, b"").unwrap(), json!({}));
-    assert_eq!(interpret(200, None, b"").unwrap(), json!({}));
+    // ...but only a 204 says "no opinion"; any other empty reply is a failure.
+    assert_eq!(
+        interpret(200, None, b"").unwrap_err(),
+        "webrequest: empty reply (HTTP status 200)"
+    );
+    assert_eq!(
+        interpret(202, None, b"").unwrap_err(),
+        "webrequest: empty reply (HTTP status 202)"
+    );
     assert!(interpret(200, None, b"  ").is_err());
     // The phrase the server sent wins, exactly as the 1.5.5 client showed it; empty falls back.
     assert_eq!(
