@@ -44,6 +44,8 @@ pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
 /// `configure`).
 #[derive(Deserialize, Default)]
 struct Config {
+    /// Absent reads as blank, and a blank url is refused in one set of words (`settings.url is required`).
+    #[serde(default)]
     url: String,
     #[serde(default)]
     timeout_ms: Option<u64>,
@@ -107,17 +109,34 @@ impl Target {
     }
 }
 
+/// The warning for a `timeout_ms` outside `[1, MAX_TIMEOUT_MS]`, which is still clamped.
+fn clamp_warning(settings: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    let ms = settings.get("timeout_ms")?.as_u64()?;
+    let clamped = clamp_timeout(ms).as_millis();
+    (u128::from(ms) != clamped).then(|| {
+        format!(
+            "webrequest: settings.timeout_ms {ms} is outside [1, {MAX_TIMEOUT_MS}] and is clamped to {clamped}"
+        )
+    })
+}
+
 /// Everything the door logs at `open`/`refresh`/an acknowledged `configure` about a settings map
 /// that is accepted: a key not read ([`unknown_keys`]) and a `timeout_ms` clamped into range.
 #[must_use]
 pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
-    unknown_keys(settings)
+    let mut all = unknown_keys(settings);
+    all.extend(clamp_warning(settings));
+    all
 }
 
-/// [`warnings`] over a settings document as `open` reads it.
+/// [`warnings`] over a settings document as `open` reads it; none for a document that is not a JSON
+/// object (`open` refuses those).
 #[must_use]
 pub fn warnings_in(settings: &[u8]) -> Vec<String> {
-    unknown_keys_in(settings)
+    match serde_json::from_slice::<serde_json::Value>(settings) {
+        Ok(serde_json::Value::Object(map)) => warnings(&map),
+        _ => Vec::new(),
+    }
 }
 
 /// `open`: the settings document to a [`Target`]. An empty document, a malformed one, a missing URL or a
@@ -149,28 +168,27 @@ pub fn configure(
     live: &Target,
     settings: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Option<Target>, String> {
-    let new_url = match settings.get("url") {
-        None => None,
-        Some(v) => match v.as_str() {
-            None => {
-                return Err(format!(
-                "webrequest: configure() rejected: settings.url is present but not a string ({v})"
-            ))
-            }
-            Some(raw) => Some(
-                net_guard::validate_target_url(raw)
-                    .map_err(|reason| format!("webrequest: configure() rejected: {reason}"))?,
-            ),
-        },
-    };
+    let new_url =
+        match settings.get("url") {
+            None => None,
+            Some(v) => match v.as_str() {
+                None => return Err(
+                    "webrequest: configure() rejected: settings.url is present but not a string"
+                        .to_string(),
+                ),
+                Some(raw) => Some(
+                    net_guard::refuse_target_url(raw)
+                        .map_err(|reason| format!("webrequest: configure() rejected: {reason}"))?,
+                ),
+            },
+        };
+    // `null` is absent, as `open` reads it (the default).
     let new_timeout = match settings.get("timeout_ms") {
-        None => None,
+        None | Some(serde_json::Value::Null) => None,
         Some(v) => match v.as_u64() {
             Some(ms) => Some(clamp_timeout(ms)),
             None => {
-                return Err(format!(
-                    "webrequest: configure() rejected: settings.timeout_ms is present but not a non-negative integer ({v})"
-                ))
+                return Err("webrequest: configure() rejected: settings.timeout_ms is present but not a non-negative integer".to_string())
             }
         },
     };

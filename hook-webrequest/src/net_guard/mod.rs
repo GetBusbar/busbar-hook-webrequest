@@ -193,24 +193,32 @@ fn scheme_is(url: &url::Url, want: &str) -> bool {
 /// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
 /// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
 pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
-    let url = url::Url::parse(raw)
-        .map_err(|e| format!("webrequest: settings.url is not a valid URL: {e}"))?;
+    refuse_target_url(raw).map_err(|reason| format!("webrequest: {reason}"))
+}
+
+/// [`validate_target_url`] with the refusal's reason WITHOUT the `webrequest: ` prefix, for a caller
+/// that frames it in its own words (`configure`'s NACK).
+///
+/// # Errors
+/// The reason.
+pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
+    let url = url::Url::parse(raw).map_err(|e| format!("settings.url is not a valid URL: {e}"))?;
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
-            "webrequest: settings.url must be an http:// or https:// URL (got '{}')",
+            "settings.url must be an http:// or https:// URL (got '{}')",
             loggable_url(&url)
         ));
     }
     if host_is_blocked(&url) {
         return Err(format!(
-            "webrequest: settings.url must not target a link-local/private/CGNAT/cloud-metadata host \
+            "settings.url must not target a link-local/private/CGNAT/cloud-metadata host \
              (SSRF guard; loopback sidecars are allowed); got '{}'",
             loggable_url(&url)
         ));
     }
     if scheme_is(&url, "http") && !host_is_loopback(&url) {
         return Err(format!(
-            "webrequest: settings.url must use https:// for a non-loopback target (plaintext http:// is \
+            "settings.url must use https:// for a non-loopback target (plaintext http:// is \
              only permitted for a loopback sidecar; the payload could otherwise be sent in cleartext); \
              got '{}'",
             loggable_url(&url)
