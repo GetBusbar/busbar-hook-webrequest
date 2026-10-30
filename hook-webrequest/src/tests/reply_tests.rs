@@ -135,3 +135,33 @@ fn a_failure_means_a_different_thing_per_op() {
     // notify: swallowed.
     notify(fail);
 }
+
+#[test]
+fn the_remote_reason_phrase_is_capped_and_escaped() {
+    // Control bytes cannot forge a log line or recolour a terminal.
+    let text = interpret(500, Some("Oops\r\n\x1b[31mwebrequest: forged"), b"").unwrap_err();
+    assert!(
+        !text.contains('\n') && !text.contains('\r') && !text.contains('\x1b'),
+        "{text:?}"
+    );
+    assert!(
+        text.contains(r"500 Oops\r\n\u{1b}[31mwebrequest: forged"),
+        "{text}"
+    );
+    // A long phrase is cut at 128 characters and marked.
+    let long = "x".repeat(5000);
+    let text = interpret(500, Some(&long), b"").unwrap_err();
+    assert!(text.len() < 300, "{} bytes", text.len());
+    assert!(
+        text.contains(&format!("500 {}\u{2026})", "x".repeat(128))),
+        "{text}"
+    );
+    // Exactly 128 is shown whole, and an apostrophe is not escaped (1.5.5's text).
+    let exact = "y".repeat(128);
+    assert!(interpret(500, Some(&exact), b"")
+        .unwrap_err()
+        .ends_with(&format!("500 {exact})")));
+    assert!(interpret(418, Some("I'm a teapot"), b"")
+        .unwrap_err()
+        .contains("418 I'm a teapot)"));
+}
