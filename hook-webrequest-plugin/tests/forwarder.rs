@@ -579,10 +579,7 @@ fn script(arm: &Arm) -> Vec<String> {
     // RED: a configuration the forwarder refuses never opens, in 1.5.5's words.
     for (bad, words) in [
         (r#"{"url": ""}"#, "webrequest: settings.url is required"),
-        (
-            "{}",
-            "webrequest: invalid plugin config: missing field `url`",
-        ),
+        ("{}", "webrequest: settings.url is required"),
         (r#"{"url": 5}"#, "webrequest: invalid plugin config"),
         (r#"{"url": "http://169.254.169.254/"}"#, "webrequest:"),
     ] {
@@ -937,5 +934,27 @@ fn a_committed_configure_moves_the_next_decide() {
         assert_eq!(sent.target, "http://127.0.0.2:8123");
         assert_eq!(sent.path, b"/moved?y=2".to_vec());
         assert_eq!(sent.timeout_ms, 777);
+    }
+}
+
+/// RED: a `timeout_ms` outside `[1, 5000]` is clamped and says so, at `open` and at `configure`.
+#[test]
+fn red_a_clamped_timeout_is_warned() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}", "timeout_ms": 99999}}"#))
+            .expect("opens");
+        assert!(
+            warned(&b, &["timeout_ms", "99999", "clamp"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        assert_eq!(b.configure(r#"{"timeout_ms": 0}"#, 2), Ok(2));
+        assert!(
+            warned(&b, &["timeout_ms", "0", "clamp"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        assert_eq!(b.status()["status"]["settings"]["timeout_ms"], json!(1));
     }
 }

@@ -107,6 +107,19 @@ impl Target {
     }
 }
 
+/// Everything the door logs at `open`/`refresh`/an acknowledged `configure` about a settings map
+/// that is accepted: a key not read ([`unknown_keys`]) and a `timeout_ms` clamped into range.
+#[must_use]
+pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    unknown_keys(settings)
+}
+
+/// [`warnings`] over a settings document as `open` reads it.
+#[must_use]
+pub fn warnings_in(settings: &[u8]) -> Vec<String> {
+    unknown_keys_in(settings)
+}
+
 /// `open`: the settings document to a [`Target`]. An empty document, a malformed one, a missing URL or a
 /// blocked URL is a fail-closed load error, never a live forwarder.
 ///
