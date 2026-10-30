@@ -251,7 +251,7 @@ impl Forwarder {
 /// words may quote the URL.
 pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
     let cause = crate::net_guard::scrub(&failure.to_string(), &live.secrets);
-    format!("{}: {cause}", reply::REQUEST_FAILED)
+    format!("{}: {cause}", reply::request_failed())
 }
 
 impl Hook for Forwarder {
@@ -285,8 +285,10 @@ impl Hook for Forwarder {
         settings: &serde_json::Map<String, serde_json::Value>,
         _version: u64,
     ) -> bool {
-        let mut live = self.live.write().unwrap_or_else(PoisonError::into_inner);
-        let result = config::configure(&live.target, settings);
+        // Validated against a read snapshot (the SSRF check and the merge take time and need no
+        // lock); the write lock is held only to swap.
+        let current = self.live();
+        let result = config::configure(&current.target, settings);
         if result.is_ok() {
             for warning in config::warnings(settings) {
                 tracing::warn!("{warning}");
@@ -295,7 +297,8 @@ impl Hook for Forwarder {
         match result {
             Ok(None) => true,
             Ok(Some(next)) => {
-                *live = Live::new(next);
+                let next = Live::new(next);
+                *self.live.write().unwrap_or_else(PoisonError::into_inner) = next;
                 true
             }
             Err(reason) => {

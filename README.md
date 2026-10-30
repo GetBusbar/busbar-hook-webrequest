@@ -140,16 +140,23 @@ for the `hooks:` wiring (`kind: hook`, `settings: { url: ... }`).
 
 ## Tests
 
-`cargo test` runs the pure unit tests (`hook-webrequest/src/tests/*` —
-config, reply parsing/depth guard, envelope shaping, report — and
-`hook-webrequest/src/net_guard/tests.rs` for the SSRF predicates) and the
-plugin crate's integration tests: `hook-webrequest-plugin/tests/conformance.rs`
-(the linked and dropped-in doors are one hook) and
-`hook-webrequest-plugin/tests/forwarder.rs`, which loads the *built* cdylib
-over the real `busbar-plugin-loader` ABI seam against a scripted far end —
-the same seam busbar's engine uses, so it exercises the actual `dlopen`/FFI
-path rather than calling Rust functions directly. `cargo test` builds the
-cdylib as part of the run.
+`cargo test` runs the pure unit tests (`hook-webrequest/src/tests/*`: `config_tests.rs` the
+settings and `configure`, `door_tests.rs` which target a resumed op runs against, `echo_tests.rs`
+the credential-echo canaries, `reply_tests.rs` the reply rules and the per-op meaning of a
+failure, `report_tests.rs` the `status`/`describe` documents, `wire_tests.rs` the envelope and
+the request bytes against the 1.5.5 client; and `hook-webrequest/src/net_guard/tests.rs` for the
+SSRF predicates) and the plugin crate's integration tests
+(`hook-webrequest-plugin/tests/`):
+
+- `conformance.rs`: busbar's published conformance suite, run over the linked and the dropped-in
+  door (the two are one hook), driven by `conformance.json` through `support/conformance_host.rs`;
+- `forwarder.rs`: loads the *built* cdylib over the real `busbar-plugin-loader` ABI seam against a
+  scripted far end, the same seam busbar's engine uses, so it exercises the actual `dlopen`/FFI
+  path rather than calling Rust functions directly (`support/net_ban.rs` is its socket/TLS ban);
+- `declared_secrets.rs` and `reference_url.rs`: `url` is declared reference-capable and not a
+  secret, so a `{env:}` reference there resolves in place and a literal passes as written.
+
+`cargo test` builds the cdylib as part of the run.
 
 ## License
 

@@ -29,6 +29,7 @@
 //! resolution, the resolved-address check and the address pin (DNS rebinding / TOCTOU) belong to the
 //! host's loopback-allowed egress class, which every connection this plugin opens goes through.
 
+use crate::ALIAS;
 use busbar_contract::abi::sdk::url as sdk_url;
 use busbar_contract::net::{
     embedded_ipv4, ipv4_is_internal, is_alternate_ipv4_encoding, is_link_local_v6,
@@ -175,7 +176,7 @@ fn scheme_is(url: &url::Url, want: &str) -> bool {
 /// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
 /// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
 pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
-    refuse_target_url(raw).map_err(|reason| format!("webrequest: {reason}"))
+    refuse_target_url(raw).map_err(|reason| format!("{ALIAS}: {reason}"))
 }
 
 /// [`validate_target_url`] with the refusal's reason WITHOUT the `webrequest: ` prefix, for a caller

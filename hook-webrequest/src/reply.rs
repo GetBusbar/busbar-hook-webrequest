@@ -5,6 +5,7 @@
 //! parse error, and what a failure MEANS per op. The framed http exchange hands back `{status, body}`;
 //! [`interpret`] is what the plugin makes of it.
 
+use crate::ALIAS;
 use serde_json::Value;
 
 /// Maximum reply body accepted from the target, in bytes: the reply is a small ranking/verdict object, so
@@ -16,15 +17,21 @@ pub const MAX_REPLY_DEPTH: usize = 128;
 
 /// The transport failure text: connect, send, timeout and a malformed head all read as this, with the
 /// URL removed so a `?token=` never reaches the engine's log.
-pub const REQUEST_FAILED: &str = "webrequest: request failed: error sending request";
+#[must_use]
+pub fn request_failed() -> String {
+    format!("{ALIAS}: request failed: error sending request")
+}
 
 /// The body-read failure text (a truncated or malformed body).
-pub const READ_FAILED: &str = "webrequest: response read failed: error decoding response body";
+#[must_use]
+pub fn read_failed() -> String {
+    format!("{ALIAS}: response read failed: error decoding response body")
+}
 
 /// The failure for a body past [`MAX_REPLY_BYTES`].
 #[must_use]
 pub fn cap_exceeded() -> String {
-    format!("webrequest: response exceeded {MAX_REPLY_BYTES} byte cap")
+    format!("{ALIAS}: response exceeded {MAX_REPLY_BYTES} byte cap")
 }
 
 /// The longest remote reason phrase a failure text shows, in characters.
@@ -62,13 +69,13 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
         Some(p) => format!("{} {}", status.as_u16(), loggable_phrase(p)),
         None => status.to_string(),
     };
-    format!("webrequest: target returned an error status: HTTP status {class} error ({shown})")
+    format!("{ALIAS}: target returned an error status: HTTP status {class} error ({shown})")
 }
 
 /// The failure for a redirect (3xx), which is never followed.
 #[must_use]
 pub fn redirect_not_followed(code: u16) -> String {
-    format!("webrequest: target answered a redirect that was not followed (HTTP status {code})")
+    format!("{ALIAS}: target answered a redirect that was not followed (HTTP status {code})")
 }
 
 /// Parse a reply body into a `Value`, rejecting a pathologically nested body BEFORE building the value.
@@ -80,12 +87,12 @@ pub fn redirect_not_followed(code: u16) -> String {
 pub fn parse_reply(bytes: &[u8]) -> Result<Value, String> {
     if exceeds_max_depth(bytes, MAX_REPLY_DEPTH) {
         return Err(format!(
-            "webrequest: reply exceeded max nesting depth ({} bytes)",
+            "{ALIAS}: reply exceeded max nesting depth ({} bytes)",
             bytes.len()
         ));
     }
     serde_json::from_slice(bytes)
-        .map_err(|_| format!("webrequest: invalid JSON reply ({} bytes)", bytes.len()))
+        .map_err(|_| format!("{ALIAS}: invalid JSON reply ({} bytes)", bytes.len()))
 }
 
 /// Single-pass, string-aware scan for the maximum `{`/`[` nesting depth in `bytes`. Brackets inside JSON
