@@ -149,6 +149,14 @@ impl Live {
     }
 }
 
+/// What an op makes of the target's answer: its status, reason phrase and body.
+type Reading = fn(u16, Option<&str>, &[u8]) -> Result<serde_json::Value, String>;
+
+/// A `notify` reads no reply: delivered, or the error status.
+fn delivery(status: u16, phrase: Option<&str>, _body: &[u8]) -> Result<serde_json::Value, String> {
+    reply::delivered(status, phrase).map(|()| serde_json::Value::Null)
+}
+
 impl Forwarder {
     /// A forwarder over `live`.
     pub(crate) fn over(live: Arc<Live>) -> Self {
@@ -204,6 +212,7 @@ impl Forwarder {
         on: &Op<'_>,
         op: &str,
         payload: impl FnOnce() -> serde_json::Value,
+        read: Reading,
     ) -> Poll<Result<serde_json::Value, String>> {
         let ticket = on.ticket();
         let live = self.entry_live(ticket);
@@ -226,7 +235,7 @@ impl Forwarder {
         answer.map(|r| match r {
             Ok(got) => {
                 let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
-                reply::interpret(got.status, phrase.as_deref(), &got.body)
+                read(got.status, phrase.as_deref(), &got.body)
             }
             Err(failure) => Err(transport_failure(&live, &failure)),
         })
@@ -243,17 +252,27 @@ pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
 
 impl Hook for Forwarder {
     fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
-        self.post(op, OP_DECIDE, || view.projection_json(OP_DECIDE))
-            .map(|r| lower_decide_reply(reply::decide(r)))
+        self.post(
+            op,
+            OP_DECIDE,
+            || view.projection_json(OP_DECIDE),
+            reply::interpret,
+        )
+        .map(|r| lower_decide_reply(reply::decide(r)))
     }
 
     fn transform(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
-        self.post(op, OP_TRANSFORM, || view.projection_json(OP_TRANSFORM))
-            .map(|r| lower_transform_reply(reply::transform(r)))
+        self.post(
+            op,
+            OP_TRANSFORM,
+            || view.projection_json(OP_TRANSFORM),
+            reply::interpret,
+        )
+        .map(|r| lower_transform_reply(reply::transform(r)))
     }
 
     fn notify(&self, tap: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
-        self.post(op, OP_NOTIFY, || tap.projection_json())
+        self.post(op, OP_NOTIFY, || tap.projection_json(), delivery)
             .map(reply::notify)
     }
 

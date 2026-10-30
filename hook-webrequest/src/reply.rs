@@ -65,6 +65,12 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
     format!("webrequest: target returned an error status: HTTP status {class} error ({shown})")
 }
 
+/// The failure for a redirect (3xx), which is never followed.
+#[must_use]
+pub fn redirect_not_followed(code: u16) -> String {
+    format!("webrequest: target answered a redirect that was not followed (HTTP status {code})")
+}
+
 /// Parse a reply body into a `Value`, rejecting a pathologically nested body BEFORE building the value.
 /// The parse-error path is LENGTH-ONLY: a target that echoed granted prompt content into a malformed
 /// reply must not splash it into an error the engine might log.
@@ -119,8 +125,9 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
 /// exchange holds it only to its own bound, busbar-contract's `REPLY_MAX`, and `Op::exchange` offers no way to
 /// lower it; the check here is what holds it to [`MAX_REPLY_BYTES`]).
 ///
-/// The status rule: 4xx/5xx (400..=599) is a failure, everything else (redirects are never followed)
-/// carries its body as the reply.
+/// The status rule: 4xx/5xx (400..=599) is a failure, and so is a redirect (3xx: never followed, so
+/// there is no reply to read); everything else carries its body as the reply, an EMPTY body (a `204`,
+/// or a target with nothing to say) being `{}`, a deliberate "no opinion".
 ///
 /// # Errors
 /// The failure text.
@@ -128,8 +135,14 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
     if (400..600).contains(&status) {
         return Err(error_status(status, phrase));
     }
+    if (300..400).contains(&status) {
+        return Err(redirect_not_followed(status));
+    }
     if body.len() > MAX_REPLY_BYTES {
         return Err(cap_exceeded());
+    }
+    if body.is_empty() {
+        return Ok(serde_json::json!({}));
     }
     parse_reply(body)
 }
