@@ -92,7 +92,7 @@ Needs a Rust toolchain ([rustup](https://rustup.rs); `rust-toolchain.toml`
 pins the version CI uses).
 
 ```sh
-cargo build --release      # cdylib: target/release/libbusbar_hook_webrequest_plugin.{so,dylib}
+cargo build --release -p busbar-hook-webrequest-plugin --features dropped-in      # cdylib: target/release/libbusbar_hook_webrequest_plugin.{so,dylib}
 cargo test                 # unit tests, the loader-seam forwarder test, and the linked/dropped-in conformance
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check

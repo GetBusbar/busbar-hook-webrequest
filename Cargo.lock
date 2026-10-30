@@ -276,6 +276,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core-connector",
  "busbar-hook-webrequest",
+ "busbar-hook-webrequest-plugin",
  "busbar-plugin-loader",
  "busbar-test-kit",
  "busbar-transport-http",
