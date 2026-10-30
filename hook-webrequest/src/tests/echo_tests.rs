@@ -88,6 +88,9 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_authorization() {
     for echo in [value.clone(), token.clone()] {
         let failure = ConnFailure::Failed(format!("bad request, headers: authorization: {echo}"));
         let text = transport_failure(&Live::new(t.clone()), &failure);
-        assert!(!text.contains(&token), "the failure echoed the token: {text}");
+        assert!(
+            !text.contains(&token),
+            "the failure echoed the token: {text}"
+        );
     }
 }

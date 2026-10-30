@@ -34,6 +34,15 @@ pub mod wire;
 /// The package name a signed tarball of this plugin states (`manifest.name`).
 pub const NAME: &str = "busbar-hook-webrequest";
 
+/// The catalogue code a failed `decide` or `transform` is raised under (declared in `declares.json`).
+pub const FORWARD_FAILED: &str = "BUSBAR-7151";
+/// The catalogue code a dropped `notify` is raised under.
+pub const NOTIFY_DROPPED: &str = "BUSBAR-7152";
+/// The catalogue code a refused `configure` is raised under.
+pub const CONFIGURE_REFUSED: &str = "BUSBAR-7153";
+/// The catalogue code a clamped `timeout_ms` is raised under.
+pub const TIMEOUT_CLAMPED: &str = "BUSBAR-7154";
+
 /// The alias a hook reference names this plugin by (`module: webrequest`).
 pub const ALIAS: &str = "webrequest";
 

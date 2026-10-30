@@ -5,7 +5,7 @@
 //! parse error, and what a failure MEANS per op. The framed http exchange hands back `{status, body}`;
 //! [`interpret`] is what the plugin makes of it.
 
-use crate::ALIAS;
+use crate::{ALIAS, FORWARD_FAILED, NOTIFY_DROPPED};
 use serde_json::Value;
 
 /// Maximum reply body accepted from the target, in bytes: the reply is a small ranking/verdict object, so
@@ -181,7 +181,9 @@ pub fn delivered(status: u16, phrase: Option<&str>) -> Result<(), String> {
 /// # Errors
 /// The failure text, passed through.
 pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
-    reply.inspect_err(|e| tracing::warn!("{e}; decide failed (on_error applies)"))
+    reply.inspect_err(
+        |e| tracing::warn!(diag = %FORWARD_FAILED, "{e}; decide failed (on_error applies)"),
+    )
 }
 
 /// `transform`: any failure is the hook FAILING (the host's `on_error` for transform), as
@@ -191,7 +193,9 @@ pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
 /// # Errors
 /// The failure text, passed through.
 pub fn transform(reply: Result<Value, String>) -> Result<Value, String> {
-    reply.inspect_err(|e| tracing::warn!("{e}; transform failed (on_error applies)"))
+    reply.inspect_err(
+        |e| tracing::warn!(diag = %FORWARD_FAILED, "{e}; transform failed (on_error applies)"),
+    )
 }
 
 /// `notify`: fire-and-forget. The reply is not read for meaning and every error is dropped from the
@@ -199,6 +203,6 @@ pub fn transform(reply: Result<Value, String>) -> Result<Value, String> {
 /// (a warn).
 pub fn notify(reply: Result<Value, String>) {
     if let Err(e) = reply {
-        tracing::warn!("{e}; notify dropped");
+        tracing::warn!(diag = %NOTIFY_DROPPED, "{e}; notify dropped");
     }
 }
