@@ -36,6 +36,10 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
   `settings.url` at the same service a `route: webhook` pool used and the
   wire is compatible (`{op, ...projection}` POST → a
   `{order|abstain|reject|restrict|rewrite}` reply).
+- **Failures are failures.** A `decide` or `transform` whose forward fails (transport, timeout,
+  a 4xx/5xx, a redirect, an oversize, over-deep or invalid reply) FAILS the hook, so the pool's
+  `on_error` applies; only a reply the target sends deliberately (`{}`, `{"abstain":true}`) is
+  an abstain. A `notify` is fire-and-forget.
 - **Isolation** of untrusted hook logic: the untrusted brain runs
   *remotely* behind this trusted, signed, `dlopen`'d forwarder. The
   forwarder decides what is POSTed and where; the host's `http` framer

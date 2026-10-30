@@ -113,27 +113,26 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
     parse_reply(body)
 }
 
-/// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply) is
-/// `{}`, abstain: the request routes as if this hook had no opinion. The operator's `on_error`
-/// chain still resolves what the ENGINE observes about the call (its deadline, a fault, a refusal),
-/// so a far-end 500 under `on_error: reject` serves the chat. The failure is logged to the plugin's
-/// log (a warn), never silent.
-#[must_use]
-pub fn decide(reply: Result<Value, String>) -> Value {
-    reply.unwrap_or_else(|e| {
-        tracing::warn!("{e}; decide abstains");
-        serde_json::json!({})
-    })
+/// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply, an
+/// envelope that cannot be sent) is the hook FAILING, not a verdict: the failure text goes on to the
+/// host, which applies the pool's `on_error` (a far-end 500 under `on_error: reject` refuses the
+/// request; the default fail-open terminal routes as before). A reply the target sends deliberately
+/// (`{}`, `{"abstain":true}`) is an abstain. The failure is also logged to the plugin's log (a warn).
+///
+/// # Errors
+/// The failure text, passed through.
+pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
+    reply.inspect_err(|e| tracing::warn!("{e}; decide failed (on_error applies)"))
 }
 
-/// `transform`: any failure is `{}` (abstain, proceed with the ORIGINAL body); a parsed `reject` in the
-/// reply is honoured by the engine. The failure is logged to the plugin's log (a warn).
-#[must_use]
-pub fn transform(reply: Result<Value, String>) -> Value {
-    reply.unwrap_or_else(|e| {
-        tracing::warn!("{e}; transform abstains");
-        serde_json::json!({})
-    })
+/// `transform`: any failure is the hook FAILING (the host's `on_error` for transform), as
+/// [`decide`]; a deliberate `{}` proceeds with the ORIGINAL body, and a parsed `reject` in the reply
+/// is honoured by the engine. The failure is logged to the plugin's log (a warn).
+///
+/// # Errors
+/// The failure text, passed through.
+pub fn transform(reply: Result<Value, String>) -> Result<Value, String> {
+    reply.inspect_err(|e| tracing::warn!("{e}; transform failed (on_error applies)"))
 }
 
 /// `notify`: fire-and-forget. The reply is not read for meaning and every error is dropped from the

@@ -244,12 +244,12 @@ pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
 impl Hook for Forwarder {
     fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
         self.post(op, OP_DECIDE, || view.projection_json(OP_DECIDE))
-            .map(|r| lower_decide_reply(Ok(reply::decide(r))))
+            .map(|r| lower_decide_reply(reply::decide(r)))
     }
 
     fn transform(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
         self.post(op, OP_TRANSFORM, || view.projection_json(OP_TRANSFORM))
-            .map(|r| lower_transform_reply(Ok(reply::transform(r))))
+            .map(|r| lower_transform_reply(reply::transform(r)))
     }
 
     fn notify(&self, tap: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {

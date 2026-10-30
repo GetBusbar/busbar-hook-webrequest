@@ -713,10 +713,11 @@ fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     assert_eq!(dropped, stated());
 }
 
-/// RED: a `decide` that cannot pend (no ticket) answers at once, abstaining as the 1.5.5 forwarder
-/// did on a request it could not send; it never blocks a thread and puts nothing on the wire.
+/// RED: a `decide` that cannot pend (no ticket) answers at once, FAILED (a request it could not
+/// send is a hook failure, so `on_error` applies); it never blocks a thread and puts nothing on the
+/// wire.
 #[test]
-fn red_a_ticketless_decide_abstains_at_once() {
+fn red_a_ticketless_decide_fails_at_once() {
     let b = Arm::Linked.bind();
     b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
     let frame = decide_frame();
@@ -724,11 +725,11 @@ fn red_a_ticketless_decide_abstains_at_once() {
     let called = b.plugin.call(slot::DECIDE, &mut f);
     assert_eq!(
         called.outcome,
-        Outcome::Ready,
+        Outcome::Failed,
         "{}",
         error_of(called.error.as_deref())
     );
-    assert_eq!(f.out.verbs, VERB_ABSTAIN);
+    assert!(error_of(called.error.as_deref()).contains("cannot pend"));
     assert!(b.upstream.sent.lock().unwrap().is_empty());
 }
 

@@ -116,12 +116,22 @@ fn depth_and_parse_errors_are_length_only() {
 #[test]
 fn a_failure_means_a_different_thing_per_op() {
     let fail: Result<serde_json::Value, String> = Err("webrequest: request failed".into());
-    // decide: abstain, as the 1.5.5 forwarder did (v1.0.6 `decide` returned `{}` on any error).
-    assert_eq!(decide(fail.clone()), json!({}));
-    assert_eq!(decide(Ok(json!({"order":[0]}))), json!({"order":[0]}));
-    // transform: abstain.
-    assert_eq!(transform(fail.clone()), json!({}));
-    assert_eq!(transform(Ok(json!({"reject":"x"}))), json!({"reject":"x"}));
+    // decide and transform: the hook FAILS (the host applies `on_error`), the text passed through.
+    assert_eq!(
+        decide(fail.clone()),
+        Err("webrequest: request failed".to_string())
+    );
+    assert_eq!(
+        transform(fail.clone()),
+        Err("webrequest: request failed".to_string())
+    );
+    // A reply the target sent deliberately is passed on, `{}` included (an abstain once lowered).
+    assert_eq!(decide(Ok(json!({}))), Ok(json!({})));
+    assert_eq!(decide(Ok(json!({"order":[0]}))), Ok(json!({"order":[0]})));
+    assert_eq!(
+        transform(Ok(json!({"reject":"x"}))),
+        Ok(json!({"reject":"x"}))
+    );
     // notify: swallowed.
     notify(fail);
 }
