@@ -134,6 +134,18 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
     parse_reply(body)
 }
 
+/// Whether a `notify` was delivered: any status short of an error status is, and the body is not read
+/// (a tap's answer carries no meaning, so a `204` or an empty body is no warning).
+///
+/// # Errors
+/// The failure text of a 4xx/5xx.
+pub fn delivered(status: u16, phrase: Option<&str>) -> Result<(), String> {
+    if (400..600).contains(&status) {
+        return Err(error_status(status, phrase));
+    }
+    Ok(())
+}
+
 /// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply, an
 /// envelope that cannot be sent) is the hook FAILING, not a verdict: the failure text goes on to the
 /// host, which applies the pool's `on_error` (a far-end 500 under `on_error: reject` refuses the

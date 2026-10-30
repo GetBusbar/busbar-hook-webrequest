@@ -21,12 +21,21 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
         interpret(503, None, b"{}").unwrap_err(),
         "webrequest: target returned an error status: HTTP status server error (503 Service Unavailable)"
     );
-    assert_eq!(interpret(399, None, b"{}").unwrap(), json!({}));
-    assert_eq!(interpret(302, None, b"{}").unwrap(), json!({}));
-    assert_eq!(
-        interpret(204, None, b"").unwrap_err(),
-        "webrequest: invalid JSON reply (0 bytes)"
-    );
+    // A redirect is never followed, and is a failure that says so (not "invalid JSON").
+    for code in [300, 301, 302, 307, 399] {
+        let text = interpret(code, None, b"{}").unwrap_err();
+        assert!(
+            text.contains("redirect")
+                && text.contains("not followed")
+                && text.contains(&code.to_string()),
+            "{text}"
+        );
+        assert!(!text.contains("invalid JSON"), "{text}");
+    }
+    // An empty 2xx body is a deliberate "no opinion": `{}`.
+    assert_eq!(interpret(204, None, b"").unwrap(), json!({}));
+    assert_eq!(interpret(200, None, b"").unwrap(), json!({}));
+    assert!(interpret(200, None, b"  ").is_err());
     // The phrase the server sent wins, exactly as the 1.5.5 client showed it; empty falls back.
     assert_eq!(
         interpret(418, Some("I'm A Teapot Custom"), b"{}").unwrap_err(),
@@ -164,4 +173,16 @@ fn the_remote_reason_phrase_is_capped_and_escaped() {
     assert!(interpret(418, Some("I'm a teapot"), b"")
         .unwrap_err()
         .contains("418 I'm a teapot)"));
+}
+
+/// R10: a notify is delivered by any 2xx/3xx, whatever the body (no parse, so no warn for a 204).
+#[test]
+fn a_notify_is_delivered_by_any_2xx_or_3xx_without_reading_the_body() {
+    for code in [200, 204, 299, 301, 302, 399] {
+        assert_eq!(delivered(code, None), Ok(()), "{code}");
+    }
+    assert!(delivered(404, None).unwrap_err().contains("404"));
+    assert!(delivered(503, Some("Busy"))
+        .unwrap_err()
+        .contains("503 Busy"));
 }
