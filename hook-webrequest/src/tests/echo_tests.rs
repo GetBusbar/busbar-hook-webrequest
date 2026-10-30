@@ -77,3 +77,17 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_url() {
         );
     }
 }
+
+/// A host that echoes the request's `Authorization` back: neither the header's value nor its
+/// base64 token reaches the logged failure.
+#[test]
+fn a_transport_failure_never_logs_the_hosts_echo_of_the_authorization() {
+    let t = target();
+    let value = basic();
+    let token = value.trim_start_matches("Basic ").to_string();
+    for echo in [value.clone(), token.clone()] {
+        let failure = ConnFailure::Failed(format!("bad request, headers: authorization: {echo}"));
+        let text = transport_failure(&Live::new(t.clone()), &failure);
+        assert!(!text.contains(&token), "the failure echoed the token: {text}");
+    }
+}

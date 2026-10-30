@@ -718,6 +718,76 @@ fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     assert_eq!(dropped, stated());
 }
 
+/// D5: the Statement states its alias rewrite, the module name an operator writes, and the dropped-in
+/// image states the same.
+#[test]
+fn red_the_statement_states_the_alias_rewrite() {
+    let read = rendering::read(&stated()).expect("the rendering reads");
+    assert_eq!(read.rewrites.len(), 1, "{:?}", read.rewrites);
+    assert_eq!(read.rewrites[0].0, 1, "an alias rewrite");
+    assert_eq!(read.rewrites[0].1, "webrequest");
+}
+
+/// D3: every operator-actionable line carries its declared catalogue code, and `declares.json`
+/// declares exactly those codes.
+#[test]
+fn red_every_actionable_line_carries_its_declared_code() {
+    let declares: Value =
+        serde_json::from_str(include_str!("../../hook-webrequest/declares.json")).unwrap();
+    let declared: Vec<u64> = declares["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .map(|d| {
+            assert_eq!(d["severity"], "actionable");
+            assert_eq!(d["since"], "1.6.0");
+            d["code"].as_u64().unwrap()
+        })
+        .collect();
+    assert_eq!(declared, [7151, 7152, 7153, 7154]);
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}", "timeout_ms": 99999}}"#))
+            .expect("opens");
+        // 7154: the clamp.
+        assert!(
+            warned(&b, &["timeout_ms", "clamp", "BUSBAR-7154"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        // 7153: a configure refusal.
+        b.configure(r#"{"url": "http://169.254.169.254/"}"#, 2)
+            .expect_err("a blocked URL is a NACK");
+        assert!(
+            warned(&b, &["configure() rejected:", "BUSBAR-7153"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        // 7151: a failed decide and a failed transform.
+        b.upstream.answer(503, "Busy", b"");
+        decide_failure(&b);
+        assert!(
+            warned(&b, &["decide failed", "BUSBAR-7151"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        transform_failure(&b);
+        assert!(
+            warned(&b, &["transform failed", "BUSBAR-7151"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        // 7152: a dropped notify.
+        let tap = NotifyFrame::build(&request(), None, true);
+        b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+        assert!(
+            warned(&b, &["notify dropped", "BUSBAR-7152"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+    }
+}
+
 /// RED: a `decide` that cannot pend (no ticket) answers at once, FAILED (a request it could not
 /// send is a hook failure, so `on_error` applies); it never blocks a thread and puts nothing on the
 /// wire.
