@@ -32,8 +32,8 @@
 use crate::ALIAS;
 use busbar_contract::abi::sdk::url as sdk_url;
 use busbar_contract::net::{
-    embedded_ipv4, ipv4_is_internal, is_alternate_ipv4_encoding, is_link_local_v6,
-    is_unique_local_v6, IpAddr, Ipv6Addr, METADATA_HOSTS,
+    embedded_ipv4, ipv4_is_internal, ipv6_is_internal, is_alternate_ipv4_encoding, IpAddr,
+    Ipv6Addr, METADATA_HOSTS,
 };
 
 /// IPv6 site-local `fec0::/10`. Deprecated by RFC 3879 but still routed on plenty of real networks,
@@ -147,10 +147,7 @@ fn ip_is_internal(ip: &IpAddr) -> bool {
             if let Some(v4) = embedded_ipv4(v6) {
                 return !v4.is_loopback() && ipv4_is_internal(&v4);
             }
-            v6.is_unspecified()
-                || is_unique_local_v6(v6)
-                || is_link_local_v6(v6)
-                || is_site_local_v6(v6)
+            ipv6_is_internal(v6) || is_site_local_v6(v6)
         }
     }
 }
