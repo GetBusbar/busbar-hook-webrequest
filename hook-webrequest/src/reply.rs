@@ -27,6 +27,27 @@ pub fn cap_exceeded() -> String {
     format!("webrequest: response exceeded {MAX_REPLY_BYTES} byte cap")
 }
 
+/// The longest remote reason phrase a failure text shows, in characters.
+pub const MAX_PHRASE_CHARS: usize = 128;
+
+/// The remote's reason phrase as a log line may carry it: cut to [`MAX_PHRASE_CHARS`] characters
+/// (marked with `\u{2026}`) and `Debug`-escaped, so a hostile target cannot flood the log, forge a line
+/// or send terminal control bytes. An apostrophe stays as is (the 1.5.5 client showed it so).
+fn loggable_phrase(phrase: &str) -> String {
+    let mut out = String::new();
+    for c in phrase.chars().take(MAX_PHRASE_CHARS) {
+        if c == '\'' {
+            out.push(c);
+        } else {
+            out.extend(c.escape_debug());
+        }
+    }
+    if phrase.chars().nth(MAX_PHRASE_CHARS).is_some() {
+        out.push('\u{2026}');
+    }
+    out
+}
+
 /// The failure for an error status (4xx/5xx), worded without the URL. `phrase` is the reason phrase
 /// the server actually sent (the exchange's response head: the wire phrase on HTTP/1.1); when it is
 /// absent or empty (h2 has none) the canonical phrase stands.
@@ -38,7 +59,7 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
         Err(_) => ("server", http::StatusCode::INTERNAL_SERVER_ERROR),
     };
     let shown = match phrase.filter(|p| !p.is_empty()) {
-        Some(p) => format!("{} {p}", status.as_u16()),
+        Some(p) => format!("{} {}", status.as_u16(), loggable_phrase(p)),
         None => status.to_string(),
     };
     format!("webrequest: target returned an error status: HTTP status {class} error ({shown})")
