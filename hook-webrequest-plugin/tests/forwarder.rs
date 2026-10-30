@@ -17,8 +17,8 @@
 //!
 //! THE RED ARMS: a configuration the forwarder refuses never opens, in 1.5.5's words; a configure
 //! that names a blocked URL is a NACK and leaves the live target; a far end's error status is an
-//! abstaining `decide` and an abstaining `transform`, as 1.5.5's forwarder answered (v1.0.6); and the
-//! Statement declares exactly one need,
+//! FAILED `decide` and a FAILED `transform` (the operator's `on_error` applies; SIGN-hookexport-
+//! webrequest-failure), while a deliberate `{}` reply stays an abstain; and the Statement declares exactly one need,
 //! outbound, in the loopback-allowed egress class, over the host's `http` framer.
 //!
 //! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
@@ -623,24 +623,16 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(b.upstream.last(), expected("decide"));
     t.push("decide 200: prefer [9, 3]".into());
 
-    // RED: an error status is an ABSTAINING decide, as the 1.5.5 forwarder answered it (v1.0.6
-    // `decide` returned `{}` on any error), so the operator's `on_error` never sees it: the oracle
-    // cell `webrequest|gate|sidecar-500-reject` serves the chat under `on_error: reject`.
+    // RED: an error status is a FAILED decide, so the pool's `on_error` applies (a far-end 500
+    // under `on_error: reject` refuses the request); a deliberate `{}` reply is still an abstain.
     b.upstream.answer(503, "Busy", b"");
-    let done = b.submit(
-        slot::DECIDE,
-        decide_frame().input(),
-        blank_out::<DecideOut>(),
-    );
-    assert_eq!(
-        done.outcome,
-        Outcome::Ready,
-        "{}",
-        error_of(done.error.as_deref())
-    );
-    assert_eq!(done.frame.expect("the frame").out.verbs, VERB_ABSTAIN);
+    let failed = decide_failure(&b);
+    assert!(failed.contains("HTTP status server error (503"), "{failed}");
     assert_eq!(b.upstream.last(), expected("decide"));
-    t.push("decide 503: abstain".into());
+    t.push("decide 503: failed".into());
+    b.upstream.answer(200, "OK", b"{}");
+    assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+    t.push("decide {}: abstain".into());
 
     // transform: the far end's rewrite crosses as its JSON; a failure abstains.
     let frame = decide_frame();
@@ -662,14 +654,9 @@ fn script(arm: &Arm) -> Vec<String> {
     t.push("transform 200: rewrite".into());
 
     b.upstream.answer(500, "Internal Server Error", b"");
-    let done = b.submit(
-        slot::TRANSFORM,
-        decide_frame().input(),
-        blank_out::<TransformOut>(),
-    );
-    assert_eq!(done.outcome, Outcome::Ready);
-    assert_eq!(done.frame.expect("the frame").out.verbs, VERB_ABSTAIN);
-    t.push("transform 500: abstain".into());
+    let failed = transform_failure(&b);
+    assert!(failed.contains("HTTP status server error (500"), "{failed}");
+    t.push("transform 500: failed".into());
 
     // notify: fire-and-forget, the 1.5.5 notify envelope on the wire.
     let tap = NotifyFrame::build(&request(), None, true);
@@ -767,6 +754,28 @@ fn decide_verbs(b: &Bound) -> u32 {
     done.frame.expect("the frame").out.verbs
 }
 
+/// A `decide` through the dispatcher that FAILS (the pool's `on_error` applies); its text.
+fn decide_failure(b: &Bound) -> String {
+    let done = b.submit(
+        slot::DECIDE,
+        decide_frame().input(),
+        blank_out::<DecideOut>(),
+    );
+    assert_eq!(done.outcome, Outcome::Failed, "a failed decide");
+    error_of(done.error.as_deref())
+}
+
+/// A `transform` through the dispatcher that FAILS; its text.
+fn transform_failure(b: &Bound) -> String {
+    let done = b.submit(
+        slot::TRANSFORM,
+        decide_frame().input(),
+        blank_out::<TransformOut>(),
+    );
+    assert_eq!(done.outcome, Outcome::Failed, "a failed transform");
+    error_of(done.error.as_deref())
+}
+
 /// Some warn diagnostic contains every one of `parts`.
 fn warned(b: &Bound, parts: &[&str]) -> bool {
     b.recorder
@@ -817,42 +826,53 @@ fn red_an_unknown_setting_is_ignored_and_logged() {
     }
 }
 
-/// RED: an error status still abstains, and the reason is logged.
+/// RED: an error status FAILS the decide (not an abstain), and the reason is logged.
 #[test]
-fn red_a_failed_decide_abstains_and_is_logged() {
+fn red_a_failed_decide_fails_and_is_logged() {
     for arm in arms() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
         b.upstream.answer(503, "Busy", b"");
-        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        let failed = decide_failure(&b);
+        assert!(failed.contains("HTTP status server error (503"), "{failed}");
         let warns = b.recorder.warns();
         assert!(
-            warned(&b, &["HTTP status server error (503", "decide abstains"]),
+            warned(&b, &["HTTP status server error (503", "decide failed"]),
             "{warns:?}"
         );
     }
 }
 
 /// RED: a transport failure (the exchange cannot establish) reaches the plugin as a failure it
-/// answers itself (not a FAILED op): the decide abstains and the request failure is logged.
+/// answers itself: the decide FAILS with the request failure, which is logged; a transform against
+/// a dead target fails too.
 #[test]
-fn red_a_transport_failure_abstains_and_is_logged() {
+fn red_a_transport_failure_fails_and_is_logged() {
     for arm in arms() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
         b.upstream.fail_open.store(true, Ordering::SeqCst);
-        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        // The host's cause rides after the 1.5.5 prefix, not only the prefix.
+        let failed = decide_failure(&b);
+        assert!(
+            failed.starts_with("webrequest: request failed: error sending request: "),
+            "{failed}"
+        );
         let warns = b.recorder.warns();
         assert!(
             warned(
                 &b,
                 &[
-                    // The host's cause rides after the 1.5.5 prefix, not only the prefix.
                     "webrequest: request failed: error sending request: ",
-                    "decide abstains"
+                    "decide failed"
                 ]
             ),
             "{warns:?}"
+        );
+        let failed = transform_failure(&b);
+        assert!(
+            failed.starts_with("webrequest: request failed: error sending request: "),
+            "{failed}"
         );
     }
 }
@@ -868,9 +888,9 @@ fn red_the_log_never_leaks_the_url_secrets() {
         b.configure(r#"{"timeout_ms": "soon"}"#, 2)
             .expect_err("a bad timeout is a NACK");
         b.upstream.answer(503, "Busy", b"");
-        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        decide_failure(&b);
         b.upstream.fail_open.store(true, Ordering::SeqCst);
-        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        decide_failure(&b);
         // Guard against a vacuous pass: the three refusals were logged.
         let warns = b.recorder.warns();
         assert!(warns.len() >= 3, "{warns:?}");
