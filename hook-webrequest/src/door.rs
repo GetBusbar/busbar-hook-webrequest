@@ -159,15 +159,39 @@ impl Forwarder {
     }
 
     /// The [`Live`] an op entering on `ticket` runs against.
-    pub(crate) fn entry_live(&self, _ticket: Ticket) -> Arc<Live> {
-        self.live()
+    ///
+    /// The request is built, and the target read, only on an op's FIRST entry; the exchange it parks
+    /// is resumed against that request. So a re-entry (the op's wake) uses the [`Live`] its first
+    /// entry recorded ([`Forwarder::park_live`]), never the current one: a `configure` between the
+    /// two must not hand the old request to the new origin, nor scrub its failure with the new
+    /// target's secrets. Only a first entry reads the live target.
+    pub(crate) fn entry_live(&self, ticket: Ticket) -> Arc<Live> {
+        self.parked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&ticket)
+            .map_or_else(|| self.live(), Arc::clone)
     }
 
-    /// Record the [`Live`] a parked op's exchange was built from.
-    pub(crate) fn park_live(&self, _ticket: Ticket, _live: &Arc<Live>) {}
+    /// Record the [`Live`] a parked op's exchange was built from. A ticket's slot is recycled under a
+    /// new generation, so an entry an earlier generation of the slot left (a cancelled op) is dropped
+    /// here rather than kept for good.
+    pub(crate) fn park_live(&self, ticket: Ticket, live: &Arc<Live>) {
+        if ticket.is_none() {
+            return;
+        }
+        let mut parked = self.parked.lock().unwrap_or_else(PoisonError::into_inner);
+        parked.retain(|t, _| t.slot != ticket.slot);
+        parked.insert(ticket, Arc::clone(live));
+    }
 
     /// The op on `ticket` is done: forget what it parked.
-    pub(crate) fn release_live(&self, _ticket: Ticket) {}
+    pub(crate) fn release_live(&self, ticket: Ticket) {
+        self.parked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&ticket);
+    }
 
     fn live(&self) -> Arc<Live> {
         Arc::clone(&self.live.read().unwrap_or_else(PoisonError::into_inner))
@@ -181,9 +205,11 @@ impl Forwarder {
         op: &str,
         payload: impl FnOnce() -> serde_json::Value,
     ) -> Poll<Result<serde_json::Value, String>> {
-        let live = self.live();
+        let ticket = on.ticket();
+        let live = self.entry_live(ticket);
         let unsendable = Cell::new(None);
         let answer = on.exchange(NEED, Some(&live.origin), || {
+            self.park_live(ticket, &live);
             wire::envelope(op, &payload())
                 .map(|body| live.request(body))
                 .map_err(|e| {
@@ -191,6 +217,9 @@ impl Forwarder {
                     ConnFailure::Refused(String::new())
                 })
         });
+        if answer.is_ready() {
+            self.release_live(ticket);
+        }
         if let Some(e) = unsendable.take() {
             return Poll::Ready(Err(e));
         }
