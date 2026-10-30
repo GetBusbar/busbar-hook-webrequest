@@ -81,13 +81,14 @@ const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 /// How many ops one instance holds in flight; the host clamps.
 pub const MAX_INFLIGHT: u32 = 64;
 
-/// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS (busbar lead ruling item 7a), stated in the
-/// Statement's extensions under the contract's `EXT_REFERENCE_FIELDS` key: a `{env:}`/`{file:}`/
-/// `{module:}` reference written at `url` is resolved by the kernel IN PLACE to its string (a 1.5.5
-/// config's `url: {env: VAR}` keeps booting), and a literal url passes as written (never refused
-/// as a secret literal). The value is not a secret: it is never lent. A reference anywhere
-/// else is refused (OWNER RULING, CHIP-REVIEW-v4 change 2).
-busbar_contract::statement_extensions!(pub EXTENSIONS: [
+busbar_contract::statement_extensions!(
+    /// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS (busbar lead ruling item 7a), stated in
+    /// the Statement's extensions under the contract's `EXT_REFERENCE_FIELDS` key: a `{env:}`/
+    /// `{file:}`/`{module:}` reference written at `url` is resolved by the kernel IN PLACE to its
+    /// string (a 1.5.5 config's `url: {env: VAR}` keeps booting), and a literal url passes as
+    /// written (never refused as a secret literal). The value is not a secret: it is never lent.
+    /// A reference anywhere else is refused (OWNER RULING, CHIP-REVIEW-v4 change 2).
+    pub EXTENSIONS: [
     (busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS, br#"["url"]"#),
 ]);
 
