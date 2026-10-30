@@ -182,6 +182,9 @@ pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
 /// # Errors
 /// The reason.
 pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
+    if let Some(refusal) = ambiguous_url(raw) {
+        return Err(refusal);
+    }
     let url = url::Url::parse(raw).map_err(|e| format!("settings.url is not a valid URL: {e}"))?;
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
@@ -207,6 +210,30 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
     Ok(url)
 }
 
+/// The ambiguous-URL refusal (without the `webrequest: ` prefix): `Some(the refusal)` when `raw`
+/// carries an `@` after its host, `https://tok/en@hooks.example/x` or `https://u:123/x@host/…`, a
+/// credential holding an unescaped `/`, `?` or `#`, which a parser reads as host `tok` (or `u`,
+/// port `123`) and a path, so the credential would be dialled as a host. An `@` meant for the path
+/// is written `%40`. The refusal shows the url with everything before its last `@` cut, never the
+/// credential. A url that does not parse is read the same way by hand: the text after `://`, from
+/// its first `/`, `?` or `#`, is what a parser would take for the path. The words are the SDK's
+/// ([`sdk_url::ambiguous_url`]) in this plugin's shape, `settings.url ...`.
+#[must_use]
+pub fn ambiguous_url(raw: &str) -> Option<String> {
+    let refusal = match url::Url::parse(raw) {
+        Ok(parsed) => sdk_url::ambiguous_url(raw, &parsed[url::Position::BeforePath..]),
+        Err(_) => {
+            let (_, rest) = raw.split_once("://")?;
+            let tail = &rest[rest.find(['/', '?', '#'])?..];
+            sdk_url::ambiguous_url(raw, tail)
+        }
+    }?;
+    Some(match refusal.strip_prefix("settings: url ") {
+        Some(rest) => format!("settings.url {rest}"),
+        None => refusal,
+    })
+}
+
 /// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is
 /// what every URL echo uses; this alone leaves a `?token=` query in place.
 ///
@@ -220,9 +247,8 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
 /// string. Masking the parsed `Url`'s username/password fields directly is correct regardless of what
 /// whitespace or control characters the raw input used to spell the scheme separator.
 ///
-/// Not the SDK's textual [`sdk_url::cut_userinfo`]: that cuts to the LAST `@`, so an `@` in the
-/// path (which this forwarder accepts; it does not refuse an ambiguous url) is over-cut
-/// (`https://host/a@b` echoes as `https://***@b`), where this echoes the url as parsed.
+/// Not the SDK's textual [`sdk_url::cut_userinfo`]: that cuts to the LAST `@`, which over-cuts a
+/// url echoed as parsed; a url with an `@` after its host never gets here ([`ambiguous_url`]).
 pub fn mask_userinfo(url: &url::Url) -> String {
     if url.username().is_empty() && url.password().is_none() {
         return url.to_string();
