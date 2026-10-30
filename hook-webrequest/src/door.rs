@@ -26,11 +26,12 @@ use busbar_contract::abi::hook::{Tail, CLASS_GATE, PROMPT_RW, USER_RO};
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, KEEP_NAMED,
 };
-use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::mechanism::door::{Rewrite, Statement};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::conn::ConnFailure;
-use busbar_contract::abi::sdk::door::{abi_str, statement};
-use busbar_contract::abi::sdk::exchange::{Op, Request};
+use busbar_contract::abi::sdk::cred::Cred;
+use busbar_contract::abi::sdk::door::{abi_str, alias, statement};
+use busbar_contract::abi::sdk::exchange::{Op, Request, SealedField};
 use busbar_contract::abi::sdk::hook::{
     lower_decide_reply, lower_transform_reply, statement_with_tail, tail, Decoded, DecodedTap,
     Hook, HookOpen, RewriteVerdict, Verdict,
@@ -74,9 +75,14 @@ busbar_contract::statement_extensions!(
     (busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS, br#"["url"]"#),
 ]);
 
-/// THE STATEMENT: name, version, the hook tail, the one outbound need and the reference-capable
-/// `url`.
+/// The module name an operator writes, as the alias the registry holds beside [`crate::NAME`].
+const REWRITES: &[Rewrite] = &[alias(crate::ALIAS)];
+
+/// THE STATEMENT: name, version, the hook tail, the alias, the one outbound need and the
+/// reference-capable `url`.
 pub const STATEMENT: Statement = Statement {
+    rewrites: REWRITES.as_ptr(),
+    rewrites_len: REWRITES.len(),
     needs: NEEDS.as_ptr(),
     needs_len: NEEDS.len(),
     extensions: EXTENSIONS,
@@ -102,7 +108,13 @@ pub(crate) struct Live {
     pub(crate) origin: String,
     method: Vec<u8>,
     request_target: Vec<u8>,
-    fields: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The fields that carry no credential, in order (`content-type`, `accept`).
+    plain: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The fields that do (the `authorization` the userinfo became): each goes in before the plain
+    /// field `at` (their count: first), held as a [`Cred`] required to go out secured when the url
+    /// names a secure scheme, so the SDK frames and wipes the value and a formatted exchange shows
+    /// `<sealed>`.
+    sealed: Vec<(usize, Vec<u8>, Cred)>,
     timeout_ms: u64,
     /// What a failure's text is scrubbed of ([`crate::net_guard::secret_parts`]), computed once with
     /// the target rather than for every failed op.
@@ -126,30 +138,45 @@ impl std::fmt::Debug for Live {
 impl Live {
     pub(crate) fn new(target: Target) -> Arc<Self> {
         let r = wire::request(&target, Vec::new());
+        let (mut plain, mut sealed) = (Vec::new(), Vec::new());
+        for (name, value) in r.fields {
+            if name.eq_ignore_ascii_case("authorization") {
+                let mut v = serde_json::Value::String(value);
+                let cred = Cred::take(&mut v)
+                    .unwrap_or_else(Cred::empty)
+                    .secure_for(target.url.as_str());
+                sealed.push((plain.len(), name.as_bytes().to_vec(), cred));
+            } else {
+                plain.push((name.as_bytes().to_vec(), value.into_bytes()));
+            }
+        }
         Arc::new(Self {
             origin: target.url.origin().ascii_serialization(),
             method: r.method.as_bytes().to_vec(),
             request_target: r.target.into_bytes(),
-            fields: r
-                .fields
-                .into_iter()
-                .map(|(n, v)| (n.as_bytes().to_vec(), v.into_bytes()))
-                .collect(),
+            plain,
+            sealed,
             timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
             secrets: crate::net_guard::secret_parts(&target.url),
             target,
         })
     }
 
-    /// The exchange's request for `body`.
-    fn request(&self, body: Vec<u8>) -> Request {
-        Request {
+    /// The exchange's request for `body`, and the sealed fields it carries beside it.
+    fn request(&self, body: Vec<u8>) -> (Request, Vec<SealedField>) {
+        let request = Request {
             method: self.method.clone(),
             target: self.request_target.clone(),
-            fields: self.fields.clone(),
+            fields: self.plain.clone(),
             body,
             timeout_ms: self.timeout_ms,
-        }
+        };
+        let sealed = self
+            .sealed
+            .iter()
+            .map(|(at, name, c)| (*at, name.clone(), c.field()))
+            .collect();
+        (request, sealed)
     }
 }
 
@@ -226,7 +253,7 @@ impl Forwarder {
         let ticket = on.ticket();
         let live = self.entry_live(ticket);
         let unsendable = Cell::new(None);
-        let answer = on.exchange(NEED, Some(&live.origin), || {
+        let answer = on.exchange_sealed(NEED, Some(&live.origin), || {
             self.park_live(ticket, &live);
             wire::envelope(op, &payload())
                 .map(|body| live.request(body))
