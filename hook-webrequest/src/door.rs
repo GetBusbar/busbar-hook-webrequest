@@ -25,7 +25,6 @@ use busbar_contract::abi::hook::{Tail, CLASS_GATE, PROMPT_RW, USER_RO};
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, KEEP_NAMED,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -42,11 +41,6 @@ use crate::{reply, report, wire};
 /// The need index every op's exchange establishes on.
 pub const NEED: u32 = 0;
 
-const ABSENT: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
-
 /// THE ONE NEED: outbound over the host's `http` framer, the target named by the plugin per op
 /// (the configured URL's origin, so a `configure` that moves it is honoured), under the
 /// loopback-allowed egress class: `https://`, or plaintext to loopback only; the node's own ports,
@@ -56,22 +50,8 @@ pub const NEEDS: &[Need] = &[Need {
     direction: DIRECTION_OUTBOUND,
     egress_class: EGRESS_LOOPBACK_ALLOWED,
     transport: abi_str("http"),
-    auth: ABSENT,
-    target_from: ABSENT,
-    trust_from: ABSENT,
-    details: Blob {
-        ptr: std::ptr::null(),
-        len: 0,
-        fmt: BLOB_ABSENT,
-        flags: 0,
-    },
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
-    timeout_ms: 0,
     keep_mode: KEEP_NAMED,
-    _reserved: 0,
-    deny_response_headers: std::ptr::null(),
-    deny_response_headers_len: 0,
+    ..Need::EMPTY
 }];
 
 /// A gate that may see and rewrite the prompt and read the caller (`needs_prompt: rw`,
