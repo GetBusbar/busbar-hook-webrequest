@@ -328,3 +328,32 @@ fn refusal_texts_never_show_the_url_path() {
         "{err}"
     );
 }
+
+/// R11: a literal IPv4 is refused for every range the contract's `ipv4_is_internal` names, not only the
+/// ones this module once listed; loopback stays the sidecar carve-out and a public address passes.
+#[test]
+fn the_literal_host_check_refuses_every_contract_internal_ipv4() {
+    for host in [
+        "198.18.0.1",
+        "198.19.255.255",
+        "0.1.2.3",
+        "0.255.255.255",
+        "192.0.0.5",
+        "192.0.2.1",
+        "198.51.100.1",
+        "203.0.113.1",
+        "224.0.0.1",
+        "239.255.255.255",
+        "[::ffff:198.18.0.1]",
+    ] {
+        let raw = format!("https://{host}/x");
+        let err = validate_target_url(&raw).expect_err(&raw);
+        assert!(err.contains("SSRF guard"), "{raw}: {err}");
+    }
+    for host in ["127.0.0.1", "198.20.0.1", "1.2.3.4", "193.0.0.1"] {
+        assert!(
+            validate_target_url(&format!("https://{host}/x")).is_ok(),
+            "{host}"
+        );
+    }
+}
