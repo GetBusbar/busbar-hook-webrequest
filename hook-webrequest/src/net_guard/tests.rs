@@ -376,3 +376,48 @@ fn the_literal_host_check_refuses_every_contract_internal_ipv6() {
     }
     assert!(validate_target_url("http://[::1]:9000/x").is_ok());
 }
+
+/// The secrets a failure is scrubbed of include the `Authorization` value the userinfo becomes and
+/// its base64 token: a far end that echoes the request's header back leaks neither.
+#[test]
+fn secret_parts_include_the_authorization_value_and_its_token() {
+    let parts = secret_parts(&url("https://svc:hunter2@hooks.example/route"));
+    // base64("svc:hunter2")
+    assert!(parts.iter().any(|p| p == "c3ZjOmh1bnRlcjI="), "{parts:?}");
+    assert!(
+        parts.iter().any(|p| p == "Basic c3ZjOmh1bnRlcjI="),
+        "{parts:?}"
+    );
+    let scrubbed = scrub("echo: authorization: Basic c3ZjOmh1bnRlcjI=", &parts);
+    assert!(!scrubbed.contains("c3ZjOmh1bnRlcjI="), "{scrubbed}");
+}
+
+/// D1: a url with an `@` after its host is ambiguous (`tok/en` would be dialled as the host) and is
+/// refused in this plugin's words, without its credential; one that does not parse is read by hand.
+#[test]
+fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
+    for raw in [
+        "https://tok/en@hooks.example/x",
+        "https://u:123/x@hooks.example/x",
+        "https://svc:pa/ss@hooks.example/x",
+        "https://hooks.example/a@b",
+        "https://hooks.example/x?to@ken",
+    ] {
+        let err = validate_target_url(raw).unwrap_err();
+        assert!(
+            err.starts_with("webrequest: settings.url ") && err.contains("ambiguous"),
+            "{raw}: {err}"
+        );
+        for secret in ["tok", "en@", "pa/ss", "to@ken", "123"] {
+            assert!(!err.contains(secret), "{raw} echoed {secret}: {err}");
+        }
+        let nack = refuse_target_url(raw).unwrap_err();
+        assert!(
+            nack.starts_with("settings.url ") && nack.contains("ambiguous"),
+            "{nack}"
+        );
+    }
+    // An escaped `@` in the path, and plain userinfo, stay accepted.
+    assert!(validate_target_url("https://hooks.example/a%40b").is_ok());
+    assert!(validate_target_url("https://svc:hunter2@hooks.example/x").is_ok());
+}

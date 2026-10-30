@@ -222,3 +222,26 @@ fn a_clamped_timeout_is_warned_once() {
     let w = warnings(&map(serde_json::json!({"timeout_ms": 60000, "x": 1})));
     assert_eq!(w.len(), 2, "{w:?}");
 }
+
+/// D1: `open` and `configure` both refuse a url with an `@` after its host, in this plugin's words,
+/// and neither echoes the credential.
+#[test]
+fn open_and_configure_refuse_an_ambiguous_url() {
+    let err = open(br#"{"url":"https://tok/en@hooks.example/x"}"#).unwrap_err();
+    assert!(
+        err.starts_with("webrequest: settings.url ") && err.contains("ambiguous"),
+        "{err}"
+    );
+    assert!(!err.contains("tok/en") && !err.contains("en@"), "{err}");
+    let nack = configure(
+        &live(),
+        &map(serde_json::json!({"url": "https://tok/en@hooks.example/x"})),
+    )
+    .unwrap_err();
+    assert!(
+        nack.starts_with("webrequest: configure() rejected: settings.url ")
+            && nack.contains("ambiguous"),
+        "{nack}"
+    );
+    assert!(!nack.contains("tok/en"), "{nack}");
+}
