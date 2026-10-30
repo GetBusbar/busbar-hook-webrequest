@@ -185,9 +185,14 @@ impl Forwarder {
             .map_or_else(|| self.live(), Arc::clone)
     }
 
-    /// Record the [`Live`] a parked op's exchange was built from. A ticket's slot is recycled under a
-    /// new generation, so an entry an earlier generation of the slot left (a cancelled op) is dropped
-    /// here rather than kept for good.
+    /// Record the [`Live`] a parked op's exchange was built from.
+    ///
+    /// KNOWN LIMIT: an op cannot be told whether it is resuming or fresh (the SDK's `Op` does not
+    /// expose it), so an entry is trusted by its ticket alone. An op cancelled while parked leaves its
+    /// entry, and a fresh op that lands on the SAME ticket (same generation) before anything else
+    /// replaces it reuses that op's older, self-consistent [`Live`] (never a mix of two targets'
+    /// request and credentials). A recycled slot gets a new generation, so it never matches;
+    /// parking on it drops the slot's older entries. This closes when core exposes resume.
     pub(crate) fn park_live(&self, ticket: Ticket, live: &Arc<Live>) {
         if ticket.is_none() {
             return;
