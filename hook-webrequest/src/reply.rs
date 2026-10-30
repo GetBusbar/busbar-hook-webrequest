@@ -133,8 +133,8 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
 /// lower it; the check here is what holds it to [`MAX_REPLY_BYTES`]).
 ///
 /// The status rule: 4xx/5xx (400..=599) is a failure, and so is a redirect (3xx: never followed, so
-/// there is no reply to read); everything else carries its body as the reply, an EMPTY body (a `204`,
-/// or a target with nothing to say) being `{}`, a deliberate "no opinion".
+/// there is no reply to read); everything else carries its body as the reply. An EMPTY body is `{}`,
+/// a deliberate "no opinion", only for a `204`; on any other status it is a failure.
 ///
 /// # Errors
 /// The failure text.
@@ -149,7 +149,13 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
         return Err(cap_exceeded());
     }
     if body.is_empty() {
-        return Ok(serde_json::json!({}));
+        // Only a 204 (No Content) is a deliberate "no opinion"; an empty body on anything else is a
+        // reply that did not arrive whole.
+        return if status == 204 {
+            Ok(serde_json::json!({}))
+        } else {
+            Err(format!("{ALIAS}: empty reply (HTTP status {status})"))
+        };
     }
     parse_reply(body)
 }

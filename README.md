@@ -57,8 +57,8 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
   anything is dialed.
 - **Redirects are never followed.** The plugin has no HTTP client of its own:
   it hands a framed request to the host's `http` framer through its one
-  declared need, and a 3xx reply is relayed as the reply, never followed
-  (see `interpret` in `hook-webrequest/src/reply.rs` and
+  declared need, and a 3xx reply is a failure ("redirect not followed"), never
+  followed or relayed (see `interpret` in `hook-webrequest/src/reply.rs` and
   `hook-webrequest/src/door.rs`). A target cannot redirect the plugin to an
   internal host.
 - **Tight timeouts**; a reply body over 64 KiB is refused (the exchange
