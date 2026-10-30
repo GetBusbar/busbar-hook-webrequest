@@ -16,15 +16,28 @@ fn status_reports_the_url_under_its_own_key_masked_and_redacted() {
     .unwrap();
     let s = status(&t);
     let text = s.to_string();
-    for secret in ["hunter2", "token=abc", "frag"] {
+    for secret in ["hunter2", "token=abc", "frag", "route"] {
         assert!(!text.contains(secret), "status leaked {secret}: {text}");
     }
     let settings = &s["status"]["settings"];
     assert_eq!(
         settings["url"],
-        "https://***@api.example.com/route?<redacted>"
+        "https://***@api.example.com/***?<redacted>"
     );
     assert_eq!(settings["target_host"], "api.example.com");
     assert_eq!(settings["timeout_ms"], 250);
     assert_eq!(s["status"]["metrics"], serde_json::json!([]));
+}
+
+/// The path of a sidecar url can carry its key (`/v1/<key>`), so `status` cuts it as a log line does.
+#[test]
+fn status_never_shows_the_url_path() {
+    let t = open(br#"{"url":"https://hooks.example.com/v1/KEY123"}"#).unwrap();
+    let s = status(&t);
+    let text = s.to_string();
+    assert!(!text.contains("KEY123"), "status leaked the path: {text}");
+    assert_eq!(
+        s["status"]["settings"]["url"],
+        "https://hooks.example.com/***"
+    );
 }
