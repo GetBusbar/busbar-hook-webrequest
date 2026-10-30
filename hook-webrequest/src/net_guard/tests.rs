@@ -323,5 +323,8 @@ fn refusal_texts_never_show_the_url_path() {
         assert!(err.contains("/***"), "{raw}: {err}");
     }
     let err = validate_target_url("https://svc:pw@10.0.0.1:8443/v1/KEY123?t=SECRET").unwrap_err();
-    assert!(err.contains("got 'https://***@10.0.0.1:8443/***?<redacted>'"), "{err}");
+    assert!(
+        err.contains("got 'https://***@10.0.0.1:8443/***?<redacted>'"),
+        "{err}"
+    );
 }
