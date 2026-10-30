@@ -228,10 +228,24 @@ pub fn ambiguous_url(raw: &str) -> Option<String> {
             sdk_url::ambiguous_url(raw, tail)
         }
     }?;
+    // The SDK echoes everything after the last `@`, path and query included; either may carry the
+    // key, so the echo is cut to `scheme://***@host[:port]/***` (the path-cut form).
+    let echoed = sdk_url::cut_userinfo(raw, "***@");
+    let safe = echoed_host(raw);
+    let refusal = refusal.replace(&format!("`{echoed}`"), &format!("`{safe}`"));
     Some(match refusal.strip_prefix("settings: url ") {
         Some(rest) => format!("settings.url {rest}"),
         None => refusal,
     })
+}
+
+/// `scheme://***@host[:port]/***`: the part of `raw` after its last `@` cut at the first `/`, `?` or
+/// `#`, with the path masked.
+fn echoed_host(raw: &str) -> String {
+    let (scheme, rest) = raw.split_once("://").unwrap_or(("", raw));
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, after)| after);
+    let host = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    format!("{scheme}://***@{host}/***")
 }
 
 /// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is

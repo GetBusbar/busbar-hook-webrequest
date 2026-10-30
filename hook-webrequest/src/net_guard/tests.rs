@@ -417,6 +417,13 @@ fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
             "{nack}"
         );
     }
+    // The echo is `scheme://***@host/***`: neither the path nor the query after the last `@` is shown.
+    let err =
+        validate_target_url("https://u:p/w@hooks.example/k/KEYCANARY?token=QCANARY").unwrap_err();
+    assert!(err.contains("`https://***@hooks.example/***`"), "{err}");
+    for canary in ["KEYCANARY", "QCANARY", "p/w"] {
+        assert!(!err.contains(canary), "{canary} echoed: {err}");
+    }
     // An escaped `@` in the path, and plain userinfo, stay accepted.
     assert!(validate_target_url("https://hooks.example/a%40b").is_ok());
     assert!(validate_target_url("https://svc:hunter2@hooks.example/x").is_ok());
