@@ -317,6 +317,11 @@ pub fn secret_parts(url: &url::Url) -> Vec<String> {
         parts.push(p.to_string());
     }
     parts.push(url.username().to_string());
+    // A far end may echo the request's `Authorization` back: the header value and its token.
+    if let Some(value) = crate::wire::basic_authorization(url) {
+        parts.extend(value.strip_prefix("Basic ").map(str::to_owned));
+        parts.push(value);
+    }
     sdk_url::and_decoded(parts)
 }
 
