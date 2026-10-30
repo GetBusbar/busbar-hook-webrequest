@@ -20,6 +20,7 @@ fn open_fails_closed_on_bad_config() {
         b"{ not json",
         b"   ",
         br#"{"url":"http://169.254.169.254/x"}"#,
+        br#"{"url":"https://169.254.169.254/x"}"#,
         br#"{"url":"http://10.0.0.1/x"}"#,
         br#"{"url":"http://api.example.com/x"}"#,
         br#"{"url":"   "}"#,
@@ -29,6 +30,8 @@ fn open_fails_closed_on_bad_config() {
     }
     assert!(open(br#"{"url":"https://api.example.com/route"}"#).is_ok());
     assert!(open(br#"{"url":"http://127.0.0.1:9000/route"}"#).is_ok());
+    // The IPv6 loopback sidecar is the same carve-out.
+    assert!(open(br#"{"url":"http://[::1]:9000/route"}"#).is_ok());
 }
 
 #[test]
