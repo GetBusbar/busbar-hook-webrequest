@@ -50,8 +50,8 @@ fn debug_of_the_target_and_the_wire_request_carries_no_credential() {
             !text.contains(token),
             "Debug carried the Basic value: {text}"
         );
-        assert!(text.contains("127.0.0.1"), "the host is kept: {text}");
     }
+    assert!(format!("{t:?}").contains("127.0.0.1"), "the host is kept");
 }
 
 #[test]

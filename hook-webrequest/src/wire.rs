@@ -8,6 +8,7 @@
 use busbar_contract::abi::sdk::url::{self as sdk_url, Userinfo};
 
 use crate::config::Target;
+use crate::ALIAS;
 use url::Position;
 
 /// The POST envelope for a per-request op: the engine's opaque `payload` projection (BORROWED, not
@@ -52,20 +53,18 @@ impl serde::Serialize for Envelope<'_> {
 /// The serialisation refusal text.
 pub fn envelope(op: &str, payload: &serde_json::Value) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&Envelope { op, payload })
-        .map_err(|e| format!("webrequest: failed to serialize op envelope: {e}"))
+        .map_err(|e| format!("{ALIAS}: failed to serialize op envelope: {e}"))
 }
 
 /// One framed http exchange's request: what the exchange is handed (the http framer writes the
-/// bytes). The framer adds `content-length` from the body and `host` from the request's authority;
-/// the fields here are the ones the forwarder itself sets.
+/// bytes). The framer adds `content-length` from the body and `host` from the origin the exchange is
+/// dialled to; the fields here are the ones the forwarder itself sets.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Request {
     /// Always `POST`.
     pub method: &'static str,
     /// The request target: the URL's path and query (`/` when it has neither).
     pub target: String,
-    /// The `host` header value: the host, and the port only when the URL names a non-default one.
-    pub authority: String,
     /// The fields, in order (`Debug` redacts the target and the `authorization` value):
     /// `authorization` (only when the URL carries userinfo), `content-type`,
     /// `accept`.
@@ -90,7 +89,6 @@ impl std::fmt::Debug for Request {
         f.debug_struct("Request")
             .field("method", &self.method)
             .field("target", &"<redacted>")
-            .field("authority", &self.authority)
             .field("fields", &fields)
             .field("body_len", &self.body.len())
             .finish()
@@ -111,18 +109,8 @@ pub fn request(target: &Target, body: Vec<u8>) -> Request {
     Request {
         method: "POST",
         target: if path.is_empty() { "/" } else { path }.to_string(),
-        authority: host_header(url),
         fields,
         body,
-    }
-}
-
-/// `host` or `host:port`: the port only when the URL names a non-default one.
-fn host_header(url: &url::Url) -> String {
-    let host = url.host_str().unwrap_or("");
-    match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
     }
 }
 
