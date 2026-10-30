@@ -29,6 +29,7 @@
 //! resolution, the resolved-address check and the address pin (DNS rebinding / TOCTOU) belong to the
 //! host's loopback-allowed egress class, which every connection this plugin opens goes through.
 
+use busbar_contract::abi::sdk::url as sdk_url;
 use busbar_contract::net::{
     embedded_ipv4, is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6,
     is_unique_local_v6, IpAddr, Ipv4Addr, Ipv6Addr, METADATA_HOSTS,
@@ -230,6 +231,10 @@ pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
 /// it is a silent no-op — and the unmasked credential then lands verbatim in the SSRF-rejection error
 /// string. Masking the parsed `Url`'s username/password fields directly is correct regardless of what
 /// whitespace or control characters the raw input used to spell the scheme separator.
+///
+/// Not the SDK's textual [`sdk_url::cut_userinfo`]: that cuts to the LAST `@`, so an `@` in the
+/// path (which this forwarder accepts; it does not refuse an ambiguous url) is over-cut
+/// (`https://host/a@b` echoes as `https://***@b`), where this echoes the url as parsed.
 pub fn mask_userinfo(url: &url::Url) -> String {
     if url.username().is_empty() && url.password().is_none() {
         return url.to_string();
@@ -278,8 +283,9 @@ pub fn loggable_url(url: &url::Url) -> String {
     reportable_url(&safe)
 }
 
-/// Every part of `url` that can carry a credential, longest first, each also percent-decoded: the
-/// URL as written and as echoed, its path, query, username and password. What [`scrub`] cuts.
+/// Every part of `url` that can carry a credential, each also percent-decoded
+/// ([`sdk_url::and_decoded`]): the URL as written and as echoed, its path, query, username and
+/// password. What [`scrub`] cuts (longest first, empty parts dropped).
 #[must_use]
 pub fn secret_parts(url: &url::Url) -> Vec<String> {
     let mut parts = vec![
@@ -297,28 +303,14 @@ pub fn secret_parts(url: &url::Url) -> Vec<String> {
         parts.push(p.to_string());
     }
     parts.push(url.username().to_string());
-    let decoded: Vec<String> = parts
-        .iter()
-        .map(|p| String::from_utf8_lossy(&crate::wire::percent_decode(p)).into_owned())
-        .collect();
-    parts.extend(decoded);
-    parts.retain(|p| !p.is_empty());
-    parts.sort_by_key(|p| std::cmp::Reverse(p.len()));
-    parts.dedup();
-    parts
+    sdk_url::and_decoded(parts)
 }
 
 /// `text` (the host's words, which may quote the target) with every [`secret_parts`] of `url`
-/// replaced by `***`.
+/// replaced by `***` ([`sdk_url::scrub`], unquoted).
 #[must_use]
 pub fn scrub(text: &str, url: &url::Url) -> String {
-    let mut out = text.to_string();
-    for p in secret_parts(url) {
-        if out.contains(p.as_str()) {
-            out = out.replace(p.as_str(), "***");
-        }
-    }
-    out
+    sdk_url::scrub(text, secret_parts(url), false)
 }
 
 #[cfg(test)]
