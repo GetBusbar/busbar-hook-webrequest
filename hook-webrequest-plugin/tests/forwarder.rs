@@ -582,6 +582,7 @@ fn script(arm: &Arm) -> Vec<String> {
         ("{}", "webrequest: settings.url is required"),
         (r#"{"url": 5}"#, "webrequest: invalid plugin config"),
         (r#"{"url": "http://169.254.169.254/"}"#, "webrequest:"),
+        (r#"{"url": "https://169.254.169.254/"}"#, "SSRF guard"),
     ] {
         let refused = arm.bind().open(bad).expect_err("refused");
         assert!(refused.contains(words), "{bad}: {refused}");
@@ -666,6 +667,13 @@ fn script(arm: &Arm) -> Vec<String> {
     // configure: commit-on-ack; a blocked URL is a NACK and leaves the live target.
     assert_eq!(b.configure(r#"{"timeout_ms": 100}"#, 7), Ok(7));
     let nack = b
+        .configure(r#"{"url": "https://169.254.169.254/"}"#, 9)
+        .expect_err("a blocked https URL is a NACK too");
+    assert!(
+        nack.contains("did not acknowledge settings_version 9"),
+        "{nack}"
+    );
+    let nack = b
         .configure(r#"{"url": "http://169.254.169.254/"}"#, 8)
         .expect_err("a blocked URL is a NACK");
     assert!(
@@ -675,7 +683,7 @@ fn script(arm: &Arm) -> Vec<String> {
     let s = b.status();
     assert_eq!(s["status"]["settings"]["timeout_ms"], json!(100));
     assert_eq!(s["status"]["settings"]["target_host"], json!("127.0.0.1"));
-    t.push(format!("configure: ack 7, nack 8; status {s}"));
+    t.push(format!("configure: ack 7, nack 8, nack 9; status {s}"));
 
     // Every exchange pended once and completed on its wake.
     assert_eq!(
@@ -981,5 +989,18 @@ fn red_a_notify_acknowledged_without_a_body_logs_no_warning() {
             "{:?}",
             b.recorder.warns()
         );
+    }
+}
+
+/// A loopback sidecar by its IPv6 literal opens through the door: `http://[::1]:9000/` is the
+/// plaintext carve-out, and reaches the host as the bracketed origin.
+#[test]
+fn an_ipv6_loopback_sidecar_opens_and_is_dialled_by_its_bracketed_origin() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(r#"{"url": "http://[::1]:9000/hook"}"#)
+            .expect("[::1] is the loopback carve-out");
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        assert_eq!(b.upstream.last().target, "http://[::1]:9000");
     }
 }
