@@ -25,7 +25,6 @@ use busbar_contract::abi::hook::{Tail, CLASS_GATE, PROMPT_RW, USER_RO};
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, KEEP_NAMED,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -42,11 +41,6 @@ use crate::{reply, report, wire};
 /// The need index every op's exchange establishes on.
 pub const NEED: u32 = 0;
 
-const ABSENT: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
-
 /// THE ONE NEED: outbound over the host's `http` framer, the target named by the plugin per op
 /// (the configured URL's origin, so a `configure` that moves it is honoured), under the
 /// loopback-allowed egress class: `https://`, or plaintext to loopback only; the node's own ports,
@@ -56,22 +50,8 @@ pub const NEEDS: &[Need] = &[Need {
     direction: DIRECTION_OUTBOUND,
     egress_class: EGRESS_LOOPBACK_ALLOWED,
     transport: abi_str("http"),
-    auth: ABSENT,
-    target_from: ABSENT,
-    trust_from: ABSENT,
-    details: Blob {
-        ptr: std::ptr::null(),
-        len: 0,
-        fmt: BLOB_ABSENT,
-        flags: 0,
-    },
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
-    timeout_ms: 0,
     keep_mode: KEEP_NAMED,
-    _reserved: 0,
-    deny_response_headers: std::ptr::null(),
-    deny_response_headers_len: 0,
+    ..Need::EMPTY
 }];
 
 /// A gate that may see and rewrite the prompt and read the caller (`needs_prompt: rw`,
@@ -81,18 +61,23 @@ const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 /// How many ops one instance holds in flight; the host clamps.
 pub const MAX_INFLIGHT: u32 = 64;
 
-/// THE DECLARED SECRET FIELDS: `url` can carry a credential (its userinfo becomes the
-/// `Authorization: Basic` header), so the kernel resolves a `{env:}`/`{file:}`/`{module:}` reference
-/// written there, in place, before the plugin sees the settings; a reference anywhere else is
-/// refused. OWNER RULING, CHIP-REVIEW-v4 change 2.
-pub const SECRET_REFS: &[AbiStr] = &[abi_str("url")];
+busbar_contract::statement_extensions!(
+    /// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS (busbar lead ruling item 7a), stated in
+    /// the Statement's extensions under the contract's `EXT_REFERENCE_FIELDS` key: a `{env:}`/
+    /// `{file:}`/`{module:}` reference written at `url` is resolved by the kernel IN PLACE to its
+    /// string (a 1.5.5 config's `url: {env: VAR}` keeps booting), and a literal url passes as
+    /// written (never refused as a secret literal). The value is not a secret: it is never lent.
+    /// A reference anywhere else is refused (OWNER RULING, CHIP-REVIEW-v4 change 2).
+    pub EXTENSIONS: [
+    (busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS, br#"["url"]"#),
+]);
 
-/// THE STATEMENT: name, version, the hook tail, the one outbound need and the declared secret fields.
+/// THE STATEMENT: name, version, the hook tail, the one outbound need and the reference-capable
+/// `url`.
 pub const STATEMENT: Statement = Statement {
     needs: NEEDS.as_ptr(),
     needs_len: NEEDS.len(),
-    secret_refs: SECRET_REFS.as_ptr(),
-    secret_refs_len: SECRET_REFS.len(),
+    extensions: EXTENSIONS,
     ..statement_with_tail(
         statement(crate::NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT),
         TAIL,
