@@ -14,7 +14,8 @@
 //! * [`config`] — the settings document, the [`config::Target`], and `configure`'s commit-on-ack merge;
 //! * [`wire`] — the op envelope and the HTTP/1.1 request bytes;
 //! * [`reply`] — the response reader: the status rule, the 64 KiB body cap, the depth guard, and the
-//!   per-op meaning of a failure (`decide` and `transform` abstain, `notify` swallows);
+//!   per-op meaning of a failure (`decide` and `transform` fail, so the operator's `on_error`
+//!   applies; `notify` swallows);
 //! * [`report`] — the `describe` and `status` documents;
 //! * [`net_guard`] — the textual half of the SSRF guard, kept so every refusal text is stable;
 //! * [`door`] — the hook kind's door over all of it (`door::door`): what a busbar build that links
