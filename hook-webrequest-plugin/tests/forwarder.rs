@@ -958,3 +958,28 @@ fn red_a_clamped_timeout_is_warned() {
         assert_eq!(b.status()["status"]["settings"]["timeout_ms"], json!(1));
     }
 }
+
+/// RED: a notify the far end acknowledged with a `204` (or any 2xx/3xx, whatever the body) is
+/// delivered and logs nothing; an error status still warns.
+#[test]
+fn red_a_notify_acknowledged_without_a_body_logs_no_warning() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        let tap = NotifyFrame::build(&request(), None, true);
+        for (status, reason) in [(204, "No Content"), (200, "OK"), (302, "Found")] {
+            b.upstream.answer(status, reason, b"");
+            let done = b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+            assert_eq!(done.outcome, Outcome::Ready);
+        }
+        assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+        b.upstream.answer(503, "Busy", b"");
+        let done = b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+        assert_eq!(done.outcome, Outcome::Ready);
+        assert!(
+            warned(&b, &["503", "notify dropped"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+    }
+}
