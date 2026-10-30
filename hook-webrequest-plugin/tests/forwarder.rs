@@ -745,6 +745,18 @@ fn red_every_actionable_line_carries_its_declared_code() {
         })
         .collect();
     assert_eq!(declared, [7151, 7152, 7153, 7154]);
+    use busbar_hook_webrequest::{
+        CONFIGURE_REFUSED, FORWARD_FAILED, NOTIFY_DROPPED, TIMEOUT_CLAMPED,
+    };
+    assert_eq!(
+        [
+            FORWARD_FAILED,
+            NOTIFY_DROPPED,
+            CONFIGURE_REFUSED,
+            TIMEOUT_CLAMPED
+        ],
+        ["BUSBAR-7151", "BUSBAR-7152", "BUSBAR-7153", "BUSBAR-7154"]
+    );
     for arm in arms() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}", "timeout_ms": 99999}}"#))

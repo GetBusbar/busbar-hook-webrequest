@@ -295,9 +295,7 @@ impl Hook for Forwarder {
         let current = self.live();
         let result = config::configure(&current.target, settings);
         if result.is_ok() {
-            for warning in config::warnings(settings) {
-                tracing::warn!("{warning}");
-            }
+            config::log_warnings(settings);
         }
         match result {
             Ok(None) => true,
@@ -307,7 +305,7 @@ impl Hook for Forwarder {
                 true
             }
             Err(reason) => {
-                tracing::warn!("{reason}");
+                tracing::warn!(diag = %crate::CONFIGURE_REFUSED, "{reason}");
                 false
             }
         }
@@ -329,9 +327,7 @@ pub struct Open;
 impl HookOpen for Open {
     fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
         let target = config::open(settings.as_bytes())?;
-        for warning in config::warnings_in(settings.as_bytes()) {
-            tracing::warn!("{warning}");
-        }
+        config::log_warnings_in(settings.as_bytes());
         Ok(Box::new(Forwarder::over(Live::new(target))))
     }
 }

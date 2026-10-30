@@ -3,7 +3,7 @@
 
 //! The settings document, the validated [`Target`], and `configure`'s commit-on-ack merge.
 
-use crate::{net_guard, ALIAS};
+use crate::{net_guard, ALIAS, TIMEOUT_CLAMPED};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -108,6 +108,27 @@ pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<St
     let mut all = unknown_keys(settings);
     all.extend(clamp_warning(settings));
     all
+}
+
+/// Log what [`warnings`] returns, each as its own warn: a clamped `timeout_ms` carries its declared
+/// code ([`TIMEOUT_CLAMPED`]), an unread key none.
+pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
+    for warning in unknown_keys(settings) {
+        tracing::warn!("{warning}");
+    }
+    if let Some(warning) = clamp_warning(settings) {
+        tracing::warn!(diag = %TIMEOUT_CLAMPED, "{warning}");
+    }
+}
+
+/// [`log_warnings`] over a settings document as `open` reads it; nothing for a document that is not a
+/// JSON object (`open` refuses those).
+pub fn log_warnings_in(settings: &[u8]) {
+    if let Ok(serde_json::Value::Object(map)) =
+        serde_json::from_slice::<serde_json::Value>(settings)
+    {
+        log_warnings(&map);
+    }
 }
 
 /// [`warnings`] over a settings document as `open` reads it; none for a document that is not a JSON
