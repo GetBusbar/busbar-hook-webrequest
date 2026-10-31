@@ -79,3 +79,26 @@ fn a_recycled_slot_does_not_inherit_a_cancelled_ops_target() {
         "the cancelled op's entry was dropped"
     );
 }
+
+#[test]
+fn concurrent_partial_configures_preserve_both_updates() {
+    let f = forwarder("http://127.0.0.1:9001/a");
+    let start = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let url = scope.spawn(|| {
+            let settings = serde_json::json!({"url":"http://127.0.0.2:9002/b"});
+            start.wait();
+            assert!(f.configure(settings.as_object().unwrap(), 2));
+        });
+        let timeout = scope.spawn(|| {
+            let settings = serde_json::json!({"timeout_ms":777});
+            start.wait();
+            assert!(f.configure(settings.as_object().unwrap(), 2));
+        });
+        url.join().unwrap();
+        timeout.join().unwrap();
+    });
+    let live = f.entry_live(ticket(1));
+    assert_eq!(live.url.as_str(), "http://127.0.0.2:9002/b");
+    assert_eq!(live.timeout, std::time::Duration::from_millis(777));
+}
