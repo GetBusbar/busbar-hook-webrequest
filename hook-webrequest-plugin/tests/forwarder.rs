@@ -17,8 +17,8 @@
 //!
 //! THE RED ARMS: a configuration the forwarder refuses never opens, in 1.5.5's words; a configure
 //! that names a blocked URL is a NACK and leaves the live target; a far end's error status is an
-//! abstaining `decide` and an abstaining `transform`, as 1.5.5's forwarder answered (v1.0.6); and the
-//! Statement declares exactly one need,
+//! FAILED `decide` and a FAILED `transform` (the operator's `on_error` applies; SIGN-hookexport-
+//! webrequest-failure), while a deliberate `{}` reply stays an abstain; and the Statement declares exactly one need,
 //! outbound, in the loopback-allowed egress class, over the host's `http` framer.
 //!
 //! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
@@ -579,12 +579,10 @@ fn script(arm: &Arm) -> Vec<String> {
     // RED: a configuration the forwarder refuses never opens, in 1.5.5's words.
     for (bad, words) in [
         (r#"{"url": ""}"#, "webrequest: settings.url is required"),
-        (
-            "{}",
-            "webrequest: invalid plugin config: missing field `url`",
-        ),
+        ("{}", "webrequest: settings.url is required"),
         (r#"{"url": 5}"#, "webrequest: invalid plugin config"),
         (r#"{"url": "http://169.254.169.254/"}"#, "webrequest:"),
+        (r#"{"url": "https://169.254.169.254/"}"#, "SSRF guard"),
     ] {
         let refused = arm.bind().open(bad).expect_err("refused");
         assert!(refused.contains(words), "{bad}: {refused}");
@@ -623,24 +621,16 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(b.upstream.last(), expected("decide"));
     t.push("decide 200: prefer [9, 3]".into());
 
-    // RED: an error status is an ABSTAINING decide, as the 1.5.5 forwarder answered it (v1.0.6
-    // `decide` returned `{}` on any error), so the operator's `on_error` never sees it: the oracle
-    // cell `webrequest|gate|sidecar-500-reject` serves the chat under `on_error: reject`.
+    // RED: an error status is a FAILED decide, so the pool's `on_error` applies (a far-end 500
+    // under `on_error: reject` refuses the request); a deliberate `{}` reply is still an abstain.
     b.upstream.answer(503, "Busy", b"");
-    let done = b.submit(
-        slot::DECIDE,
-        decide_frame().input(),
-        blank_out::<DecideOut>(),
-    );
-    assert_eq!(
-        done.outcome,
-        Outcome::Ready,
-        "{}",
-        error_of(done.error.as_deref())
-    );
-    assert_eq!(done.frame.expect("the frame").out.verbs, VERB_ABSTAIN);
+    let failed = decide_failure(&b);
+    assert!(failed.contains("HTTP status server error (503"), "{failed}");
     assert_eq!(b.upstream.last(), expected("decide"));
-    t.push("decide 503: abstain".into());
+    t.push("decide 503: failed".into());
+    b.upstream.answer(200, "OK", b"{}");
+    assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+    t.push("decide {}: abstain".into());
 
     // transform: the far end's rewrite crosses as its JSON; a failure abstains.
     let frame = decide_frame();
@@ -662,14 +652,9 @@ fn script(arm: &Arm) -> Vec<String> {
     t.push("transform 200: rewrite".into());
 
     b.upstream.answer(500, "Internal Server Error", b"");
-    let done = b.submit(
-        slot::TRANSFORM,
-        decide_frame().input(),
-        blank_out::<TransformOut>(),
-    );
-    assert_eq!(done.outcome, Outcome::Ready);
-    assert_eq!(done.frame.expect("the frame").out.verbs, VERB_ABSTAIN);
-    t.push("transform 500: abstain".into());
+    let failed = transform_failure(&b);
+    assert!(failed.contains("HTTP status server error (500"), "{failed}");
+    t.push("transform 500: failed".into());
 
     // notify: fire-and-forget, the 1.5.5 notify envelope on the wire.
     let tap = NotifyFrame::build(&request(), None, true);
@@ -682,6 +667,13 @@ fn script(arm: &Arm) -> Vec<String> {
     // configure: commit-on-ack; a blocked URL is a NACK and leaves the live target.
     assert_eq!(b.configure(r#"{"timeout_ms": 100}"#, 7), Ok(7));
     let nack = b
+        .configure(r#"{"url": "https://169.254.169.254/"}"#, 9)
+        .expect_err("a blocked https URL is a NACK too");
+    assert!(
+        nack.contains("did not acknowledge settings_version 9"),
+        "{nack}"
+    );
+    let nack = b
         .configure(r#"{"url": "http://169.254.169.254/"}"#, 8)
         .expect_err("a blocked URL is a NACK");
     assert!(
@@ -691,7 +683,7 @@ fn script(arm: &Arm) -> Vec<String> {
     let s = b.status();
     assert_eq!(s["status"]["settings"]["timeout_ms"], json!(100));
     assert_eq!(s["status"]["settings"]["target_host"], json!("127.0.0.1"));
-    t.push(format!("configure: ack 7, nack 8; status {s}"));
+    t.push(format!("configure: ack 7, nack 8, nack 9; status {s}"));
 
     // Every exchange pended once and completed on its wake.
     assert_eq!(
@@ -726,10 +718,93 @@ fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     assert_eq!(dropped, stated());
 }
 
-/// RED: a `decide` that cannot pend (no ticket) answers at once, abstaining as the 1.5.5 forwarder
-/// did on a request it could not send; it never blocks a thread and puts nothing on the wire.
+/// D5: the Statement states its alias rewrite, the module name an operator writes, and the dropped-in
+/// image states the same.
 #[test]
-fn red_a_ticketless_decide_abstains_at_once() {
+fn red_the_statement_states_the_alias_rewrite() {
+    let read = rendering::read(&stated()).expect("the rendering reads");
+    assert_eq!(read.rewrites.len(), 1, "{:?}", read.rewrites);
+    assert_eq!(read.rewrites[0].0, 1, "an alias rewrite");
+    assert_eq!(read.rewrites[0].1, "webrequest");
+}
+
+/// D3: every operator-actionable line carries its declared catalogue code, and `declares.json`
+/// declares exactly those codes.
+#[test]
+fn red_every_actionable_line_carries_its_declared_code() {
+    let declares: Value =
+        serde_json::from_str(include_str!("../../hook-webrequest/declares.json")).unwrap();
+    let declared: Vec<u64> = declares["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .map(|d| {
+            assert_eq!(d["severity"], "actionable");
+            assert_eq!(d["since"], "1.6.0");
+            d["code"].as_u64().unwrap()
+        })
+        .collect();
+    assert_eq!(declared, [7151, 7152, 7153, 7154]);
+    use busbar_hook_webrequest::{
+        CONFIGURE_REFUSED, FORWARD_FAILED, NOTIFY_DROPPED, TIMEOUT_CLAMPED,
+    };
+    assert_eq!(
+        [
+            FORWARD_FAILED,
+            NOTIFY_DROPPED,
+            CONFIGURE_REFUSED,
+            TIMEOUT_CLAMPED
+        ],
+        ["BUSBAR-7151", "BUSBAR-7152", "BUSBAR-7153", "BUSBAR-7154"]
+    );
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}", "timeout_ms": 99999}}"#))
+            .expect("opens");
+        // 7154: the clamp.
+        assert!(
+            warned(&b, &["timeout_ms", "clamp", "BUSBAR-7154"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        // 7153: a configure refusal.
+        b.configure(r#"{"url": "http://169.254.169.254/"}"#, 2)
+            .expect_err("a blocked URL is a NACK");
+        assert!(
+            warned(&b, &["configure() rejected:", "BUSBAR-7153"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        // 7151: a failed decide and a failed transform.
+        b.upstream.answer(503, "Busy", b"");
+        decide_failure(&b);
+        assert!(
+            warned(&b, &["decide failed", "BUSBAR-7151"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        transform_failure(&b);
+        assert!(
+            warned(&b, &["transform failed", "BUSBAR-7151"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        // 7152: a dropped notify.
+        let tap = NotifyFrame::build(&request(), None, true);
+        b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+        assert!(
+            warned(&b, &["notify dropped", "BUSBAR-7152"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+    }
+}
+
+/// RED: a `decide` that cannot pend (no ticket) answers at once, FAILED (a request it could not
+/// send is a hook failure, so `on_error` applies); it never blocks a thread and puts nothing on the
+/// wire.
+#[test]
+fn red_a_ticketless_decide_fails_at_once() {
     let b = Arm::Linked.bind();
     b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
     let frame = decide_frame();
@@ -737,11 +812,11 @@ fn red_a_ticketless_decide_abstains_at_once() {
     let called = b.plugin.call(slot::DECIDE, &mut f);
     assert_eq!(
         called.outcome,
-        Outcome::Ready,
+        Outcome::Failed,
         "{}",
         error_of(called.error.as_deref())
     );
-    assert_eq!(f.out.verbs, VERB_ABSTAIN);
+    assert!(error_of(called.error.as_deref()).contains("cannot pend"));
     assert!(b.upstream.sent.lock().unwrap().is_empty());
 }
 
@@ -765,6 +840,28 @@ fn decide_verbs(b: &Bound) -> u32 {
         error_of(done.error.as_deref())
     );
     done.frame.expect("the frame").out.verbs
+}
+
+/// A `decide` through the dispatcher that FAILS (the pool's `on_error` applies); its text.
+fn decide_failure(b: &Bound) -> String {
+    let done = b.submit(
+        slot::DECIDE,
+        decide_frame().input(),
+        blank_out::<DecideOut>(),
+    );
+    assert_eq!(done.outcome, Outcome::Failed, "a failed decide");
+    error_of(done.error.as_deref())
+}
+
+/// A `transform` through the dispatcher that FAILS; its text.
+fn transform_failure(b: &Bound) -> String {
+    let done = b.submit(
+        slot::TRANSFORM,
+        decide_frame().input(),
+        blank_out::<TransformOut>(),
+    );
+    assert_eq!(done.outcome, Outcome::Failed, "a failed transform");
+    error_of(done.error.as_deref())
 }
 
 /// Some warn diagnostic contains every one of `parts`.
@@ -817,42 +914,53 @@ fn red_an_unknown_setting_is_ignored_and_logged() {
     }
 }
 
-/// RED: an error status still abstains, and the reason is logged.
+/// RED: an error status FAILS the decide (not an abstain), and the reason is logged.
 #[test]
-fn red_a_failed_decide_abstains_and_is_logged() {
+fn red_a_failed_decide_fails_and_is_logged() {
     for arm in arms() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
         b.upstream.answer(503, "Busy", b"");
-        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        let failed = decide_failure(&b);
+        assert!(failed.contains("HTTP status server error (503"), "{failed}");
         let warns = b.recorder.warns();
         assert!(
-            warned(&b, &["HTTP status server error (503", "decide abstains"]),
+            warned(&b, &["HTTP status server error (503", "decide failed"]),
             "{warns:?}"
         );
     }
 }
 
 /// RED: a transport failure (the exchange cannot establish) reaches the plugin as a failure it
-/// answers itself (not a FAILED op): the decide abstains and the request failure is logged.
+/// answers itself: the decide FAILS with the request failure, which is logged; a transform against
+/// a dead target fails too.
 #[test]
-fn red_a_transport_failure_abstains_and_is_logged() {
+fn red_a_transport_failure_fails_and_is_logged() {
     for arm in arms() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
         b.upstream.fail_open.store(true, Ordering::SeqCst);
-        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        // The host's cause rides after the 1.5.5 prefix, not only the prefix.
+        let failed = decide_failure(&b);
+        assert!(
+            failed.starts_with("webrequest: request failed: error sending request: "),
+            "{failed}"
+        );
         let warns = b.recorder.warns();
         assert!(
             warned(
                 &b,
                 &[
-                    // The host's cause rides after the 1.5.5 prefix, not only the prefix.
                     "webrequest: request failed: error sending request: ",
-                    "decide abstains"
+                    "decide failed"
                 ]
             ),
             "{warns:?}"
+        );
+        let failed = transform_failure(&b);
+        assert!(
+            failed.starts_with("webrequest: request failed: error sending request: "),
+            "{failed}"
         );
     }
 }
@@ -868,9 +976,9 @@ fn red_the_log_never_leaks_the_url_secrets() {
         b.configure(r#"{"timeout_ms": "soon"}"#, 2)
             .expect_err("a bad timeout is a NACK");
         b.upstream.answer(503, "Busy", b"");
-        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        decide_failure(&b);
         b.upstream.fail_open.store(true, Ordering::SeqCst);
-        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        decide_failure(&b);
         // Guard against a vacuous pass: the three refusals were logged.
         let warns = b.recorder.warns();
         assert!(warns.len() >= 3, "{warns:?}");
@@ -916,5 +1024,79 @@ fn a_committed_configure_moves_the_next_decide() {
         assert_eq!(sent.target, "http://127.0.0.2:8123");
         assert_eq!(sent.path, b"/moved?y=2".to_vec());
         assert_eq!(sent.timeout_ms, 777);
+    }
+}
+
+/// RED: a `timeout_ms` outside `[1, 5000]` is clamped and says so, at `open` and at `configure`.
+#[test]
+fn red_a_clamped_timeout_is_warned() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}", "timeout_ms": 99999}}"#))
+            .expect("opens");
+        assert!(
+            warned(&b, &["timeout_ms", "99999", "clamp"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        assert_eq!(b.configure(r#"{"timeout_ms": 0}"#, 2), Ok(2));
+        assert!(
+            warned(&b, &["timeout_ms", "0", "clamp"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+        assert_eq!(b.status()["status"]["settings"]["timeout_ms"], json!(1));
+    }
+}
+
+/// RED: a notify the far end acknowledged with a `204` (or any 2xx/3xx, whatever the body) is
+/// delivered and logs nothing; an error status still warns.
+#[test]
+fn red_a_notify_acknowledged_without_a_body_logs_no_warning() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        let tap = NotifyFrame::build(&request(), None, true);
+        for (status, reason) in [(204, "No Content"), (200, "OK"), (302, "Found")] {
+            b.upstream.answer(status, reason, b"");
+            let done = b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+            assert_eq!(done.outcome, Outcome::Ready);
+        }
+        assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+        b.upstream.answer(503, "Busy", b"");
+        let done = b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+        assert_eq!(done.outcome, Outcome::Ready);
+        assert!(
+            warned(&b, &["503", "notify dropped"]),
+            "{:?}",
+            b.recorder.warns()
+        );
+    }
+}
+
+/// A loopback sidecar by its IPv6 literal opens through the door: `http://[::1]:9000/` is the
+/// plaintext carve-out, and reaches the host as the bracketed origin.
+#[test]
+fn an_ipv6_loopback_sidecar_opens_and_is_dialled_by_its_bracketed_origin() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(r#"{"url": "http://[::1]:9000/hook"}"#)
+            .expect("[::1] is the loopback carve-out");
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        assert_eq!(b.upstream.last().target, "http://[::1]:9000");
+    }
+}
+
+/// RED: only a `204` is an abstaining "no opinion"; an empty body on a `200` is a FAILED decide.
+#[test]
+fn red_only_a_204_is_an_empty_abstain() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
+        b.upstream.answer(204, "No Content", b"");
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        b.upstream.answer(200, "OK", b"");
+        let failed = decide_failure(&b);
+        assert!(failed.contains("empty reply (HTTP status 200)"), "{failed}");
     }
 }

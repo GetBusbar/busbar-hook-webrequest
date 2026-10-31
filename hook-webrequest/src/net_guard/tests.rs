@@ -1,4 +1,5 @@
 use super::*;
+use busbar_contract::net::{is_cgnat_shared_v4, is_link_local_v6, is_unique_local_v6, Ipv4Addr};
 
 fn url(s: &str) -> url::Url {
     url::Url::parse(s).unwrap()
@@ -308,4 +309,122 @@ fn the_shared_predicate_agrees_with_the_literal_text_guard() {
             "literal-text verdict for {raw} must match the address one"
         );
     }
+}
+
+/// Every refusal echoes the url as a log line names it: the path (which may carry the key) is cut.
+#[test]
+fn refusal_texts_never_show_the_url_path() {
+    for raw in [
+        "ftp://hooks.example.com/v1/KEY123",
+        "https://10.0.0.1/v1/KEY123",
+        "http://hooks.example.com/v1/KEY123",
+    ] {
+        let err = validate_target_url(raw).unwrap_err();
+        assert!(!err.contains("KEY123"), "{raw}: {err}");
+        assert!(err.contains("/***"), "{raw}: {err}");
+    }
+    let err = validate_target_url("https://svc:pw@10.0.0.1:8443/v1/KEY123?t=SECRET").unwrap_err();
+    assert!(
+        err.contains("got 'https://***@10.0.0.1:8443/***?<redacted>'"),
+        "{err}"
+    );
+}
+
+/// R11: a literal IPv4 is refused for every range the contract's `ipv4_is_internal` names, not only the
+/// ones this module once listed; loopback stays the sidecar carve-out and a public address passes.
+#[test]
+fn the_literal_host_check_refuses_every_contract_internal_ipv4() {
+    for host in [
+        "198.18.0.1",
+        "198.19.255.255",
+        "0.1.2.3",
+        "0.255.255.255",
+        "192.0.0.5",
+        "192.0.2.1",
+        "198.51.100.1",
+        "203.0.113.1",
+        "224.0.0.1",
+        "239.255.255.255",
+        "[::ffff:198.18.0.1]",
+    ] {
+        let raw = format!("https://{host}/x");
+        let err = validate_target_url(&raw).expect_err(&raw);
+        assert!(err.contains("SSRF guard"), "{raw}: {err}");
+    }
+    for host in ["127.0.0.1", "198.20.0.1", "1.2.3.4", "193.0.0.1"] {
+        assert!(
+            validate_target_url(&format!("https://{host}/x")).is_ok(),
+            "{host}"
+        );
+    }
+}
+
+/// R11 (IPv6): a literal IPv6 is refused for every range the contract's `ipv6_is_internal` names
+/// (multicast included), with `::1` and the mapped loopback still the sidecar carve-out.
+#[test]
+fn the_literal_host_check_refuses_every_contract_internal_ipv6() {
+    for host in ["ff02::1", "ff00::1", "fc00::1", "fe80::1", "::", "fec0::1"] {
+        let raw = format!("https://[{host}]/x");
+        let err = validate_target_url(&raw).expect_err(&raw);
+        assert!(err.contains("SSRF guard"), "{raw}: {err}");
+    }
+    for host in ["::1", "::ffff:127.0.0.1", "2606:4700:4700::1111"] {
+        assert!(
+            validate_target_url(&format!("https://[{host}]/x")).is_ok(),
+            "{host}"
+        );
+    }
+    assert!(validate_target_url("http://[::1]:9000/x").is_ok());
+}
+
+/// The secrets a failure is scrubbed of include the `Authorization` value the userinfo becomes and
+/// its base64 token: a far end that echoes the request's header back leaks neither.
+#[test]
+fn secret_parts_include_the_authorization_value_and_its_token() {
+    let parts = secret_parts(&url("https://svc:hunter2@hooks.example/route"));
+    // base64("svc:hunter2")
+    assert!(parts.iter().any(|p| p == "c3ZjOmh1bnRlcjI="), "{parts:?}");
+    assert!(
+        parts.iter().any(|p| p == "Basic c3ZjOmh1bnRlcjI="),
+        "{parts:?}"
+    );
+    let scrubbed = scrub("echo: authorization: Basic c3ZjOmh1bnRlcjI=", &parts);
+    assert!(!scrubbed.contains("c3ZjOmh1bnRlcjI="), "{scrubbed}");
+}
+
+/// D1: a url with an `@` after its host is ambiguous (`tok/en` would be dialled as the host) and is
+/// refused in this plugin's words, without its credential; one that does not parse is read by hand.
+#[test]
+fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
+    for raw in [
+        "https://tok/en@hooks.example/x",
+        "https://u:123/x@hooks.example/x",
+        "https://svc:pa/ss@hooks.example/x",
+        "https://hooks.example/a@b",
+        "https://hooks.example/x?to@ken",
+    ] {
+        let err = validate_target_url(raw).unwrap_err();
+        assert!(
+            err.starts_with("webrequest: settings.url ") && err.contains("ambiguous"),
+            "{raw}: {err}"
+        );
+        for secret in ["tok", "en@", "pa/ss", "to@ken", "123"] {
+            assert!(!err.contains(secret), "{raw} echoed {secret}: {err}");
+        }
+        let nack = refuse_target_url(raw).unwrap_err();
+        assert!(
+            nack.starts_with("settings.url ") && nack.contains("ambiguous"),
+            "{nack}"
+        );
+    }
+    // The echo is `scheme://***@host/***`: neither the path nor the query after the last `@` is shown.
+    let err =
+        validate_target_url("https://u:p/w@hooks.example/k/KEYCANARY?token=QCANARY").unwrap_err();
+    assert!(err.contains("`https://***@hooks.example/***`"), "{err}");
+    for canary in ["KEYCANARY", "QCANARY", "p/w"] {
+        assert!(!err.contains(canary), "{canary} echoed: {err}");
+    }
+    // An escaped `@` in the path, and plain userinfo, stay accepted.
+    assert!(validate_target_url("https://hooks.example/a%40b").is_ok());
+    assert!(validate_target_url("https://svc:hunter2@hooks.example/x").is_ok());
 }

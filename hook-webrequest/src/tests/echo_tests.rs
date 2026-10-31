@@ -6,7 +6,7 @@
 //! transport failure, even when the host's failure text quotes the URL back.
 
 use crate::config::{self, Target};
-use crate::door::transport_failure;
+use crate::door::{transport_failure, Live};
 use crate::wire;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 
@@ -50,8 +50,8 @@ fn debug_of_the_target_and_the_wire_request_carries_no_credential() {
             !text.contains(token),
             "Debug carried the Basic value: {text}"
         );
-        assert!(text.contains("127.0.0.1"), "the host is kept: {text}");
     }
+    assert!(format!("{t:?}").contains("127.0.0.1"), "the host is kept");
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_url() {
             t.url.query().unwrap_or("")
         )),
     ] {
-        let text = transport_failure(&t, &failure);
+        let text = transport_failure(&Live::new(t.clone()), &failure);
         assert!(
             !text.contains(CANARY),
             "the logged failure carried the credential: {text}"
@@ -74,6 +74,23 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_url() {
         assert!(
             text.starts_with("webrequest: request failed: error sending request: "),
             "1.5.5's prefix is kept: {text}"
+        );
+    }
+}
+
+/// A host that echoes the request's `Authorization` back: neither the header's value nor its
+/// base64 token reaches the logged failure.
+#[test]
+fn a_transport_failure_never_logs_the_hosts_echo_of_the_authorization() {
+    let t = target();
+    let value = basic();
+    let token = value.trim_start_matches("Basic ").to_string();
+    for echo in [value.clone(), token.clone()] {
+        let failure = ConnFailure::Failed(format!("bad request, headers: authorization: {echo}"));
+        let text = transport_failure(&Live::new(t.clone()), &failure);
+        assert!(
+            !text.contains(&token),
+            "the failure echoed the token: {text}"
         );
     }
 }

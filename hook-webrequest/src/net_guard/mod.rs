@@ -29,10 +29,11 @@
 //! resolution, the resolved-address check and the address pin (DNS rebinding / TOCTOU) belong to the
 //! host's loopback-allowed egress class, which every connection this plugin opens goes through.
 
+use crate::ALIAS;
 use busbar_contract::abi::sdk::url as sdk_url;
 use busbar_contract::net::{
-    embedded_ipv4, is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6,
-    is_unique_local_v6, IpAddr, Ipv4Addr, Ipv6Addr, METADATA_HOSTS,
+    embedded_ipv4, ipv4_is_internal, ipv6_is_internal, is_alternate_ipv4_encoding, IpAddr,
+    Ipv6Addr, METADATA_HOSTS,
 };
 
 /// IPv6 site-local `fec0::/10`. Deprecated by RFC 3879 but still routed on plenty of real networks,
@@ -71,24 +72,6 @@ pub fn is_alternate_loopback_v4(host: &str) -> bool {
         return false;
     };
     first == 127 && parts.iter().all(|p| p.parse::<u32>().is_ok())
-}
-
-/// True for an IPv4 literal the forwarder must not POST to (EXCEPT loopback, which the caller carves
-/// out): link-local (incl. `169.254.169.254` IMDS), RFC1918 private, RFC6598 CGNAT, unspecified,
-/// broadcast, and the Azure WireServer / OCI IMDS public-but-metadata literals. Mirrors
-/// `observability::is_internal_v4` (loopback is checked by the caller so the localhost carve-out is
-/// visible at the call site).
-fn is_internal_v4(v4: &Ipv4Addr) -> bool {
-    const AZURE_WIRESERVER: Ipv4Addr = Ipv4Addr::new(168, 63, 129, 16);
-    const OCI_IMDS: Ipv4Addr = Ipv4Addr::new(192, 0, 0, 192);
-    v4.is_loopback()
-        || v4.is_link_local()
-        || v4.is_private()
-        || is_cgnat_shared_v4(v4)
-        || v4.is_unspecified()
-        || v4.is_broadcast()
-        || *v4 == AZURE_WIRESERVER
-        || *v4 == OCI_IMDS
 }
 
 /// True iff the target URL's host is the loopback/localhost target the forwarder MAY reach — the exact
@@ -156,18 +139,15 @@ pub fn host_is_blocked(url: &url::Url) -> bool {
 /// carve-out for sidecars included.
 fn ip_is_internal(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => !v4.is_loopback() && is_internal_v4(v4),
+        IpAddr::V4(v4) => !v4.is_loopback() && ipv4_is_internal(v4),
         IpAddr::V6(v6) => {
             if v6.is_loopback() {
                 return false; // `::1` loopback sidecar — allowed
             }
             if let Some(v4) = embedded_ipv4(v6) {
-                return !v4.is_loopback() && is_internal_v4(&v4);
+                return !v4.is_loopback() && ipv4_is_internal(&v4);
             }
-            v6.is_unspecified()
-                || is_unique_local_v6(v6)
-                || is_link_local_v6(v6)
-                || is_site_local_v6(v6)
+            ipv6_is_internal(v6) || is_site_local_v6(v6)
         }
     }
 }
@@ -193,30 +173,79 @@ fn scheme_is(url: &url::Url, want: &str) -> bool {
 /// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
 /// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
 pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
-    let url = url::Url::parse(raw)
-        .map_err(|e| format!("webrequest: settings.url is not a valid URL: {e}"))?;
+    refuse_target_url(raw).map_err(|reason| format!("{ALIAS}: {reason}"))
+}
+
+/// [`validate_target_url`] with the refusal's reason WITHOUT the `webrequest: ` prefix, for a caller
+/// that frames it in its own words (`configure`'s NACK).
+///
+/// # Errors
+/// The reason.
+pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
+    if let Some(refusal) = ambiguous_url(raw) {
+        return Err(refusal);
+    }
+    let url = url::Url::parse(raw).map_err(|e| format!("settings.url is not a valid URL: {e}"))?;
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
-            "webrequest: settings.url must be an http:// or https:// URL (got '{}')",
-            reportable_url(&url)
+            "settings.url must be an http:// or https:// URL (got '{}')",
+            loggable_url(&url)
         ));
     }
     if host_is_blocked(&url) {
         return Err(format!(
-            "webrequest: settings.url must not target a link-local/private/CGNAT/cloud-metadata host \
+            "settings.url must not target a link-local/private/CGNAT/cloud-metadata host \
              (SSRF guard; loopback sidecars are allowed); got '{}'",
-            reportable_url(&url)
+            loggable_url(&url)
         ));
     }
     if scheme_is(&url, "http") && !host_is_loopback(&url) {
         return Err(format!(
-            "webrequest: settings.url must use https:// for a non-loopback target (plaintext http:// is \
+            "settings.url must use https:// for a non-loopback target (plaintext http:// is \
              only permitted for a loopback sidecar; the payload could otherwise be sent in cleartext); \
              got '{}'",
-            reportable_url(&url)
+            loggable_url(&url)
         ));
     }
     Ok(url)
+}
+
+/// The ambiguous-URL refusal (without the `webrequest: ` prefix): `Some(the refusal)` when `raw`
+/// carries an `@` after its host, `https://tok/en@hooks.example/x` or `https://u:123/x@host/…`, a
+/// credential holding an unescaped `/`, `?` or `#`, which a parser reads as host `tok` (or `u`,
+/// port `123`) and a path, so the credential would be dialled as a host. An `@` meant for the path
+/// is written `%40`. The refusal shows the url with everything before its last `@` cut, never the
+/// credential. A url that does not parse is read the same way by hand: the text after `://`, from
+/// its first `/`, `?` or `#`, is what a parser would take for the path. The words are the SDK's
+/// ([`sdk_url::ambiguous_url`]) in this plugin's shape, `settings.url ...`.
+#[must_use]
+pub fn ambiguous_url(raw: &str) -> Option<String> {
+    let refusal = match url::Url::parse(raw) {
+        Ok(parsed) => sdk_url::ambiguous_url(raw, &parsed[url::Position::BeforePath..]),
+        Err(_) => {
+            let (_, rest) = raw.split_once("://")?;
+            let tail = &rest[rest.find(['/', '?', '#'])?..];
+            sdk_url::ambiguous_url(raw, tail)
+        }
+    }?;
+    // The SDK echoes everything after the last `@`, path and query included; either may carry the
+    // key, so the echo is cut to `scheme://***@host[:port]/***` (the path-cut form).
+    let echoed = sdk_url::cut_userinfo(raw, "***@");
+    let safe = echoed_host(raw);
+    let refusal = refusal.replace(&format!("`{echoed}`"), &format!("`{safe}`"));
+    Some(match refusal.strip_prefix("settings: url ") {
+        Some(rest) => format!("settings.url {rest}"),
+        None => refusal,
+    })
+}
+
+/// `scheme://***@host[:port]/***`: the part of `raw` after its last `@` cut at the first `/`, `?` or
+/// `#`, with the path masked.
+fn echoed_host(raw: &str) -> String {
+    let (scheme, rest) = raw.split_once("://").unwrap_or(("", raw));
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, after)| after);
+    let host = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    format!("{scheme}://***@{host}/***")
 }
 
 /// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is
@@ -232,9 +261,8 @@ pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
 /// string. Masking the parsed `Url`'s username/password fields directly is correct regardless of what
 /// whitespace or control characters the raw input used to spell the scheme separator.
 ///
-/// Not the SDK's textual [`sdk_url::cut_userinfo`]: that cuts to the LAST `@`, so an `@` in the
-/// path (which this forwarder accepts; it does not refuse an ambiguous url) is over-cut
-/// (`https://host/a@b` echoes as `https://***@b`), where this echoes the url as parsed.
+/// Not the SDK's textual [`sdk_url::cut_userinfo`]: that cuts to the LAST `@`, which over-cuts a
+/// url echoed as parsed; a url with an `@` after its host never gets here ([`ambiguous_url`]).
 pub fn mask_userinfo(url: &url::Url) -> String {
     if url.username().is_empty() && url.password().is_none() {
         return url.to_string();
@@ -249,8 +277,8 @@ pub fn mask_userinfo(url: &url::Url) -> String {
 }
 
 /// The target URL in a form that is safe to echo ANYWHERE: the ONE masker every URL echo in this
-/// crate goes through (the `status` surface and every `validate_target_url` error, which reaches the
-/// `open` load error and `configure`'s stderr line).
+/// crate goes through (the `status` surface and every `validate_target_url` error go through [`loggable_url`], which
+/// is this with the path cut).
 ///
 /// `mask_userinfo` alone is not enough. It masks credentials in the userinfo, but a sidecar that
 /// authenticates by query parameter (`?token=...`) is a common enough shape that echoing the raw
@@ -303,14 +331,19 @@ pub fn secret_parts(url: &url::Url) -> Vec<String> {
         parts.push(p.to_string());
     }
     parts.push(url.username().to_string());
+    // A far end may echo the request's `Authorization` back: the header value and its token.
+    if let Some(value) = crate::wire::basic_authorization(url) {
+        parts.extend(value.strip_prefix("Basic ").map(str::to_owned));
+        parts.push(value);
+    }
     sdk_url::and_decoded(parts)
 }
 
-/// `text` (the host's words, which may quote the target) with every [`secret_parts`] of `url`
-/// replaced by `***` ([`sdk_url::scrub`], unquoted).
+/// `text` (the host's words, which may quote the target) with every one of `parts`
+/// ([`secret_parts`], computed once per target) replaced by `***` ([`sdk_url::scrub`], unquoted).
 #[must_use]
-pub fn scrub(text: &str, url: &url::Url) -> String {
-    sdk_url::scrub(text, secret_parts(url), false)
+pub fn scrub(text: &str, parts: &[String]) -> String {
+    sdk_url::scrub(text, parts.to_vec(), false)
 }
 
 #[cfg(test)]

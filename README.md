@@ -36,6 +36,10 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
   `settings.url` at the same service a `route: webhook` pool used and the
   wire is compatible (`{op, ...projection}` POST → a
   `{order|abstain|reject|restrict|rewrite}` reply).
+- **Failures are failures.** A `decide` or `transform` whose forward fails (transport, timeout,
+  a 4xx/5xx, a redirect, an oversize, over-deep or invalid reply) FAILS the hook, so the pool's
+  `on_error` applies; only a reply the target sends deliberately (`{}`, `{"abstain":true}`) is
+  an abstain. A `notify` is fire-and-forget.
 - **Isolation** of untrusted hook logic: the untrusted brain runs
   *remotely* behind this trusted, signed, `dlopen`'d forwarder. The
   forwarder decides what is POSTed and where; the host's `http` framer
@@ -53,8 +57,8 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
   anything is dialed.
 - **Redirects are never followed.** The plugin has no HTTP client of its own:
   it hands a framed request to the host's `http` framer through its one
-  declared need, and a 3xx reply is relayed as the reply, never followed
-  (see `interpret` in `hook-webrequest/src/reply.rs` and
+  declared need, and a 3xx reply is a failure ("redirect not followed"), never
+  followed or relayed (see `interpret` in `hook-webrequest/src/reply.rs` and
   `hook-webrequest/src/door.rs`). A target cannot redirect the plugin to an
   internal host.
 - **Tight timeouts**; a reply body over 64 KiB is refused (the exchange
@@ -88,7 +92,7 @@ Needs a Rust toolchain ([rustup](https://rustup.rs); `rust-toolchain.toml`
 pins the version CI uses).
 
 ```sh
-cargo build --release      # cdylib: target/release/libbusbar_hook_webrequest_plugin.{so,dylib}
+cargo build --release -p busbar-hook-webrequest-plugin --features dropped-in      # cdylib: target/release/libbusbar_hook_webrequest_plugin.{so,dylib}
 cargo test                 # unit tests, the loader-seam forwarder test, and the linked/dropped-in conformance
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
@@ -136,16 +140,23 @@ for the `hooks:` wiring (`kind: hook`, `settings: { url: ... }`).
 
 ## Tests
 
-`cargo test` runs the pure unit tests (`hook-webrequest/src/tests/*` —
-config, reply parsing/depth guard, envelope shaping, report — and
-`hook-webrequest/src/net_guard/tests.rs` for the SSRF predicates) and the
-plugin crate's integration tests: `hook-webrequest-plugin/tests/conformance.rs`
-(the linked and dropped-in doors are one hook) and
-`hook-webrequest-plugin/tests/forwarder.rs`, which loads the *built* cdylib
-over the real `busbar-plugin-loader` ABI seam against a scripted far end —
-the same seam busbar's engine uses, so it exercises the actual `dlopen`/FFI
-path rather than calling Rust functions directly. `cargo test` builds the
-cdylib as part of the run.
+`cargo test` runs the pure unit tests (`hook-webrequest/src/tests/*`: `config_tests.rs` the
+settings and `configure`, `door_tests.rs` which target a resumed op runs against, `echo_tests.rs`
+the credential-echo canaries, `reply_tests.rs` the reply rules and the per-op meaning of a
+failure, `report_tests.rs` the `status`/`describe` documents, `wire_tests.rs` the envelope and
+the request bytes against the 1.5.5 client; and `hook-webrequest/src/net_guard/tests.rs` for the
+SSRF predicates) and the plugin crate's integration tests
+(`hook-webrequest-plugin/tests/`):
+
+- `conformance.rs`: busbar's published conformance suite, run over the linked and the dropped-in
+  door (the two are one hook), driven by `conformance.json` through `support/conformance_host.rs`;
+- `forwarder.rs`: loads the *built* cdylib over the real `busbar-plugin-loader` ABI seam against a
+  scripted far end, the same seam busbar's engine uses, so it exercises the actual `dlopen`/FFI
+  path rather than calling Rust functions directly (`support/net_ban.rs` is its socket/TLS ban);
+- `declared_secrets.rs` and `reference_url.rs`: `url` is declared reference-capable and not a
+  secret, so a `{env:}` reference there resolves in place and a literal passes as written.
+
+`cargo test` builds the cdylib as part of the run.
 
 ## License
 
