@@ -214,38 +214,46 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
 /// carries an `@` after its host, `https://tok/en@hooks.example/x` or `https://u:123/x@host/…`, a
 /// credential holding an unescaped `/`, `?` or `#`, which a parser reads as host `tok` (or `u`,
 /// port `123`) and a path, so the credential would be dialled as a host. An `@` meant for the path
-/// is written `%40`. The refusal shows the url with everything before its last `@` cut, never the
-/// credential. A url that does not parse is read the same way by hand: the text after `://`, from
-/// its first `/`, `?` or `#`, is what a parser would take for the path. The words are the SDK's
-/// ([`sdk_url::ambiguous_url`]) in this plugin's shape, `settings.url ...`.
+/// is written `%40`. A url that does not parse and holds an `@` anywhere is refused the same way:
+/// what a parser would have made of it is unknown.
+///
+/// The refusal echoes NOTHING of the text but its scheme: `scheme://***` for a url that parses,
+/// `scheme:***` for one that does not. Not even the parsed host is shown: it is the part of the
+/// credential before its first `/`, `?` or `#`. The words are the SDK's ([`sdk_url::ambiguous_url`])
+/// in this plugin's shape, `settings.url ...`.
 #[must_use]
 pub fn ambiguous_url(raw: &str) -> Option<String> {
-    let refusal = match url::Url::parse(raw) {
-        Ok(parsed) => sdk_url::ambiguous_url(raw, &parsed[url::Position::BeforePath..]),
-        Err(_) => {
-            let (_, rest) = raw.split_once("://")?;
-            let tail = &rest[rest.find(['/', '?', '#'])?..];
-            sdk_url::ambiguous_url(raw, tail)
-        }
-    }?;
-    // The SDK echoes everything after the last `@`, path and query included; either may carry the
-    // key, so the echo is cut to `scheme://***@host[:port]/***` (the path-cut form).
-    let echoed = sdk_url::cut_userinfo(raw, "***@");
-    let safe = echoed_host(raw);
-    let refusal = refusal.replace(&format!("`{echoed}`"), &format!("`{safe}`"));
+    let (shown, from_path) = match url::Url::parse(raw) {
+        Ok(parsed) => (
+            format!("{}://***", parsed.scheme()),
+            parsed[url::Position::BeforePath..].to_string(),
+        ),
+        Err(_) => (format!("{}:***", scheme_of(raw)), raw.to_string()),
+    };
+    // The SDK shows the url it is handed with its userinfo cut; handed the echo, which holds no
+    // `@`, it shows the echo.
+    let refusal = sdk_url::ambiguous_url(&shown, &from_path)?;
     Some(match refusal.strip_prefix("settings: url ") {
         Some(rest) => format!("settings.url {rest}"),
         None => refusal,
     })
 }
 
-/// `scheme://***@host[:port]/***`: the part of `raw` after its last `@` cut at the first `/`, `?` or
-/// `#`, with the path masked.
-fn echoed_host(raw: &str) -> String {
-    let (scheme, rest) = raw.split_once("://").unwrap_or(("", raw));
-    let rest = rest.rsplit_once('@').map_or(rest, |(_, after)| after);
-    let host = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    format!("{scheme}://***@{host}/***")
+/// The scheme `raw` starts with (RFC 3986: a letter, then letters, digits, `+`, `-`, `.`, up to
+/// the first `:`), or `***` when it does not start with one: a url that does not parse echoes no
+/// more than this.
+fn scheme_of(raw: &str) -> String {
+    match raw.split_once(':') {
+        Some((scheme, _))
+            if scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
+        {
+            scheme.to_ascii_lowercase()
+        }
+        _ => "***".to_string(),
+    }
 }
 
 /// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is

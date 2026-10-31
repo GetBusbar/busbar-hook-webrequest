@@ -417,10 +417,11 @@ fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
             "{nack}"
         );
     }
-    // The echo is `scheme://***@host/***`: neither the path nor the query after the last `@` is shown.
+    // The echo is `scheme://***`: neither the host, the path nor the query is shown.
     let err =
         validate_target_url("https://u:p/w@hooks.example/k/KEYCANARY?token=QCANARY").unwrap_err();
-    assert!(err.contains("`https://***@hooks.example/***`"), "{err}");
+    // `u:p` is no port: the url does not parse, so it echoes its scheme only.
+    assert!(err.contains("`https:***`"), "{err}");
     for canary in ["KEYCANARY", "QCANARY", "p/w"] {
         assert!(!err.contains(canary), "{canary} echoed: {err}");
     }
@@ -435,12 +436,21 @@ fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
 fn an_ambiguous_or_unparsed_url_is_refused_echoing_nothing_past_its_scheme() {
     for (raw, secrets) in [
         // Unparsed (bad port) with an `@`: refused as ambiguous (S1).
-        ("https:user:pass@host:badport/x?k=SECRET", &["user", "pass", "SECRET", "host"][..]),
-        ("https:svc:pa/ss@host/x", &["svc", "pa/ss", "ss@"]),
-        ("https://user:pass@host:badport/x?k=SECRET", &["user", "pass", "SECRET"]),
+        (
+            "https:user:pass@hk.example:badport/x?k=SECRET",
+            &["user", "pass", "SECRET", "hk.example"][..],
+        ),
+        ("https:svc:pa/ss@hk.example/x", &["svc", "pa/ss", "ss@"]),
+        (
+            "https://user:pass@hk.example:badport/x?k=SECRET",
+            &["user", "pass", "SECRET"],
+        ),
         // Parsed, the `@` after the host: what precedes it is credential (host `svc-token`).
-        ("https:svc-token/abc@host/x", &["svc-token", "abc"]),
-        ("https://h/hook?to=ops@corp.com&key=SECRET", &["SECRET", "ops@", "corp"]),
+        ("https:svc-token/abc@hk.example/x", &["svc-token", "abc"]),
+        (
+            "https://h/hook?to=ops@corp.com&key=SECRET",
+            &["SECRET", "ops@", "corp"],
+        ),
     ] {
         for err in [
             validate_target_url(raw).unwrap_err(),
@@ -452,6 +462,6 @@ fn an_ambiguous_or_unparsed_url_is_refused_echoing_nothing_past_its_scheme() {
             }
         }
     }
-    let err = validate_target_url("https:user:pass@host:badport/x").unwrap_err();
+    let err = validate_target_url("https:user:pass@hk.example:badport/x").unwrap_err();
     assert!(err.contains("`https:***`"), "{err}");
 }

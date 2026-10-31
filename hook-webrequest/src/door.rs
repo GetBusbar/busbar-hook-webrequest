@@ -98,6 +98,9 @@ pub struct Forwarder {
     live: RwLock<Arc<Live>>,
     /// The [`Live`] each parked op's exchange was built from, by its ticket.
     parked: Mutex<HashMap<Ticket, Arc<Live>>>,
+    /// Serialises `configure` (validate, merge, version check and swap) and holds the highest
+    /// version applied: a push older than it is acknowledged and not applied.
+    applied: Mutex<u64>,
 }
 
 /// A [`Target`] with what every op's exchange needs of it, built once when the target is set (at
@@ -194,6 +197,7 @@ impl Forwarder {
         Self {
             live: RwLock::new(live),
             parked: Mutex::new(HashMap::new()),
+            applied: Mutex::new(0),
         }
     }
 
@@ -280,9 +284,10 @@ impl Forwarder {
 }
 
 /// The remote's reason phrase as an error status may show it: the target's own words, which may
-/// quote its URL back (STUB: not yet scrubbed).
-pub(crate) fn status_phrase(_live: &Live, phrase: Option<&str>) -> Option<String> {
-    phrase.map(str::to_owned)
+/// quote its URL back, cut of every secret part of the target ([`Live::secrets`]) before
+/// [`reply::error_status`] caps and escapes it.
+pub(crate) fn status_phrase(live: &Live, phrase: Option<&str>) -> Option<String> {
+    phrase.map(|p| crate::net_guard::scrub(p, &live.secrets))
 }
 
 /// The text a transport failure is logged in: a fixed prefix, then the host's cause with every
@@ -322,20 +327,26 @@ impl Hook for Forwarder {
     fn configure(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
-        _version: u64,
+        version: u64,
     ) -> bool {
-        // Validated against a read snapshot (the SSRF check and the merge take time and need no
-        // lock); the write lock is held only to swap.
+        // One configure at a time: the validation (the SSRF check and the merge) reads the live
+        // target it is merged over, and the version check and the swap must not interleave with
+        // another push's.
+        let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
         let current = self.live();
-        let result = config::configure(&current.target, settings);
-        if result.is_ok() {
-            config::log_warnings(settings);
-        }
-        match result {
-            Ok(None) => true,
+        match config::configure(&current.target, settings) {
+            // A push older than the applied one is acknowledged and not applied.
+            Ok(_) if version < *applied => true,
+            Ok(None) => {
+                *applied = version;
+                config::log_warnings(settings);
+                true
+            }
             Ok(Some(next)) => {
                 let next = Live::new(next);
                 *self.live.write().unwrap_or_else(PoisonError::into_inner) = next;
+                *applied = version;
+                config::log_warnings(settings);
                 true
             }
             Err(reason) => {

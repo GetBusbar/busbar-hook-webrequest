@@ -90,7 +90,10 @@ fn an_error_status_phrase_is_scrubbed_of_the_targets_secrets() {
     let shown = crate::door::status_phrase(&live, Some(&phrase)).expect("a phrase");
     let text = crate::reply::error_status(500, Some(&shown));
     for secret in [A_SECRET, B_SECRET] {
-        assert!(!text.contains(secret), "{secret} reached the status text: {text}");
+        assert!(
+            !text.contains(secret),
+            "{secret} reached the status text: {text}"
+        );
     }
     assert!(text.contains("denied for"), "{text}");
     assert_eq!(crate::door::status_phrase(&live, None), None);
