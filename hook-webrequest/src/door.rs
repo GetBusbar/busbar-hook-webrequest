@@ -275,11 +275,19 @@ impl Forwarder {
         answer.map(|r| match r {
             Ok(got) => {
                 let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
+                let phrase = status_phrase(&live, phrase.as_deref());
                 read(got.status, phrase.as_deref(), &got.body)
             }
             Err(failure) => Err(transport_failure(&live, &failure)),
         })
     }
+}
+
+/// The remote's reason phrase as an error status may show it: the target's own words, which may
+/// quote its URL back, cut of every secret part of the target ([`Live::secrets`]) before
+/// [`reply::error_status`] caps and escapes it.
+pub(crate) fn status_phrase(live: &Live, phrase: Option<&str>) -> Option<String> {
+    phrase.map(|p| crate::net_guard::scrub(p, &live.secrets))
 }
 
 /// The text a transport failure is logged in: a fixed prefix, then the host's cause with every

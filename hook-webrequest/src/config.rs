@@ -26,7 +26,12 @@ pub fn unknown_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Ve
     settings
         .keys()
         .filter(|k| !KEYS.contains(&k.as_str()))
-        .map(|k| format!("{ALIAS}: ignoring unknown setting '{k}' (the settings are {KEYS:?})"))
+        .map(|k| {
+            format!(
+                "{ALIAS}: ignoring unknown setting '{}' (the settings are {KEYS:?})",
+                k.escape_debug()
+            )
+        })
         .collect()
 }
 
@@ -152,7 +157,15 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
     let config: Config = if text.trim().is_empty() {
         Config::default()
     } else {
-        serde_json::from_str(text).map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?
+        serde_json::from_str(text).map_err(|e| {
+            if e.is_data() {
+                format!(
+                    "{ALIAS}: invalid plugin config: settings.url must be a string; settings.timeout_ms must be a non-negative integer or null"
+                )
+            } else {
+                format!("{ALIAS}: invalid plugin config: {e}")
+            }
+        })?
     };
     Target::validate(&config)
 }

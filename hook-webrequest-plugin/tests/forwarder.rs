@@ -39,7 +39,9 @@ use busbar_contract::abi::host::hook::{Caps, DecideFrame, DecideView, NotifyFram
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, OutHead, Outcome, BLOB_JSON,
 };
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
+use busbar_contract::abi::mechanism::lifecycle::{
+    slot as life, CancelIn, CancelOut, OpenIn, OpenOut, ReleaseIn,
+};
 use busbar_contract::abi::mechanism::rendering::{self, ReadNeed};
 use busbar_contract::abi::sdk::door::blank_out;
 use busbar_contract::conn::{
@@ -916,6 +918,93 @@ fn stale_configures_preserve_the_whole_target_and_diagnostics() {
         assert_eq!(b.status(), live);
         assert_eq!(b.configure(r#"{"timeout_ms":888}"#, 9), Ok(9));
         assert_eq!(b.status()["status"]["settings"]["timeout_ms"], 888);
+    }
+}
+
+#[test]
+fn a_pending_op_keeps_its_opening_target_across_configure() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(r#"{"url":"http://127.0.0.1:9/old"}"#).unwrap();
+        let ticket = b.dispatcher.mint(0).expect("a ticket");
+        let view = decide_frame();
+        let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
+        assert_eq!(
+            b.plugin
+                .call_inline(ticket, false, slot::DECIDE, &mut first)
+                .outcome,
+            Outcome::Pending
+        );
+        let original = b.upstream.last();
+        assert_eq!(
+            b.configure(r#"{"url":"http://127.0.0.2:8123/new"}"#, 2),
+            Ok(2)
+        );
+        let mut resumed = Frame::new(view.input(), blank_out::<DecideOut>());
+        let outcome = b
+            .plugin
+            .call_inline(ticket, true, slot::DECIDE, &mut resumed)
+            .outcome;
+        b.dispatcher.recycle(ticket);
+
+        assert_eq!(outcome, Outcome::Ready);
+        assert_eq!(resumed.out.verbs, VERB_ABSTAIN);
+        assert_eq!(b.upstream.sent.lock().unwrap().as_slice(), &[original]);
+        assert!(b.upstream.reads.lock().unwrap().is_empty());
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        let fresh = b.upstream.last();
+        assert_eq!(fresh.target, "http://127.0.0.2:8123");
+        assert_eq!(fresh.path, b"/new");
+    }
+}
+
+#[test]
+fn a_cancelled_op_does_not_pin_the_next_fresh_op_to_its_old_target() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(r#"{"url":"http://127.0.0.1:9/old"}"#).unwrap();
+        let ticket = b.dispatcher.mint(0).expect("a ticket");
+        let view = decide_frame();
+        let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
+        assert_eq!(
+            b.plugin
+                .call_inline(ticket, false, slot::DECIDE, &mut first)
+                .outcome,
+            Outcome::Pending
+        );
+        assert_eq!(b.upstream.last().target, "http://127.0.0.1:9");
+        assert_eq!(
+            b.configure(r#"{"url":"http://127.0.0.2:8123/new"}"#, 2),
+            Ok(2)
+        );
+
+        let cancel = || {
+            let mut frame = Frame::new(
+                CancelIn {
+                    head: in_head(),
+                    ticket,
+                },
+                blank_out::<CancelOut>(),
+            );
+            assert_eq!(
+                b.plugin.call(life::CANCEL, &mut frame).outcome,
+                Outcome::Ready
+            );
+        };
+        cancel();
+        let mut fresh = Frame::new(view.input(), blank_out::<DecideOut>());
+        let outcome = b
+            .plugin
+            .call_inline(ticket, false, slot::DECIDE, &mut fresh)
+            .outcome;
+        let sent = b.upstream.last();
+        cancel();
+        b.dispatcher.recycle(ticket);
+
+        assert_eq!(outcome, Outcome::Pending);
+        assert_eq!(sent.target, "http://127.0.0.2:8123");
+        assert_eq!(sent.path, b"/new");
+        assert!(b.upstream.reads.lock().unwrap().is_empty());
     }
 }
 
