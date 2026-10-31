@@ -225,10 +225,10 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
 pub fn ambiguous_url(raw: &str) -> Option<String> {
     let (shown, from_path) = match url::Url::parse(raw) {
         Ok(parsed) => (
-            format!("{}://***", parsed.scheme()),
+            echo_of(&echoable_scheme(parsed.scheme()), "://***"),
             parsed[url::Position::BeforePath..].to_string(),
         ),
-        Err(_) => (format!("{}:***", scheme_of(raw)), raw.to_string()),
+        Err(_) => (echo_of(&scheme_of(raw), ":***"), raw.to_string()),
     };
     // The SDK shows the url it is handed with its userinfo cut; handed the echo, which holds no
     // `@`, it shows the echo.
@@ -239,21 +239,29 @@ pub fn ambiguous_url(raw: &str) -> Option<String> {
     })
 }
 
-/// The scheme `raw` starts with (RFC 3986: a letter, then letters, digits, `+`, `-`, `.`, up to
-/// the first `:`), or `***` when it does not start with one: a url that does not parse echoes no
-/// more than this.
-fn scheme_of(raw: &str) -> String {
-    match raw.split_once(':') {
-        Some((scheme, _))
-            if scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-                && scheme
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
-        {
-            scheme.to_ascii_lowercase()
-        }
-        _ => "***".to_string(),
+/// The echo `scheme` + `rest`, or `***` alone when the scheme is not one that may be shown.
+fn echo_of(scheme: &str, rest: &str) -> String {
+    if scheme == "***" {
+        scheme.to_string()
+    } else {
+        format!("{scheme}{rest}")
     }
+}
+
+/// `scheme` when it is `http` or `https`, else `***`: a schemeless `admin:secret@host/x` parses
+/// with scheme `admin`, which is credential, so no other scheme is echoed.
+fn echoable_scheme(scheme: &str) -> String {
+    if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
+        scheme.to_ascii_lowercase()
+    } else {
+        "***".to_string()
+    }
+}
+
+/// The scheme `raw` starts with (up to its first `:`), echoable per [`echoable_scheme`]; a url
+/// that does not parse echoes no more than this.
+fn scheme_of(raw: &str) -> String {
+    echoable_scheme(raw.split_once(':').map_or("", |(scheme, _)| scheme))
 }
 
 /// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is

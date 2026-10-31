@@ -333,10 +333,13 @@ impl Hook for Forwarder {
         // target it is merged over, and the version check and the swap must not interleave with
         // another push's.
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
+        // A push older than the applied one is acknowledged and not applied, whether or not it
+        // would validate: the version check comes first.
+        if version < *applied {
+            return true;
+        }
         let current = self.live();
         match config::configure(&current.target, settings) {
-            // A push older than the applied one is acknowledged and not applied.
-            Ok(_) if version < *applied => true,
             Ok(None) => {
                 *applied = version;
                 config::log_warnings(settings);
