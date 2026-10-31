@@ -1,4 +1,42 @@
 {
+  "diagnostics": [
+    {
+      "code": 7151,
+      "slug": "webrequest-forward-failed",
+      "title": "Webrequest hook forward failed (on_error applies)",
+      "severity": "actionable",
+      "summary": "A decide or transform the webrequest hook forwarded to its target failed: the target was unreachable, answered an error status, or returned a reply that is not valid. The op fails, so the hook's `on_error` policy applies. The reason is in the line, with the target's credential cut from it.",
+      "action": "Check the webrequest target's health and reachability, and that it answers a 2xx JSON reply; the hook's `on_error` decides what requests do meanwhile.",
+      "since": "1.6.0"
+    },
+    {
+      "code": 7152,
+      "slug": "webrequest-notify-dropped",
+      "title": "Webrequest hook notify dropped",
+      "severity": "actionable",
+      "summary": "A notify the webrequest hook forwarded to its target failed (unreachable, or an error status), so that one tap was dropped. Notifies are fire-and-forget and never retried, and a failed one never fails the request.",
+      "action": "If taps are being lost, check the webrequest target's health and reachability: each dropped notify is its own warn line.",
+      "since": "1.6.0"
+    },
+    {
+      "code": 7153,
+      "slug": "webrequest-configure-refused",
+      "title": "Webrequest hook settings push refused (live target unchanged)",
+      "severity": "actionable",
+      "summary": "A pushed settings document for the webrequest hook was refused (a url the egress guard refuses, an ambiguous url, or a wrong-typed value), so the push was NACKed and the hook keeps forwarding to the target it already had. The reason is in the line.",
+      "action": "Fix the named hook's `url` (an https:// or loopback http:// target the egress policy admits, with no `@` after the host) or `timeout_ms` and reload the configuration.",
+      "since": "1.6.0"
+    },
+    {
+      "code": 7154,
+      "slug": "webrequest-timeout-clamped",
+      "title": "Webrequest hook timeout_ms clamped",
+      "severity": "actionable",
+      "summary": "The webrequest hook's `timeout_ms` is outside [1, 5000] (the engine's reference hook budget), so it was clamped into range. The hook still runs, with the clamped timeout.",
+      "action": "Set `timeout_ms` within [1, 5000] to silence the warning and state the timeout the hook really uses.",
+      "since": "1.6.0"
+    }
+  ],
   "needs": [
     "http"
   ]

@@ -21,12 +21,29 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
         interpret(503, None, b"{}").unwrap_err(),
         "webrequest: target returned an error status: HTTP status server error (503 Service Unavailable)"
     );
-    assert_eq!(interpret(399, None, b"{}").unwrap(), json!({}));
-    assert_eq!(interpret(302, None, b"{}").unwrap(), json!({}));
+    // A redirect is never followed, and is a failure that says so (not "invalid JSON").
+    for code in [300, 301, 302, 307, 399] {
+        let text = interpret(code, None, b"{}").unwrap_err();
+        assert!(
+            text.contains("redirect")
+                && text.contains("not followed")
+                && text.contains(&code.to_string()),
+            "{text}"
+        );
+        assert!(!text.contains("invalid JSON"), "{text}");
+    }
+    // A 204 (No Content) is a deliberate "no opinion": `{}`.
+    assert_eq!(interpret(204, None, b"").unwrap(), json!({}));
+    // ...but only a 204 says "no opinion"; any other empty reply is a failure.
     assert_eq!(
-        interpret(204, None, b"").unwrap_err(),
-        "webrequest: invalid JSON reply (0 bytes)"
+        interpret(200, None, b"").unwrap_err(),
+        "webrequest: empty reply (HTTP status 200)"
     );
+    assert_eq!(
+        interpret(202, None, b"").unwrap_err(),
+        "webrequest: empty reply (HTTP status 202)"
+    );
+    assert!(interpret(200, None, b"  ").is_err());
     // The phrase the server sent wins, exactly as the 1.5.5 client showed it; empty falls back.
     assert_eq!(
         interpret(418, Some("I'm A Teapot Custom"), b"{}").unwrap_err(),
@@ -116,12 +133,64 @@ fn depth_and_parse_errors_are_length_only() {
 #[test]
 fn a_failure_means_a_different_thing_per_op() {
     let fail: Result<serde_json::Value, String> = Err("webrequest: request failed".into());
-    // decide: abstain, as the 1.5.5 forwarder did (v1.0.6 `decide` returned `{}` on any error).
-    assert_eq!(decide(fail.clone()), json!({}));
-    assert_eq!(decide(Ok(json!({"order":[0]}))), json!({"order":[0]}));
-    // transform: abstain.
-    assert_eq!(transform(fail.clone()), json!({}));
-    assert_eq!(transform(Ok(json!({"reject":"x"}))), json!({"reject":"x"}));
+    // decide and transform: the hook FAILS (the host applies `on_error`), the text passed through.
+    assert_eq!(
+        decide(fail.clone()),
+        Err("webrequest: request failed".to_string())
+    );
+    assert_eq!(
+        transform(fail.clone()),
+        Err("webrequest: request failed".to_string())
+    );
+    // A reply the target sent deliberately is passed on, `{}` included (an abstain once lowered).
+    assert_eq!(decide(Ok(json!({}))), Ok(json!({})));
+    assert_eq!(decide(Ok(json!({"order":[0]}))), Ok(json!({"order":[0]})));
+    assert_eq!(
+        transform(Ok(json!({"reject":"x"}))),
+        Ok(json!({"reject":"x"}))
+    );
     // notify: swallowed.
     notify(fail);
+}
+
+#[test]
+fn the_remote_reason_phrase_is_capped_and_escaped() {
+    // Control bytes cannot forge a log line or recolour a terminal.
+    let text = interpret(500, Some("Oops\r\n\x1b[31mwebrequest: forged"), b"").unwrap_err();
+    assert!(
+        !text.contains('\n') && !text.contains('\r') && !text.contains('\x1b'),
+        "{text:?}"
+    );
+    assert!(
+        text.contains(r"500 Oops\r\n\u{1b}[31mwebrequest: forged"),
+        "{text}"
+    );
+    // A long phrase is cut at 128 characters and marked.
+    let long = "x".repeat(5000);
+    let text = interpret(500, Some(&long), b"").unwrap_err();
+    assert!(text.len() < 300, "{} bytes", text.len());
+    assert!(
+        text.contains(&format!("500 {}\u{2026})", "x".repeat(128))),
+        "{text}"
+    );
+    // Exactly 128 is shown whole, and an apostrophe is not escaped (1.5.5's text).
+    let exact = "y".repeat(128);
+    assert!(interpret(500, Some(&exact), b"")
+        .unwrap_err()
+        .ends_with(&format!("500 {exact})")));
+    assert!(interpret(418, Some("I'm a teapot"), b"")
+        .unwrap_err()
+        .contains("418 I'm a teapot)"));
+}
+
+/// R10: a notify is delivered by any 2xx/3xx, whatever the body (no parse, so no warn for a 204).
+#[test]
+fn a_notify_is_delivered_by_any_2xx_or_3xx_without_reading_the_body() {
+    for code in [200, 204, 299, 301, 302, 399] {
+        assert_eq!(delivered(code, None), Ok(()), "{code}");
+    }
+    assert!(delivered(404, None).unwrap_err().contains("404"));
+    assert!(delivered(503, Some("Busy"))
+        .unwrap_err()
+        .contains("503 Busy"));
 }

@@ -3,7 +3,7 @@
 
 //! The settings document, the validated [`Target`], and `configure`'s commit-on-ack merge.
 
-use crate::net_guard;
+use crate::{net_guard, ALIAS, TIMEOUT_CLAMPED};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ pub fn unknown_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Ve
     settings
         .keys()
         .filter(|k| !KEYS.contains(&k.as_str()))
-        .map(|k| format!("webrequest: ignoring unknown setting '{k}' (the settings are {KEYS:?})"))
+        .map(|k| format!("{ALIAS}: ignoring unknown setting '{k}' (the settings are {KEYS:?})"))
         .collect()
 }
 
@@ -44,6 +44,8 @@ pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
 /// `configure`).
 #[derive(Deserialize, Default)]
 struct Config {
+    /// Absent reads as blank, and a blank url is refused in one set of words (`settings.url is required`).
+    #[serde(default)]
     url: String,
     #[serde(default)]
     timeout_ms: Option<u64>,
@@ -78,7 +80,7 @@ pub fn clamp_timeout(ms: u64) -> Duration {
 impl Target {
     fn validate(cfg: &Config) -> Result<Self, String> {
         if cfg.url.trim().is_empty() {
-            return Err("webrequest: settings.url is required".to_string());
+            return Err(format!("{ALIAS}: settings.url is required"));
         }
         let url = net_guard::validate_target_url(&cfg.url)?;
         Ok(Self {
@@ -86,24 +88,56 @@ impl Target {
             timeout: clamp_timeout(cfg.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         })
     }
+}
 
-    /// The `(host, port)` the one connection need is opened to: the URL's host with its IPv6 brackets
-    /// stripped, and its port (the scheme's default when the URL names none).
-    #[must_use]
-    pub fn endpoint(&self) -> (String, u16) {
-        let host = self.url.host_str().unwrap_or("");
-        let host = host.strip_prefix('[').unwrap_or(host);
-        let host = host.strip_suffix(']').unwrap_or(host);
-        (
-            host.to_string(),
-            self.url.port_or_known_default().unwrap_or(443),
+/// The warning for a `timeout_ms` outside `[1, MAX_TIMEOUT_MS]`, which is still clamped.
+fn clamp_warning(settings: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    let ms = settings.get("timeout_ms")?.as_u64()?;
+    let clamped = clamp_timeout(ms).as_millis();
+    (u128::from(ms) != clamped).then(|| {
+        format!(
+            "{ALIAS}: settings.timeout_ms {ms} is outside [1, {MAX_TIMEOUT_MS}] and is clamped to {clamped}"
         )
-    }
+    })
+}
 
-    /// Whether the hop is TLS (`https`); plaintext is only ever a loopback sidecar.
-    #[must_use]
-    pub fn is_tls(&self) -> bool {
-        self.url.scheme().eq_ignore_ascii_case("https")
+/// Everything the door logs at `open`/`refresh`/an acknowledged `configure` about a settings map
+/// that is accepted: a key not read ([`unknown_keys`]) and a `timeout_ms` clamped into range.
+#[must_use]
+pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut all = unknown_keys(settings);
+    all.extend(clamp_warning(settings));
+    all
+}
+
+/// Log what [`warnings`] returns, each as its own warn: a clamped `timeout_ms` carries its declared
+/// code ([`TIMEOUT_CLAMPED`]), an unread key none.
+pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
+    for warning in unknown_keys(settings) {
+        tracing::warn!("{warning}");
+    }
+    if let Some(warning) = clamp_warning(settings) {
+        tracing::warn!(diag = %TIMEOUT_CLAMPED, "{warning}");
+    }
+}
+
+/// [`log_warnings`] over a settings document as `open` reads it; nothing for a document that is not a
+/// JSON object (`open` refuses those).
+pub fn log_warnings_in(settings: &[u8]) {
+    if let Ok(serde_json::Value::Object(map)) =
+        serde_json::from_slice::<serde_json::Value>(settings)
+    {
+        log_warnings(&map);
+    }
+}
+
+/// [`warnings`] over a settings document as `open` reads it; none for a document that is not a JSON
+/// object (`open` refuses those).
+#[must_use]
+pub fn warnings_in(settings: &[u8]) -> Vec<String> {
+    match serde_json::from_slice::<serde_json::Value>(settings) {
+        Ok(serde_json::Value::Object(map)) => warnings(&map),
+        _ => Vec::new(),
     }
 }
 
@@ -114,13 +148,18 @@ impl Target {
 /// The refusal text.
 pub fn open(settings: &[u8]) -> Result<Target, String> {
     let text = std::str::from_utf8(settings)
-        .map_err(|e| format!("webrequest: invalid plugin config: {e}"))?;
+        .map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?;
     let config: Config = if text.trim().is_empty() {
         Config::default()
     } else {
-        serde_json::from_str(text).map_err(|e| format!("webrequest: invalid plugin config: {e}"))?
+        serde_json::from_str(text).map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?
     };
     Target::validate(&config)
+}
+
+/// The NACK text for `why`.
+fn nack(why: &str) -> String {
+    format!("{ALIAS}: configure() rejected: {why}")
 }
 
 /// `configure`: merge a pushed settings map over the live target, commit-on-ack. Each key is
@@ -138,28 +177,22 @@ pub fn configure(
 ) -> Result<Option<Target>, String> {
     let new_url = match settings.get("url") {
         None => None,
-        Some(v) => match v.as_str() {
-            None => {
-                return Err(format!(
-                "webrequest: configure() rejected: settings.url is present but not a string ({v})"
-            ))
-            }
-            Some(raw) => Some(
-                net_guard::validate_target_url(raw)
-                    .map_err(|reason| format!("webrequest: configure() rejected: {reason}"))?,
-            ),
-        },
+        Some(v) => {
+            let raw = v
+                .as_str()
+                .ok_or_else(|| nack("settings.url is present but not a string"))?;
+            Some(net_guard::refuse_target_url(raw).map_err(|reason| nack(&reason))?)
+        }
     };
+    // `null` is absent, as `open` reads it (the default).
     let new_timeout = match settings.get("timeout_ms") {
-        None => None,
-        Some(v) => match v.as_u64() {
-            Some(ms) => Some(clamp_timeout(ms)),
-            None => {
-                return Err(format!(
-                    "webrequest: configure() rejected: settings.timeout_ms is present but not a non-negative integer ({v})"
-                ))
-            }
-        },
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => {
+            let ms = v.as_u64().ok_or_else(|| {
+                nack("settings.timeout_ms is present but not a non-negative integer")
+            })?;
+            Some(clamp_timeout(ms))
+        }
     };
     if new_url.is_none() && new_timeout.is_none() {
         return Ok(None);

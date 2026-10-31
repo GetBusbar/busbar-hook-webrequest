@@ -5,6 +5,7 @@
 //! parse error, and what a failure MEANS per op. The framed http exchange hands back `{status, body}`;
 //! [`interpret`] is what the plugin makes of it.
 
+use crate::{ALIAS, FORWARD_FAILED, NOTIFY_DROPPED};
 use serde_json::Value;
 
 /// Maximum reply body accepted from the target, in bytes: the reply is a small ranking/verdict object, so
@@ -16,15 +17,42 @@ pub const MAX_REPLY_DEPTH: usize = 128;
 
 /// The transport failure text: connect, send, timeout and a malformed head all read as this, with the
 /// URL removed so a `?token=` never reaches the engine's log.
-pub const REQUEST_FAILED: &str = "webrequest: request failed: error sending request";
+#[must_use]
+pub fn request_failed() -> String {
+    format!("{ALIAS}: request failed: error sending request")
+}
 
 /// The body-read failure text (a truncated or malformed body).
-pub const READ_FAILED: &str = "webrequest: response read failed: error decoding response body";
+#[must_use]
+pub fn read_failed() -> String {
+    format!("{ALIAS}: response read failed: error decoding response body")
+}
 
 /// The failure for a body past [`MAX_REPLY_BYTES`].
 #[must_use]
 pub fn cap_exceeded() -> String {
-    format!("webrequest: response exceeded {MAX_REPLY_BYTES} byte cap")
+    format!("{ALIAS}: response exceeded {MAX_REPLY_BYTES} byte cap")
+}
+
+/// The longest remote reason phrase a failure text shows, in characters.
+pub const MAX_PHRASE_CHARS: usize = 128;
+
+/// The remote's reason phrase as a log line may carry it: cut to [`MAX_PHRASE_CHARS`] characters
+/// (marked with `\u{2026}`) and `Debug`-escaped, so a hostile target cannot flood the log, forge a line
+/// or send terminal control bytes. An apostrophe stays as is (the 1.5.5 client showed it so).
+fn loggable_phrase(phrase: &str) -> String {
+    let mut out = String::new();
+    for c in phrase.chars().take(MAX_PHRASE_CHARS) {
+        if c == '\'' {
+            out.push(c);
+        } else {
+            out.extend(c.escape_debug());
+        }
+    }
+    if phrase.chars().nth(MAX_PHRASE_CHARS).is_some() {
+        out.push('\u{2026}');
+    }
+    out
 }
 
 /// The failure for an error status (4xx/5xx), worded without the URL. `phrase` is the reason phrase
@@ -38,10 +66,16 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
         Err(_) => ("server", http::StatusCode::INTERNAL_SERVER_ERROR),
     };
     let shown = match phrase.filter(|p| !p.is_empty()) {
-        Some(p) => format!("{} {p}", status.as_u16()),
+        Some(p) => format!("{} {}", status.as_u16(), loggable_phrase(p)),
         None => status.to_string(),
     };
-    format!("webrequest: target returned an error status: HTTP status {class} error ({shown})")
+    format!("{ALIAS}: target returned an error status: HTTP status {class} error ({shown})")
+}
+
+/// The failure for a redirect (3xx), which is never followed.
+#[must_use]
+pub fn redirect_not_followed(code: u16) -> String {
+    format!("{ALIAS}: target answered a redirect that was not followed (HTTP status {code})")
 }
 
 /// Parse a reply body into a `Value`, rejecting a pathologically nested body BEFORE building the value.
@@ -53,12 +87,12 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
 pub fn parse_reply(bytes: &[u8]) -> Result<Value, String> {
     if exceeds_max_depth(bytes, MAX_REPLY_DEPTH) {
         return Err(format!(
-            "webrequest: reply exceeded max nesting depth ({} bytes)",
+            "{ALIAS}: reply exceeded max nesting depth ({} bytes)",
             bytes.len()
         ));
     }
     serde_json::from_slice(bytes)
-        .map_err(|_| format!("webrequest: invalid JSON reply ({} bytes)", bytes.len()))
+        .map_err(|_| format!("{ALIAS}: invalid JSON reply ({} bytes)", bytes.len()))
 }
 
 /// Single-pass, string-aware scan for the maximum `{`/`[` nesting depth in `bytes`. Brackets inside JSON
@@ -98,8 +132,9 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
 /// exchange holds it only to its own bound, busbar-contract's `REPLY_MAX`, and `Op::exchange` offers no way to
 /// lower it; the check here is what holds it to [`MAX_REPLY_BYTES`]).
 ///
-/// The status rule: 4xx/5xx (400..=599) is a failure, everything else (redirects are never followed)
-/// carries its body as the reply.
+/// The status rule: 4xx/5xx (400..=599) is a failure, and so is a redirect (3xx: never followed, so
+/// there is no reply to read); everything else carries its body as the reply. An EMPTY body is `{}`,
+/// a deliberate "no opinion", only for a `204`; on any other status it is a failure.
 ///
 /// # Errors
 /// The failure text.
@@ -107,33 +142,60 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
     if (400..600).contains(&status) {
         return Err(error_status(status, phrase));
     }
+    if (300..400).contains(&status) {
+        return Err(redirect_not_followed(status));
+    }
     if body.len() > MAX_REPLY_BYTES {
         return Err(cap_exceeded());
+    }
+    if body.is_empty() {
+        // Only a 204 (No Content) is a deliberate "no opinion"; an empty body on anything else is a
+        // reply that did not arrive whole.
+        return if status == 204 {
+            Ok(serde_json::json!({}))
+        } else {
+            Err(format!("{ALIAS}: empty reply (HTTP status {status})"))
+        };
     }
     parse_reply(body)
 }
 
-/// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply) is
-/// `{}`, abstain: the request routes as if this hook had no opinion. The operator's `on_error`
-/// chain still resolves what the ENGINE observes about the call (its deadline, a fault, a refusal),
-/// so a far-end 500 under `on_error: reject` serves the chat. The failure is logged to the plugin's
-/// log (a warn), never silent.
-#[must_use]
-pub fn decide(reply: Result<Value, String>) -> Value {
-    reply.unwrap_or_else(|e| {
-        tracing::warn!("{e}; decide abstains");
-        serde_json::json!({})
-    })
+/// Whether a `notify` was delivered: any status short of an error status is, and the body is not read
+/// (a tap's answer carries no meaning, so a `204` or an empty body is no warning).
+///
+/// # Errors
+/// The failure text of a 4xx/5xx.
+pub fn delivered(status: u16, phrase: Option<&str>) -> Result<(), String> {
+    if (400..600).contains(&status) {
+        return Err(error_status(status, phrase));
+    }
+    Ok(())
 }
 
-/// `transform`: any failure is `{}` (abstain, proceed with the ORIGINAL body); a parsed `reject` in the
-/// reply is honoured by the engine. The failure is logged to the plugin's log (a warn).
-#[must_use]
-pub fn transform(reply: Result<Value, String>) -> Value {
-    reply.unwrap_or_else(|e| {
-        tracing::warn!("{e}; transform abstains");
-        serde_json::json!({})
-    })
+/// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply, an
+/// envelope that cannot be sent) is the hook FAILING, not a verdict: the failure text goes on to the
+/// host, which applies the pool's `on_error` (a far-end 500 under `on_error: reject` refuses the
+/// request; the default fail-open terminal routes as before). A reply the target sends deliberately
+/// (`{}`, `{"abstain":true}`) is an abstain. The failure is also logged to the plugin's log (a warn).
+///
+/// # Errors
+/// The failure text, passed through.
+pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
+    reply.inspect_err(
+        |e| tracing::warn!(diag = %FORWARD_FAILED, "{e}; decide failed (on_error applies)"),
+    )
+}
+
+/// `transform`: any failure is the hook FAILING (the host's `on_error` for transform), as
+/// [`decide`]; a deliberate `{}` proceeds with the ORIGINAL body, and a parsed `reject` in the reply
+/// is honoured by the engine. The failure is logged to the plugin's log (a warn).
+///
+/// # Errors
+/// The failure text, passed through.
+pub fn transform(reply: Result<Value, String>) -> Result<Value, String> {
+    reply.inspect_err(
+        |e| tracing::warn!(diag = %FORWARD_FAILED, "{e}; transform failed (on_error applies)"),
+    )
 }
 
 /// `notify`: fire-and-forget. The reply is not read for meaning and every error is dropped from the
@@ -141,6 +203,6 @@ pub fn transform(reply: Result<Value, String>) -> Value {
 /// (a warn).
 pub fn notify(reply: Result<Value, String>) {
     if let Err(e) = reply {
-        tracing::warn!("{e}; notify dropped");
+        tracing::warn!(diag = %NOTIFY_DROPPED, "{e}; notify dropped");
     }
 }

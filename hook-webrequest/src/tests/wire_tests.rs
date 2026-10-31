@@ -1,5 +1,5 @@
 use crate::config::open;
-use crate::reply::{error_status, READ_FAILED, REQUEST_FAILED};
+use crate::reply::{error_status, read_failed, request_failed};
 use crate::wire::{envelope, request};
 use serde_json::json;
 use std::io::{Read, Write};
@@ -28,12 +28,11 @@ fn a_non_object_projection_rides_under_payload() {
 }
 
 #[test]
-fn a_default_port_host_header_carries_no_port() {
+fn the_request_target_and_fields_follow_the_url() {
     let t = open(br#"{"url":"https://api.example.com"}"#).unwrap();
     let r = request(&t, b"{}".to_vec());
     assert_eq!(r.method, "POST");
     assert_eq!(r.target, "/");
-    assert_eq!(r.authority, "api.example.com");
     assert_eq!(
         r.fields,
         vec![
@@ -44,7 +43,6 @@ fn a_default_port_host_header_carries_no_port() {
     let t = open(br#"{"url":"https://u:p@api.example.com:8443/a?b=1"}"#).unwrap();
     let r = request(&t, b"{}".to_vec());
     assert_eq!(r.target, "/a?b=1");
-    assert_eq!(r.authority, "api.example.com:8443");
     assert_eq!(r.fields[0], ("authorization", "Basic dTpw".to_string()));
 }
 
@@ -129,7 +127,7 @@ fn the_request_bytes_are_what_the_1_5_5_client_wrote() {
             url.replace("PORT", &want_port(&want, url))
         );
         let target = open(cfg.as_bytes()).unwrap();
-        let ours = assemble(&request(&target, body.to_vec()));
+        let ours = assemble(&request(&target, body.to_vec()), &target.url);
         assert_eq!(
             String::from_utf8_lossy(&ours),
             String::from_utf8_lossy(&want),
@@ -139,14 +137,24 @@ fn the_request_bytes_are_what_the_1_5_5_client_wrote() {
     }
 }
 
+/// `host` or `host:port` as the http framer derives it from the origin: the port only when the URL
+/// names a non-default one.
+fn host_header(url: &url::Url) -> String {
+    let host = url.host_str().unwrap_or("");
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    }
+}
+
 /// The bytes the http framer writes for `r`: the request line, the forwarder's fields in order, then
 /// what the framer adds itself (`host` from the authority, then `content-length` from the body).
-fn assemble(r: &crate::wire::Request) -> Vec<u8> {
+fn assemble(r: &crate::wire::Request, url: &url::Url) -> Vec<u8> {
     let mut head = format!("{} {} HTTP/1.1\r\n", r.method, r.target);
     for (k, v) in &r.fields {
         head.push_str(&format!("{k}: {v}\r\n"));
     }
-    head.push_str(&format!("host: {}\r\n", r.authority));
+    head.push_str(&format!("host: {}\r\n", host_header(url)));
     head.push_str(&format!("content-length: {}\r\n\r\n", r.body.len()));
     let mut bytes = head.into_bytes();
     bytes.extend_from_slice(&r.body);
@@ -188,7 +196,7 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
             .unwrap_err();
         assert_eq!(
             format!("webrequest: request failed: {}", e.without_url()),
-            REQUEST_FAILED
+            request_failed()
         );
         // Timeout.
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -201,7 +209,7 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
             .unwrap_err();
         assert_eq!(
             format!("webrequest: request failed: {}", e.without_url()),
-            REQUEST_FAILED
+            request_failed()
         );
         drop(l);
         // Error statuses and a truncated body, from a scripted server.
@@ -241,7 +249,7 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
                 let e = r.bytes().await.unwrap_err();
                 assert_eq!(
                     format!("webrequest: response read failed: {}", e.without_url()),
-                    READ_FAILED
+                    read_failed()
                 );
             }
             srv.join().unwrap();

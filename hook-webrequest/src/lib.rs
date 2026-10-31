@@ -14,7 +14,8 @@
 //! * [`config`] — the settings document, the [`config::Target`], and `configure`'s commit-on-ack merge;
 //! * [`wire`] — the op envelope and the HTTP/1.1 request bytes;
 //! * [`reply`] — the response reader: the status rule, the 64 KiB body cap, the depth guard, and the
-//!   per-op meaning of a failure (`decide` and `transform` abstain, `notify` swallows);
+//!   per-op meaning of a failure (`decide` and `transform` fail, so the operator's `on_error`
+//!   applies; `notify` swallows);
 //! * [`report`] — the `describe` and `status` documents;
 //! * [`net_guard`] — the textual half of the SSRF guard, kept so every refusal text is stable;
 //! * [`door`] — the hook kind's door over all of it (`door::door`): what a busbar build that links
@@ -33,12 +34,24 @@ pub mod wire;
 /// The package name a signed tarball of this plugin states (`manifest.name`).
 pub const NAME: &str = "busbar-hook-webrequest";
 
+/// The catalogue code a failed `decide` or `transform` is raised under (declared in `declares.json`).
+pub const FORWARD_FAILED: &str = "BUSBAR-7151";
+/// The catalogue code a dropped `notify` is raised under.
+pub const NOTIFY_DROPPED: &str = "BUSBAR-7152";
+/// The catalogue code a refused `configure` is raised under.
+pub const CONFIGURE_REFUSED: &str = "BUSBAR-7153";
+/// The catalogue code a clamped `timeout_ms` is raised under.
+pub const TIMEOUT_CLAMPED: &str = "BUSBAR-7154";
+
 /// The alias a hook reference names this plugin by (`module: webrequest`).
 pub const ALIAS: &str = "webrequest";
 
 #[cfg(test)]
 #[path = "tests/config_tests.rs"]
 mod config_tests;
+#[cfg(test)]
+#[path = "tests/door_tests.rs"]
+mod door_tests;
 #[cfg(test)]
 #[path = "tests/echo_tests.rs"]
 mod echo_tests;

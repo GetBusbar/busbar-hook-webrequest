@@ -17,18 +17,21 @@
 //! * `status` / `describe` — the forwarder's own documents ([`crate::report`]), never the target's.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::Poll;
 
 use busbar_contract::abi::hook::{Tail, CLASS_GATE, PROMPT_RW, USER_RO};
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, KEEP_NAMED,
 };
-use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::mechanism::door::{Rewrite, Statement};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::conn::ConnFailure;
-use busbar_contract::abi::sdk::door::{abi_str, statement};
-use busbar_contract::abi::sdk::exchange::{Op, Request};
+use busbar_contract::abi::sdk::cred::Cred;
+use busbar_contract::abi::sdk::door::{abi_str, alias, statement};
+use busbar_contract::abi::sdk::exchange::{Op, Request, SealedField};
 use busbar_contract::abi::sdk::hook::{
     lower_decide_reply, lower_transform_reply, statement_with_tail, tail, Decoded, DecodedTap,
     Hook, HookOpen, RewriteVerdict, Verdict,
@@ -72,9 +75,14 @@ busbar_contract::statement_extensions!(
     (busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS, br#"["url"]"#),
 ]);
 
-/// THE STATEMENT: name, version, the hook tail, the one outbound need and the reference-capable
-/// `url`.
+/// The module name an operator writes, as the alias the registry holds beside [`crate::NAME`].
+const REWRITES: &[Rewrite] = &[alias(crate::ALIAS)];
+
+/// THE STATEMENT: name, version, the hook tail, the alias, the one outbound need and the
+/// reference-capable `url`.
 pub const STATEMENT: Statement = Statement {
+    rewrites: REWRITES.as_ptr(),
+    rewrites_len: REWRITES.len(),
     needs: NEEDS.as_ptr(),
     needs_len: NEEDS.len(),
     extensions: EXTENSIONS,
@@ -88,18 +96,29 @@ pub const STATEMENT: Statement = Statement {
 #[derive(Debug)]
 pub struct Forwarder {
     live: RwLock<Arc<Live>>,
+    /// The [`Live`] each parked op's exchange was built from, by its ticket.
+    parked: Mutex<HashMap<Ticket, Arc<Live>>>,
 }
 
 /// A [`Target`] with what every op's exchange needs of it, built once when the target is set (at
 /// `open` and an acknowledged `configure`): the origin the need dials, and the
 /// method, request target and fields ([`wire::request`]) as the exchange takes them.
-struct Live {
+pub(crate) struct Live {
     target: Target,
-    origin: String,
+    pub(crate) origin: String,
     method: Vec<u8>,
     request_target: Vec<u8>,
-    fields: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The fields that carry no credential, in order (`content-type`, `accept`).
+    plain: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The fields that do (the `authorization` the userinfo became): each goes in before the plain
+    /// field `at` (their count: first), held as a [`Cred`] required to go out secured when the url
+    /// names a secure scheme, so the SDK frames and wipes the value and a formatted exchange shows
+    /// `<sealed>`.
+    sealed: Vec<(usize, Vec<u8>, Cred)>,
     timeout_ms: u64,
+    /// What a failure's text is scrubbed of ([`crate::net_guard::secret_parts`]), computed once with
+    /// the target rather than for every failed op.
+    secrets: Vec<String>,
 }
 
 impl Deref for Live {
@@ -117,35 +136,107 @@ impl std::fmt::Debug for Live {
 }
 
 impl Live {
-    fn new(target: Target) -> Arc<Self> {
+    pub(crate) fn new(target: Target) -> Arc<Self> {
         let r = wire::request(&target, Vec::new());
+        let (mut plain, mut sealed) = (Vec::new(), Vec::new());
+        for (name, value) in r.fields {
+            if name.eq_ignore_ascii_case("authorization") {
+                let mut v = serde_json::Value::String(value);
+                let cred = Cred::take(&mut v)
+                    .unwrap_or_else(Cred::empty)
+                    .secure_for(target.url.as_str());
+                sealed.push((plain.len(), name.as_bytes().to_vec(), cred));
+            } else {
+                plain.push((name.as_bytes().to_vec(), value.into_bytes()));
+            }
+        }
         Arc::new(Self {
             origin: target.url.origin().ascii_serialization(),
             method: r.method.as_bytes().to_vec(),
             request_target: r.target.into_bytes(),
-            fields: r
-                .fields
-                .into_iter()
-                .map(|(n, v)| (n.as_bytes().to_vec(), v.into_bytes()))
-                .collect(),
+            plain,
+            sealed,
             timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
+            secrets: crate::net_guard::secret_parts(&target.url),
             target,
         })
     }
 
-    /// The exchange's request for `body`.
-    fn request(&self, body: Vec<u8>) -> Request {
-        Request {
+    /// The exchange's request for `body`, and the sealed fields it carries beside it.
+    fn request(&self, body: Vec<u8>) -> (Request, Vec<SealedField>) {
+        let request = Request {
             method: self.method.clone(),
             target: self.request_target.clone(),
-            fields: self.fields.clone(),
+            fields: self.plain.clone(),
             body,
             timeout_ms: self.timeout_ms,
-        }
+        };
+        let sealed = self
+            .sealed
+            .iter()
+            .map(|(at, name, c)| (*at, name.clone(), c.field()))
+            .collect();
+        (request, sealed)
     }
 }
 
+/// What an op makes of the target's answer: its status, reason phrase and body.
+type Reading = fn(u16, Option<&str>, &[u8]) -> Result<serde_json::Value, String>;
+
+/// A `notify` reads no reply: delivered, or the error status.
+fn delivery(status: u16, phrase: Option<&str>, _body: &[u8]) -> Result<serde_json::Value, String> {
+    reply::delivered(status, phrase).map(|()| serde_json::Value::Null)
+}
+
 impl Forwarder {
+    /// A forwarder over `live`.
+    pub(crate) fn over(live: Arc<Live>) -> Self {
+        Self {
+            live: RwLock::new(live),
+            parked: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The [`Live`] an op entering on `ticket` runs against.
+    ///
+    /// The request is built, and the target read, only on an op's FIRST entry; the exchange it parks
+    /// is resumed against that request. So a re-entry (the op's wake) uses the [`Live`] its first
+    /// entry recorded ([`Forwarder::park_live`]), never the current one: a `configure` between the
+    /// two must not hand the old request to the new origin, nor scrub its failure with the new
+    /// target's secrets. Only a first entry reads the live target.
+    pub(crate) fn entry_live(&self, ticket: Ticket) -> Arc<Live> {
+        self.parked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&ticket)
+            .map_or_else(|| self.live(), Arc::clone)
+    }
+
+    /// Record the [`Live`] a parked op's exchange was built from.
+    ///
+    /// KNOWN LIMIT: an op cannot be told whether it is resuming or fresh (the SDK's `Op` does not
+    /// expose it), so an entry is trusted by its ticket alone. An op cancelled while parked leaves its
+    /// entry, and a fresh op that lands on the SAME ticket (same generation) before anything else
+    /// replaces it reuses that op's older, self-consistent [`Live`] (never a mix of two targets'
+    /// request and credentials). A recycled slot gets a new generation, so it never matches;
+    /// parking on it drops the slot's older entries. This closes when core exposes resume.
+    pub(crate) fn park_live(&self, ticket: Ticket, live: &Arc<Live>) {
+        if ticket.is_none() {
+            return;
+        }
+        let mut parked = self.parked.lock().unwrap_or_else(PoisonError::into_inner);
+        parked.retain(|t, _| t.slot != ticket.slot);
+        parked.insert(ticket, Arc::clone(live));
+    }
+
+    /// The op on `ticket` is done: forget what it parked.
+    pub(crate) fn release_live(&self, ticket: Ticket) {
+        self.parked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&ticket);
+    }
+
     fn live(&self) -> Arc<Live> {
         Arc::clone(&self.live.read().unwrap_or_else(PoisonError::into_inner))
     }
@@ -157,10 +248,13 @@ impl Forwarder {
         on: &Op<'_>,
         op: &str,
         payload: impl FnOnce() -> serde_json::Value,
+        read: Reading,
     ) -> Poll<Result<serde_json::Value, String>> {
-        let live = self.live();
+        let ticket = on.ticket();
+        let live = self.entry_live(ticket);
         let unsendable = Cell::new(None);
-        let answer = on.exchange(NEED, Some(&live.origin), || {
+        let answer = on.exchange_sealed(NEED, Some(&live.origin), || {
+            self.park_live(ticket, &live);
             wire::envelope(op, &payload())
                 .map(|body| live.request(body))
                 .map_err(|e| {
@@ -168,13 +262,16 @@ impl Forwarder {
                     ConnFailure::Refused(String::new())
                 })
         });
+        if answer.is_ready() {
+            self.release_live(ticket);
+        }
         if let Some(e) = unsendable.take() {
             return Poll::Ready(Err(e));
         }
         answer.map(|r| match r {
             Ok(got) => {
                 let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
-                reply::interpret(got.status, phrase.as_deref(), &got.body)
+                read(got.status, phrase.as_deref(), &got.body)
             }
             Err(failure) => Err(transport_failure(&live, &failure)),
         })
@@ -184,24 +281,34 @@ impl Forwarder {
 /// The text a transport failure is logged in: a fixed prefix, then the host's cause with every
 /// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
 /// words may quote the URL.
-pub(crate) fn transport_failure(target: &Target, failure: &ConnFailure) -> String {
-    let cause = crate::net_guard::scrub(&failure.to_string(), &target.url);
-    format!("{}: {cause}", reply::REQUEST_FAILED)
+pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
+    let cause = crate::net_guard::scrub(&failure.to_string(), &live.secrets);
+    format!("{}: {cause}", reply::request_failed())
 }
 
 impl Hook for Forwarder {
     fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
-        self.post(op, OP_DECIDE, || view.projection_json(OP_DECIDE))
-            .map(|r| lower_decide_reply(Ok(reply::decide(r))))
+        self.post(
+            op,
+            OP_DECIDE,
+            || view.projection_json(OP_DECIDE),
+            reply::interpret,
+        )
+        .map(|r| lower_decide_reply(reply::decide(r)))
     }
 
     fn transform(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
-        self.post(op, OP_TRANSFORM, || view.projection_json(OP_TRANSFORM))
-            .map(|r| lower_transform_reply(Ok(reply::transform(r))))
+        self.post(
+            op,
+            OP_TRANSFORM,
+            || view.projection_json(OP_TRANSFORM),
+            reply::interpret,
+        )
+        .map(|r| lower_transform_reply(reply::transform(r)))
     }
 
     fn notify(&self, tap: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
-        self.post(op, OP_NOTIFY, || tap.projection_json())
+        self.post(op, OP_NOTIFY, || tap.projection_json(), delivery)
             .map(reply::notify)
     }
 
@@ -210,21 +317,22 @@ impl Hook for Forwarder {
         settings: &serde_json::Map<String, serde_json::Value>,
         _version: u64,
     ) -> bool {
-        let mut live = self.live.write().unwrap_or_else(PoisonError::into_inner);
-        let result = config::configure(&live.target, settings);
+        // Validated against a read snapshot (the SSRF check and the merge take time and need no
+        // lock); the write lock is held only to swap.
+        let current = self.live();
+        let result = config::configure(&current.target, settings);
         if result.is_ok() {
-            for warning in config::unknown_keys(settings) {
-                tracing::warn!("{warning}");
-            }
+            config::log_warnings(settings);
         }
         match result {
             Ok(None) => true,
             Ok(Some(next)) => {
-                *live = Live::new(next);
+                let next = Live::new(next);
+                *self.live.write().unwrap_or_else(PoisonError::into_inner) = next;
                 true
             }
             Err(reason) => {
-                tracing::warn!("{reason}");
+                tracing::warn!(diag = %crate::CONFIGURE_REFUSED, "{reason}");
                 false
             }
         }
@@ -246,12 +354,8 @@ pub struct Open;
 impl HookOpen for Open {
     fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
         let target = config::open(settings.as_bytes())?;
-        for warning in config::unknown_keys_in(settings.as_bytes()) {
-            tracing::warn!("{warning}");
-        }
-        Ok(Box::new(Forwarder {
-            live: RwLock::new(Live::new(target)),
-        }))
+        config::log_warnings_in(settings.as_bytes());
+        Ok(Box::new(Forwarder::over(Live::new(target))))
     }
 }
 
