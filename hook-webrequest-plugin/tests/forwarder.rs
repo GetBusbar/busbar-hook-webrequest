@@ -888,6 +888,122 @@ fn red_a_configure_refusal_is_logged() {
     }
 }
 
+#[test]
+fn stale_configures_preserve_the_whole_target_and_diagnostics() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url":"{URL}","timeout_ms":2000}}"#))
+            .unwrap();
+        assert_eq!(
+            b.configure(
+                r#"{"url":"http://127.0.0.2:8123/moved","timeout_ms":777}"#,
+                8
+            ),
+            Ok(8)
+        );
+        let live = b.status();
+        for settings in [
+            r#"{"url":"http://127.0.0.3:8124/stale","timeout_ms":333}"#,
+            r#"{"url":"ftp://bad.example/","timeout_ms":"bad"}"#,
+        ] {
+            assert_eq!(b.configure(settings, 7), Ok(7));
+            assert_eq!(b.status(), live);
+            assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+        }
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        assert_eq!(b.upstream.last().target, "http://127.0.0.2:8123");
+        assert!(b.configure(r#"{"url":"ftp://bad.example/"}"#, 9).is_err());
+        assert_eq!(b.status(), live);
+        assert_eq!(b.configure(r#"{"timeout_ms":888}"#, 9), Ok(9));
+        assert_eq!(b.status()["status"]["settings"]["timeout_ms"], 888);
+    }
+}
+
+#[test]
+fn remote_error_phrases_cannot_echo_live_target_credentials() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(r#"{"url":"http://user:hunter2@127.0.0.1:9/PATHCANARY?token=QUERYCANARY"}"#)
+            .unwrap();
+        b.upstream.answer(
+            503,
+            "denied hunter2 /PATHCANARY token=QUERYCANARY dXNlcjpodW50ZXIy",
+            b"",
+        );
+        let failure = decide_failure(&b);
+        let warns = b.recorder.warns();
+        assert!(!warns.is_empty());
+        for text in std::iter::once(&failure).chain(warns.iter()) {
+            for secret in ["hunter2", "PATHCANARY", "QUERYCANARY", "dXNlcjpodW50ZXIy"] {
+                assert!(!text.contains(secret), "{text}");
+            }
+        }
+        assert!(
+            failure.contains("503") && failure.contains("denied"),
+            "{failure}"
+        );
+    }
+}
+
+#[test]
+fn unknown_settings_cannot_forge_log_lines() {
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(r#"{"url":"http://127.0.0.1:9/hook","x\r\nBUSBAR-9999 forged":1}"#)
+            .unwrap();
+        assert_eq!(b.configure(r#"{"y\r\nBUSBAR-9999 forged":1}"#, 2), Ok(2));
+        let warns = b.recorder.warns();
+        assert_eq!(warns.len(), 2);
+        for warning in warns {
+            assert!(!warning.contains(['\r', '\n']), "{warning:?}");
+            assert!(warning.contains("\\r\\n"), "{warning:?}");
+            assert!(warning.contains("BUSBAR-9999 forged"), "{warning:?}");
+        }
+    }
+}
+
+#[test]
+fn wrong_typed_open_settings_never_echo_credentials() {
+    for arm in arms() {
+        for bad in [
+            r#"{"url":"http://127.0.0.1:9/","timeout_ms":"https://user:PASSCANARY@h/KEYCANARY"}"#,
+            r#"{"url":["https://user:PASSCANARY@h/KEYCANARY"]}"#,
+        ] {
+            let b = arm.bind();
+            let error = b.open(bad).expect_err("wrong type refuses open");
+            for text in std::iter::once(error).chain(b.recorder.warns()) {
+                assert!(!text.contains("CANARY"), "{text}");
+                assert!(!text.contains("user:"), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn ambiguous_authority_refusals_never_echo_a_credential_fragment() {
+    for arm in arms() {
+        for url in [
+            "https://user:pw/PREFIXCANARY@QUERYCANARY?token=TAILCANARY",
+            "https://user:pw?token=PREFIXCANARY@QUERYCANARY",
+            "SCHEMECANARY:password@host/path",
+        ] {
+            let b = arm.bind();
+            let settings = serde_json::json!({"url":url}).to_string();
+            let error = b.open(&settings).expect_err("ambiguous URL refused");
+            assert!(error.contains("ambiguous"), "{error}");
+            assert!(!error.contains("CANARY"), "{error}");
+            let b = arm.bind();
+            b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+            assert!(b.configure(&settings, 2).is_err());
+            let warns = b.recorder.warns();
+            assert!(!warns.is_empty());
+            for text in warns {
+                assert!(!text.contains("CANARY"), "{text}");
+            }
+        }
+    }
+}
+
 /// RED: a settings key the forwarder does not read is not refused (1.5.5 ignored it, so a 1.5.5
 /// document still opens), and not silent either: `open` and an acknowledged `configure` each log
 /// it by name.

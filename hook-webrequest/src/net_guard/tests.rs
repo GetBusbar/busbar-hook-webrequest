@@ -417,11 +417,10 @@ fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
             "{nack}"
         );
     }
-    // The echo is `scheme://***@host/***`: neither the path nor the query after the last `@` is shown.
+    // An ambiguous authority may itself contain credential fragments; echo none of it.
     let err =
         validate_target_url("https://u:p/w@hooks.example/k/KEYCANARY?token=QCANARY").unwrap_err();
-    assert!(err.contains("`https://***@hooks.example/***`"), "{err}");
-    for canary in ["KEYCANARY", "QCANARY", "p/w"] {
+    for canary in ["KEYCANARY", "QCANARY", "p/w", "hooks.example"] {
         assert!(!err.contains(canary), "{canary} echoed: {err}");
     }
     // An escaped `@` in the path, and plain userinfo, stay accepted.
