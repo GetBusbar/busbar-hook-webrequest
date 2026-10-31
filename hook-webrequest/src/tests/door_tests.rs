@@ -79,3 +79,38 @@ fn a_recycled_slot_does_not_inherit_a_cancelled_ops_target() {
         "the cancelled op's entry was dropped"
     );
 }
+
+/// Q-R2b: the reason phrase of an error status is scrubbed of the target's secret parts before it
+/// is capped and escaped, as a transport failure is.
+#[test]
+fn an_error_status_phrase_is_scrubbed_of_the_targets_secrets() {
+    let f = forwarder(&format!("http://127.0.0.1:9001/{A_SECRET}?tok={B_SECRET}"));
+    let live = f.entry_live(ticket(1));
+    let phrase = format!("denied for /{A_SECRET}?tok={B_SECRET}");
+    let shown = crate::door::status_phrase(&live, Some(&phrase)).expect("a phrase");
+    let text = crate::reply::error_status(500, Some(&shown));
+    for secret in [A_SECRET, B_SECRET] {
+        assert!(!text.contains(secret), "{secret} reached the status text: {text}");
+    }
+    assert!(text.contains("denied for"), "{text}");
+    assert_eq!(crate::door::status_phrase(&live, None), None);
+}
+
+/// R2-1: `configure` keeps the highest applied version; an older push is ACKed and NOT applied.
+#[test]
+fn a_stale_configure_version_is_acked_and_not_applied() {
+    let f = forwarder("http://127.0.0.1:9001/a");
+    let push = |url: &str, version| {
+        let settings = serde_json::json!({ "url": url });
+        f.configure(settings.as_object().unwrap(), version)
+    };
+    assert!(push("http://127.0.0.2:9008/v8", 8));
+    assert!(push("http://127.0.0.3:9007/v7", 7), "a stale push is ACKed");
+    assert_eq!(
+        f.entry_live(ticket(1)).origin,
+        "http://127.0.0.2:9008",
+        "v8's settings stay live"
+    );
+    assert!(push("http://127.0.0.4:9009/v9", 9));
+    assert_eq!(f.entry_live(ticket(2)).origin, "http://127.0.0.4:9009");
+}
