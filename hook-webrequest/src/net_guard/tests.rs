@@ -428,3 +428,30 @@ fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
     assert!(validate_target_url("https://hooks.example/a%40b").is_ok());
     assert!(validate_target_url("https://svc:hunter2@hooks.example/x").is_ok());
 }
+
+/// S1/S2/Q-R2a: no refusal of an ambiguous or unparsed url carries any part of the text after its
+/// scheme: not the credential, not a host that is really credential, not a path or query.
+#[test]
+fn an_ambiguous_or_unparsed_url_is_refused_echoing_nothing_past_its_scheme() {
+    for (raw, secrets) in [
+        // Unparsed (bad port) with an `@`: refused as ambiguous (S1).
+        ("https:user:pass@host:badport/x?k=SECRET", &["user", "pass", "SECRET", "host"][..]),
+        ("https:svc:pa/ss@host/x", &["svc", "pa/ss", "ss@"]),
+        ("https://user:pass@host:badport/x?k=SECRET", &["user", "pass", "SECRET"]),
+        // Parsed, the `@` after the host: what precedes it is credential (host `svc-token`).
+        ("https:svc-token/abc@host/x", &["svc-token", "abc"]),
+        ("https://h/hook?to=ops@corp.com&key=SECRET", &["SECRET", "ops@", "corp"]),
+    ] {
+        for err in [
+            validate_target_url(raw).unwrap_err(),
+            refuse_target_url(raw).unwrap_err(),
+        ] {
+            assert!(err.contains("ambiguous"), "{raw}: {err}");
+            for secret in secrets {
+                assert!(!err.contains(secret), "{raw} echoed {secret}: {err}");
+            }
+        }
+    }
+    let err = validate_target_url("https:user:pass@host:badport/x").unwrap_err();
+    assert!(err.contains("`https:***`"), "{err}");
+}
