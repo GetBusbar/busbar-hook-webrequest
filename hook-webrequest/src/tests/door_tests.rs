@@ -117,3 +117,18 @@ fn a_stale_configure_version_is_acked_and_not_applied() {
     assert!(push("http://127.0.0.4:9009/v9", 9));
     assert_eq!(f.entry_live(ticket(2)).origin, "http://127.0.0.4:9009");
 }
+
+/// A stale push is ACKed and not applied even when it would not validate: the version check runs
+/// before validation, so it is neither NACKed nor logged as a refusal.
+#[test]
+fn a_stale_push_that_would_not_validate_is_still_acked() {
+    let f = forwarder("http://127.0.0.1:9001/a");
+    let push = |url: &str, version| {
+        let settings = serde_json::json!({ "url": url });
+        f.configure(settings.as_object().unwrap(), version)
+    };
+    assert!(push("http://127.0.0.2:9008/v8", 8));
+    assert!(push("ftp://not-allowed.example/x", 7), "stale: ACKed");
+    assert_eq!(f.entry_live(ticket(1)).origin, "http://127.0.0.2:9008");
+    assert!(!push("ftp://not-allowed.example/x", 9), "current: NACKed");
+}

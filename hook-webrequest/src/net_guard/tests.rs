@@ -465,3 +465,21 @@ fn an_ambiguous_or_unparsed_url_is_refused_echoing_nothing_past_its_scheme() {
     let err = validate_target_url("https:user:pass@hk.example:badport/x").unwrap_err();
     assert!(err.contains("`https:***`"), "{err}");
 }
+
+/// A schemeless `admin:secret@hk.example/x` parses with scheme `admin`: only `http` and `https`
+/// are echoed as a scheme, any other is `***`.
+#[test]
+fn only_an_http_scheme_is_echoed_by_the_ambiguous_refusal() {
+    for raw in [
+        "admin:secret@hk.example/x",
+        "admin:secret@hk.example:badport/x",
+        "ftp:u:p@hk.example:badport/x",
+    ] {
+        let err = validate_target_url(raw).unwrap_err();
+        assert!(err.contains("ambiguous"), "{raw}: {err}");
+        assert!(err.contains("`***`"), "{raw}: {err}");
+        for leaked in ["admin", "secret", "ftp"] {
+            assert!(!err.contains(leaked), "{raw} echoed {leaked}: {err}");
+        }
+    }
+}

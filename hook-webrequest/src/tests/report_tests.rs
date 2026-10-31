@@ -41,3 +41,14 @@ fn status_never_shows_the_url_path() {
         "https://hooks.example.com/***"
     );
 }
+
+/// `https:user:pass@hk.example/x?k=SECRET` (no `//`) parses and is accepted; neither its status
+/// nor its Debug carries the credential, path or query.
+#[test]
+fn a_slashless_url_with_userinfo_shows_no_credential_in_status_or_debug() {
+    let t = open(br#"{"url":"https:user:pass@hk.example/x?k=SECRET"}"#).unwrap();
+    let shown = format!("{} {t:?}", status(&t));
+    for secret in ["user", "pass", "SECRET", "k="] {
+        assert!(!shown.contains(secret), "leaked {secret}: {shown}");
+    }
+}
