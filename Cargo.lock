@@ -260,6 +260,7 @@ name = "busbar-hook-webrequest"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-test-kit",
  "http",
  "reqwest",
  "serde",

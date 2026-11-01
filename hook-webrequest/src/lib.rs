@@ -50,6 +50,9 @@ pub const ALIAS: &str = "webrequest";
 #[path = "tests/config_tests.rs"]
 mod config_tests;
 #[cfg(test)]
+#[path = "tests/custody_tests.rs"]
+mod custody_tests;
+#[cfg(test)]
 #[path = "tests/door_tests.rs"]
 mod door_tests;
 #[cfg(test)]

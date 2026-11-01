@@ -26,13 +26,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use busbar_contract::abi::hook::{
     slot, ConfigureIn, ConfigureOut, DecideOut, DescribeOut, NotifyIn, StatusOut, TransformOut,
-    VERB_ABSTAIN, VERB_PREFER, VERB_REWRITE,
+    VERB_ABSTAIN, VERB_PREFER, VERB_REJECT, VERB_REWRITE,
 };
 use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED};
 use busbar_contract::abi::host::hook::{Caps, DecideFrame, DecideView, NotifyFrame};
@@ -103,6 +103,12 @@ struct Sent {
 /// The dispatcher's connection-table wake.
 type Wake = busbar_contract::conn::ConnWake;
 
+#[derive(Default)]
+struct ReadState {
+    phase: u8,
+    body_at: usize,
+}
+
 /// THE FAR END, as a connection table: every need is framed; an open is the whole request (kept
 /// in `sent`); each reply is the scripted `(status, reason, body)`, its first read PENDING with
 /// the op's ticket woken from another thread.
@@ -110,7 +116,8 @@ struct Upstream {
     wake: Mutex<Option<Wake>>,
     answer: Mutex<(u32, &'static str, Vec<u8>)>,
     sent: Mutex<Vec<Sent>>,
-    reads: Mutex<HashMap<u64, u8>>,
+    reads: Mutex<HashMap<u64, ReadState>>,
+    body_bytes_read: AtomicUsize,
     next: AtomicU64,
     pended: AtomicU32,
     /// While set, every open is refused (the exchange fails to establish).
@@ -124,6 +131,7 @@ impl Upstream {
             answer: Mutex::new((200, "OK", b"{}".to_vec())),
             sent: Mutex::new(Vec::new()),
             reads: Mutex::new(HashMap::new()),
+            body_bytes_read: AtomicUsize::new(0),
             next: AtomicU64::new(1),
             pended: AtomicU32::new(0),
             fail_open: AtomicBool::new(false),
@@ -178,7 +186,7 @@ impl Conns for Upstream {
             body: desc.body.to_vec(),
             timeout_ms: desc.timeout_ms,
         });
-        self.reads.lock().unwrap().insert(id, 0);
+        self.reads.lock().unwrap().insert(id, ReadState::default());
         Ok(ConnId(id))
     }
     fn write(
@@ -198,13 +206,26 @@ impl Conns for Upstream {
         ticket: u64,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
-        let step = {
-            let mut reads = self.reads.lock().unwrap();
-            let step = reads.get_mut(&conn.0).ok_or(ConnError::Closed)?;
-            *step += 1;
-            *step - 1
-        };
         let (status, reason, body) = self.answer.lock().unwrap().clone();
+        let (step, body_start, body_end) = {
+            let mut reads = self.reads.lock().unwrap();
+            let state = reads.get_mut(&conn.0).ok_or(ConnError::Closed)?;
+            let step = state.phase;
+            if step < 2 {
+                state.phase += 1;
+                (step, 0, 0)
+            } else if step == 2 {
+                let start = state.body_at;
+                let end = start + buf.len().min(body.len().saturating_sub(start));
+                state.body_at = end;
+                if end == body.len() {
+                    state.phase = 3;
+                }
+                (step, start, end)
+            } else {
+                (step, 0, 0)
+            }
+        };
         match step {
             0 => {
                 // The far end has not answered yet: the wake comes later, from elsewhere.
@@ -230,8 +251,14 @@ impl Conns for Upstream {
                 })
             }
             2 => {
-                buf[..body.len()].copy_from_slice(&body);
-                Ok(piece(PieceKind::Body, body.len()))
+                let chunk = &body[body_start..body_end];
+                buf[..chunk.len()].copy_from_slice(chunk);
+                self.body_bytes_read
+                    .fetch_add(chunk.len(), Ordering::SeqCst);
+                Ok(Piece {
+                    end: body_end == body.len(),
+                    ..piece(PieceKind::Body, chunk.len())
+                })
             }
             _ => Ok(piece(PieceKind::Completion, 0)),
         }
@@ -634,7 +661,7 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
     t.push("decide {}: abstain".into());
 
-    // transform: the far end's rewrite crosses as its JSON; a failure abstains.
+    // transform: the far end's rewrite crosses as its JSON; a failure reaches on_error.
     let frame = decide_frame();
     let rewrite = json!({"messages": [{"role": "user", "content": "rewritten"}]});
     b.upstream.answer(
@@ -828,6 +855,67 @@ fn arms() -> [Arm; 2] {
     [Arm::Linked, Arm::Dropped(cdylib())]
 }
 
+#[test]
+fn extension_statuses_preserve_the_1_5_5_body_semantics_through_both_doors() {
+    for arm in arms() {
+        for status in [600, 999] {
+            let b = arm.bind();
+            b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+            b.upstream.answer(
+                status,
+                "Custom",
+                br#"{"reject":{"status":403,"message":"no"}}"#,
+            );
+            assert_ne!(decide_verbs(&b) & VERB_REJECT, 0);
+            assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+            assert!(b.upstream.reads.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn non_utf8_userinfo_keeps_the_1_5_5_basic_authorization_rules() {
+    for arm in arms() {
+        for (url, expected) in [
+            ("http://svc%FF:pw@127.0.0.1:9/hook", None),
+            (
+                "http://user:%FF@127.0.0.1:9/hook",
+                Some(&b"Basic dXNlcjo="[..]),
+            ),
+        ] {
+            let b = arm.bind();
+            b.open(&serde_json::json!({"url":url}).to_string()).unwrap();
+            assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+            let sent = b.upstream.last();
+            let authorization = sent
+                .fields
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+                .map(|(_, value)| value.as_slice());
+            assert_eq!(authorization, expected, "{url}");
+            assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+            assert!(b.upstream.reads.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_notify_redirect_is_acknowledged_without_interpreting_its_body() {
+    for arm in arms() {
+        for (status, reason) in [(301, "Moved Permanently"), (308, "Permanent Redirect")] {
+            let b = arm.bind();
+            b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+            b.upstream.answer(status, reason, b"not JSON");
+            let tap = NotifyFrame::build(&request(), None, true);
+            let done = b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+            assert_eq!(done.outcome, Outcome::Ready);
+            assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+            assert_eq!(b.upstream.sent.lock().unwrap().len(), 1);
+            assert!(b.upstream.reads.lock().unwrap().is_empty());
+        }
+    }
+}
+
 /// A `decide` through the dispatcher; its verbs.
 fn decide_verbs(b: &Bound) -> u32 {
     let done = b.submit(
@@ -1005,6 +1093,75 @@ fn a_cancelled_op_does_not_pin_the_next_fresh_op_to_its_old_target() {
         assert_eq!(sent.target, "http://127.0.0.2:8123");
         assert_eq!(sent.path, b"/new");
         assert!(b.upstream.reads.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn an_oversized_reply_is_refused_before_its_remaining_body_is_read() {
+    let cap = busbar_hook_webrequest::reply::MAX_REPLY_BYTES;
+    let mut body = vec![b' '; cap * 4];
+    body[..2].copy_from_slice(b"{}");
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+        b.upstream.answer(200, "OK", &body[..cap]);
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        assert_eq!(b.upstream.body_bytes_read.load(Ordering::SeqCst), cap);
+
+        b.upstream.body_bytes_read.store(0, Ordering::SeqCst);
+        b.upstream.answer(200, "OK", &body);
+        let failure = decide_failure(&b);
+        assert!(
+            failure.contains(&format!("response exceeded {cap} byte cap")),
+            "{failure}"
+        );
+        assert!(b.upstream.body_bytes_read.load(Ordering::SeqCst) < body.len());
+        assert!(b.upstream.reads.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn error_statuses_keep_their_meaning_when_the_body_exceeds_the_cap() {
+    let body = vec![b'x'; busbar_hook_webrequest::reply::MAX_REPLY_BYTES * 4];
+    for arm in arms() {
+        for (status, reason, expected) in [
+            (503, "Busy", "HTTP status server error (503 Busy)"),
+            (
+                302,
+                "Found",
+                "redirect that was not followed (HTTP status 302)",
+            ),
+        ] {
+            let b = arm.bind();
+            b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+            b.upstream.answer(status, reason, &body);
+            let failure = decide_failure(&b);
+            assert!(failure.contains(expected), "{failure}");
+            assert!(b.upstream.body_bytes_read.load(Ordering::SeqCst) < body.len());
+            assert!(b.upstream.reads.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_notify_reads_the_status_without_collecting_the_response_body() {
+    let body = vec![b'x'; busbar_hook_webrequest::reply::MAX_REPLY_BYTES * 4];
+    for arm in arms() {
+        for (status, reason) in [(200, "OK"), (503, "Busy")] {
+            let b = arm.bind();
+            b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+            b.upstream.answer(status, reason, &body);
+            let tap = NotifyFrame::build(&request(), None, true);
+            let done = b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+            assert_eq!(done.outcome, Outcome::Ready);
+            assert_eq!(b.upstream.body_bytes_read.load(Ordering::SeqCst), 0);
+            if status == 200 {
+                assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+            } else {
+                assert!(warned(&b, &["503", "notify dropped"]));
+            }
+            assert!(b.upstream.reads.lock().unwrap().is_empty());
+        }
     }
 }
 
