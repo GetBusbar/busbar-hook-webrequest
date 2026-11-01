@@ -128,9 +128,8 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
     false
 }
 
-/// The endpoint's answer as the framed http exchange hands it back: the status, its reason phrase and the body (the
-/// exchange holds it only to its own bound, busbar-contract's `REPLY_MAX`, and `Op::exchange` offers no way to
-/// lower it; the check here is what holds it to [`MAX_REPLY_BYTES`]).
+/// The endpoint's answer as the framed http exchange hands it back: its status, reason phrase and
+/// body. The door bounds collection to [`MAX_REPLY_BYTES`]; the check here also bounds direct calls.
 ///
 /// The status rule: 4xx/5xx (400..=599) is a failure, and so is a redirect (3xx: never followed, so
 /// there is no reply to read); everything else carries its body as the reply. An EMPTY body is `{}`,

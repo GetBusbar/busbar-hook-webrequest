@@ -1,7 +1,7 @@
 <!-- fleet:header:begin (rendered by `busbar-release plugin heal` from GetBusbar/busbar-release template/ and busbar's plugins.yaml; edit it there) -->
 # busbar-hook-webrequest
 
-A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/notify/configure/describe/status) to an operator-configured URL and returns the capped JSON reply: a busbar first-party kind:hook plugin (dlopen cdylib).
+A transparent HTTP forwarder that POSTs each decide/transform/notify op envelope to an operator-configured URL and returns the capped JSON reply (configure, status and describe are answered by the plugin itself): a busbar first-party kind:hook plugin (dlopen cdylib).
 
 | kind | alias | crate | busbar | license |
 |---|---|---|---|---|
@@ -57,13 +57,14 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
   anything is dialed.
 - **Redirects are never followed.** The plugin has no HTTP client of its own:
   it hands a framed request to the host's `http` framer through its one
-  declared need, and a 3xx reply is a failure ("redirect not followed"), never
-  followed or relayed (see `interpret` in `hook-webrequest/src/reply.rs` and
-  `hook-webrequest/src/door.rs`). A target cannot redirect the plugin to an
-  internal host.
-- **Tight timeouts**; a reply body over 64 KiB is refused (the exchange
-  buffers up to busbar-contract's `REPLY_MAX` first, and the plugin refuses
-  the body after it is read), and the reply is depth-guarded before parse
+  declared need. For `decide` and `transform`, a 3xx reply fails with "redirect
+  not followed". A `notify` keeps the 1.5.5 fire-and-forget behavior: a 2xx or
+  3xx acknowledges delivery without interpreting the response body; a 4xx or
+  5xx logs a dropped notification. None of these operations follows a redirect,
+  so a target cannot redirect the plugin to an internal host.
+- **Tight timeouts**; `decide`/`transform` response collection refuses a body
+  beyond 64 KiB while reading it, before collecting the offending piece. A `notify`
+  reads only the response head. Decision replies are depth-guarded before parse
   (past 128 levels, `MAX_REPLY_DEPTH`; serde_json's own recursion limit
   binds first and refuses a 128-deep reply as invalid JSON) — a hostile or buggy target cannot blow the stack or get an
   oversized reply relayed.
@@ -81,10 +82,14 @@ See the doc comments at the top of [`hook-webrequest/src/lib.rs`](hook-webreques
 
 | Setting | Required | Default | Notes |
 |---|---|---|---|
-| `url` | yes | — | The `https://` (or loopback `http://`) URL each hook op envelope is POSTed to. Validated against the SSRF guard at load and on every `configure` push; a committed push takes effect immediately (the next `decide`/`transform`/`notify` uses it), not only after a future plugin reload. |
-| `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget (see `MAX_TIMEOUT_MS`'s doc comment in `hook-webrequest/src/config.rs`). Independently pushable via `configure`, applied immediately. |
+| `url` | yes | — | The `https://` (or loopback `http://`) URL each hook op envelope is POSTed to. Validated against the SSRF guard at load and when a `configure` push applies. Newly started operations use a committed target immediately; an operation already pending keeps its opening target until it completes. |
+| `timeout_ms` | no | `5000` | Per-op wall-clock timeout, clamped to `[1, 5000]` — cannot exceed the engine's reference hook budget (see `MAX_TIMEOUT_MS`'s doc comment in `hook-webrequest/src/config.rs`). At open, `null` uses the default; in a partial `configure`, an absent or `null` timeout keeps the live value. |
 
-Any other key is ignored, as 1.5.5 ignored it (so a 1.5.5 document still opens), and logged by name as a warning in the plugin's own log at `open` and on an acknowledged `configure`. A `configure` refusal is a NACK whose reason is written to the same log.
+Any other key is ignored, as 1.5.5 ignored it (so a 1.5.5 document still opens), and logged by name as a warning in the plugin's own log at `open` and when a `configure` push applies. Each push merges only its supplied settings; a refusal commits neither setting and logs the reason. An older configuration version is acknowledged without applying it or emitting settings warnings.
+
+Acknowledged pushes return complete normalized settings through the SDK's configuration checkpoint.
+The host can restore the effective URL and timeout after quarantine even when the latest push was
+partial or empty. Pending operations retain their own opening target through configure or refresh.
 
 ## Build
 
@@ -142,7 +147,7 @@ for the `hooks:` wiring (`kind: hook`, `settings: { url: ... }`).
 
 `cargo test` runs the pure unit tests (`hook-webrequest/src/tests/*`: `config_tests.rs` the
 settings and `configure`, `door_tests.rs` which target a resumed op runs against, `echo_tests.rs`
-the credential-echo canaries, `reply_tests.rs` the reply rules and the per-op meaning of a
+the credential-echo canaries, `custody_tests.rs` canonical URL redaction, `reply_tests.rs` the reply rules and the per-op meaning of a
 failure, `report_tests.rs` the `status`/`describe` documents, `wire_tests.rs` the envelope and
 the request bytes against the 1.5.5 client; and `hook-webrequest/src/net_guard/tests.rs` for the
 SSRF predicates) and the plugin crate's integration tests
@@ -152,7 +157,13 @@ SSRF predicates) and the plugin crate's integration tests
   door (the two are one hook), driven by `conformance.json` through `support/conformance_host.rs`;
 - `forwarder.rs`: loads the *built* cdylib over the real `busbar-plugin-loader` ABI seam against a
   scripted far end, the same seam busbar's engine uses, so it exercises the actual `dlopen`/FFI
-  path rather than calling Rust functions directly (`support/net_ban.rs` is its socket/TLS ban);
+  path rather than calling Rust functions directly. It also covers the existing extension-status,
+  notify-redirect, and non-UTF-8 Basic rules through both doors
+  It also exercises concurrent partial configuration, checkpoint replay, wrong-type refusals and
+  refresh during pending completion or cancellation through both doors
+  (`support/net_ban.rs` is its socket/TLS ban);
+- `target_custody.rs`: on Linux, registers only each owned URL serialization's initialized bytes
+  and checks them before deallocation, with an unwiped control;
 - `declared_secrets.rs` and `reference_url.rs`: `url` is declared reference-capable and not a
   secret, so a `{env:}` reference there resolves in place and a literal passes as written.
 

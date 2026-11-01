@@ -29,6 +29,7 @@
 //! resolution, the resolved-address check and the address pin (DNS rebinding / TOCTOU) belong to the
 //! host's loopback-allowed egress class, which every connection this plugin opens goes through.
 
+use crate::owners::{ParsedUrl, Parts, Text};
 use crate::ALIAS;
 use busbar_contract::abi::sdk::url as sdk_url;
 use busbar_contract::net::{
@@ -185,7 +186,7 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
     if let Some(refusal) = ambiguous_url(raw) {
         return Err(refusal);
     }
-    let url = url::Url::parse(raw).map_err(|e| format!("settings.url is not a valid URL: {e}"))?;
+    let url = ParsedUrl::parse(raw).map_err(|e| format!("settings.url is not a valid URL: {e}"))?;
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
             "settings.url must be an http:// or https:// URL (got '{}')",
@@ -207,7 +208,7 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
             loggable_url(&url)
         ));
     }
-    Ok(url)
+    Ok(url.into_url())
 }
 
 /// The ambiguous-URL refusal (without the `webrequest: ` prefix): `Some(the refusal)` when `raw`
@@ -223,12 +224,12 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
 /// in this plugin's shape, `settings.url ...`.
 #[must_use]
 pub fn ambiguous_url(raw: &str) -> Option<String> {
-    let (shown, from_path) = match url::Url::parse(raw) {
+    let (shown, from_path) = match ParsedUrl::parse(raw) {
         Ok(parsed) => (
             echo_of(&echoable_scheme(parsed.scheme()), "://***"),
-            parsed[url::Position::BeforePath..].to_string(),
+            Text(parsed[url::Position::BeforePath..].to_string()),
         ),
-        Err(_) => (echo_of(&scheme_of(raw), ":***"), raw.to_string()),
+        Err(_) => (echo_of(&scheme_of(raw), ":***"), Text(raw.to_string())),
     };
     // The SDK shows the url it is handed with its userinfo cut; handed the echo, which holds no
     // `@`, it shows the echo.
@@ -280,16 +281,7 @@ fn scheme_of(raw: &str) -> String {
 /// Not the SDK's textual [`sdk_url::cut_userinfo`]: that cuts to the LAST `@`, which over-cuts a
 /// url echoed as parsed; a url with an `@` after its host never gets here ([`ambiguous_url`]).
 pub fn mask_userinfo(url: &url::Url) -> String {
-    if url.username().is_empty() && url.password().is_none() {
-        return url.to_string();
-    }
-    let mut masked = url.clone();
-    // `set_username`/`set_password` fail only for cannot-be-a-base URLs (e.g. `mailto:`), which never
-    // reach here (the scheme is already checked to be http/https) — the error is not actionable if it
-    // ever did occur, so it's fine to ignore.
-    let _ = masked.set_password(None);
-    let _ = masked.set_username("***");
-    masked.to_string()
+    display_url(url, false, false, false)
 }
 
 /// The target URL in a form that is safe to echo ANYWHERE: the ONE masker every URL echo in this
@@ -304,27 +296,59 @@ pub fn mask_userinfo(url: &url::Url) -> String {
 /// The fragment goes too: it never reaches the wire on an HTTP request, so it can only be noise or
 /// an accident, and there is no reason to echo it.
 pub fn reportable_url(url: &url::Url) -> String {
-    let mut safe = url.clone();
-    safe.set_fragment(None);
-    let had_query = safe.query().is_some();
-    safe.set_query(None);
-    let base = mask_userinfo(&safe);
-    if had_query {
-        format!("{base}?<redacted>")
-    } else {
-        base
-    }
+    display_url(url, false, true, true)
 }
 
 /// The target URL as a `Debug` rendering or a log line names it: [`reportable_url`] with the path
 /// cut too (`/***`), for a sidecar may take its key in the path as well as the query.
 #[must_use]
 pub fn loggable_url(url: &url::Url) -> String {
-    let mut safe = url.clone();
-    if !matches!(safe.path(), "" | "/") {
-        safe.set_path("/***");
+    display_url(url, true, true, true)
+}
+
+fn display_url(url: &url::Url, cut_path: bool, cut_query: bool, cut_fragment: bool) -> String {
+    use url::Position;
+
+    let prefix = &url[..Position::BeforeUsername];
+    let userinfo = if url.username().is_empty() && url.password().is_none() {
+        ""
+    } else {
+        "***@"
+    };
+    let authority = &url[Position::BeforeHost..Position::BeforePath];
+    let path = if cut_path && !matches!(url.path(), "" | "/") {
+        if url.cannot_be_a_base() {
+            "%2F***"
+        } else {
+            "/***"
+        }
+    } else {
+        url.path()
+    };
+    let query = url
+        .query()
+        .map(|q| if cut_query { "<redacted>" } else { q });
+    let fragment = if cut_fragment { None } else { url.fragment() };
+    let capacity = prefix.len()
+        + userinfo.len()
+        + authority.len()
+        + path.len()
+        + query.map_or(0, |q| q.len() + 1)
+        + fragment.map_or(0, |f| f.len() + 1);
+    let mut out = String::with_capacity(capacity);
+    out.push_str(prefix);
+    out.push_str(userinfo);
+    out.push_str(authority);
+    out.push_str(path);
+    if let Some(query) = query {
+        out.push('?');
+        out.push_str(query);
     }
-    reportable_url(&safe)
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 /// Every part of `url` that can carry a credential, each also percent-decoded
@@ -332,27 +356,29 @@ pub fn loggable_url(url: &url::Url) -> String {
 /// password. What [`scrub`] cuts (longest first, empty parts dropped).
 #[must_use]
 pub fn secret_parts(url: &url::Url) -> Vec<String> {
-    let mut parts = vec![
+    let mut parts = Parts(vec![
         url.as_str().to_string(),
         mask_userinfo(url),
         reportable_url(url),
-    ];
+    ]);
     if !matches!(url.path(), "" | "/") {
-        parts.push(url.path().to_string());
+        parts.0.push(url.path().to_string());
     }
     if let Some(q) = url.query().filter(|q| !q.is_empty()) {
-        parts.push(q.to_string());
+        parts.0.push(q.to_string());
     }
     if let Some(p) = url.password() {
-        parts.push(p.to_string());
+        parts.0.push(p.to_string());
     }
-    parts.push(url.username().to_string());
+    parts.0.push(url.username().to_string());
     // A far end may echo the request's `Authorization` back: the header value and its token.
     if let Some(value) = crate::wire::basic_authorization(url) {
-        parts.extend(value.strip_prefix("Basic ").map(str::to_owned));
-        parts.push(value);
+        parts
+            .0
+            .extend(value.strip_prefix("Basic ").map(str::to_owned));
+        parts.0.push(value);
     }
-    sdk_url::and_decoded(parts)
+    sdk_url::and_decoded(parts.into_vec())
 }
 
 /// `text` (the host's words, which may quote the target) with every one of `parts`

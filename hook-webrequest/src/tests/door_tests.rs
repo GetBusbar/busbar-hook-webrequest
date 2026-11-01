@@ -26,57 +26,9 @@ fn ticket(slot: u32) -> Ticket {
 
 fn configure(f: &Forwarder, url: &str) {
     let settings = serde_json::json!({ "url": url });
-    assert!(f.configure(settings.as_object().unwrap(), 2), "acked");
-}
-
-/// An op that parked against target A is resumed against A even when a `configure` moved the
-/// forwarder to B in between: the origin handed to the exchange and the secrets a failure is
-/// scrubbed of are A's; a fresh ticket reads B; a finished op leaves nothing behind.
-#[test]
-fn a_resumed_op_runs_against_the_target_it_parked_on() {
-    let f = forwarder(&format!("http://127.0.0.1:9001/{A_SECRET}"));
-    let parked = ticket(1);
-
-    let first = f.entry_live(parked);
-    assert_eq!(first.origin, "http://127.0.0.1:9001");
-    f.park_live(parked, &first);
-
-    configure(&f, &format!("http://127.0.0.2:9002/{B_SECRET}"));
-
-    let resumed = f.entry_live(parked);
-    assert_eq!(resumed.origin, "http://127.0.0.1:9001", "A's origin");
-    assert!(Arc::ptr_eq(&first, &resumed));
-    let failure = ConnFailure::Failed(format!("reset by http://127.0.0.1:9001/{A_SECRET}"));
-    let text = transport_failure(&resumed, &failure);
-    assert!(!text.contains(A_SECRET), "scrubbed of A's secret: {text}");
-
-    let fresh = f.entry_live(ticket(2));
-    assert_eq!(fresh.origin, "http://127.0.0.2:9002", "a fresh op reads B");
-
-    f.release_live(parked);
-    assert_eq!(f.entry_live(parked).origin, "http://127.0.0.2:9002");
-}
-
-/// A new generation on a recycled slot never inherits a cancelled op's entry, and parking on it
-/// drops the cancelled op's entry (the slot's older generation), so entries do not pile up.
-#[test]
-fn a_recycled_slot_does_not_inherit_a_cancelled_ops_target() {
-    let f = forwarder("http://127.0.0.1:9001/a");
-    let old = ticket(7);
-    let live = f.entry_live(old);
-    f.park_live(old, &live);
-    configure(&f, "http://127.0.0.2:9002/b");
-    let new = Ticket {
-        slot: 7,
-        generation: 2,
-    };
-    assert_eq!(f.entry_live(new).origin, "http://127.0.0.2:9002");
-    // The new generation's op parks; the cancelled generation's entry goes with it.
-    f.park_live(new, &f.entry_live(new));
-    assert_eq!(
-        f.entry_live(old).origin,
-        "http://127.0.0.2:9002",
-        "the cancelled op's entry was dropped"
+    assert!(
+        f.configure(settings.as_object().unwrap(), 2).is_ok(),
+        "acked"
     );
 }
 
@@ -88,23 +40,116 @@ fn concurrent_partial_configures_preserve_both_updates() {
         let url = scope.spawn(|| {
             let settings = serde_json::json!({"url":"http://127.0.0.2:9002/b"});
             start.wait();
-            assert!(f.configure(settings.as_object().unwrap(), 2));
+            assert!(f.configure(settings.as_object().unwrap(), 2).is_ok());
         });
         let timeout = scope.spawn(|| {
             let settings = serde_json::json!({"timeout_ms":777});
             start.wait();
-            assert!(f.configure(settings.as_object().unwrap(), 2));
+            assert!(f.configure(settings.as_object().unwrap(), 2).is_ok());
         });
         url.join().unwrap();
         timeout.join().unwrap();
     });
-    let live = f.entry_live(ticket(1));
+    let live = f.live();
     assert_eq!(live.url.as_str(), "http://127.0.0.2:9002/b");
     assert_eq!(live.timeout, std::time::Duration::from_millis(777));
 }
 
+#[test]
+fn configuration_checkpoints_preserve_normalized_url_timeout_and_partial_semantics() {
+    let initial = "http://user:secret@127.0.0.1:9001/first";
+    let f = forwarder(initial);
+    let push = |settings: serde_json::Value, version| {
+        f.configure_checkpoint(settings.as_object().unwrap(), version)
+            .unwrap()
+            .unwrap()
+    };
+    let first = push(serde_json::json!({"timeout_ms": 777}), 2);
+    assert_eq!((first.revision, first.settings_version), (1, 2));
+    let second = push(
+        serde_json::json!({"url": "http://next:credential@127.0.0.2:9002/second"}),
+        2,
+    );
+    assert_eq!((second.revision, second.settings_version), (2, 2));
+    let empty = push(serde_json::json!({}), 3);
+    let null = push(serde_json::json!({"timeout_ms": null}), 3);
+    assert_eq!(empty.settings(), null.settings());
+    assert_eq!((null.revision, null.settings_version), (4, 3));
+    let stale = push(
+        serde_json::json!({"url": false, "timeout_ms": "invalid"}),
+        1,
+    );
+    assert_eq!((stale.revision, stale.settings_version), (4, 3));
+    assert_eq!(stale.settings(), null.settings());
+    assert!(f
+        .configure_checkpoint(
+            serde_json::json!({"timeout_ms": "invalid"})
+                .as_object()
+                .unwrap(),
+            4
+        )
+        .is_err());
+    let current = f.live();
+    let restored = forwarder(initial);
+    let settings: serde_json::Value = serde_json::from_slice(null.settings()).unwrap();
+    restored
+        .configure(settings.as_object().unwrap(), null.settings_version)
+        .unwrap();
+    assert_eq!(restored.live().url, current.url);
+    assert_eq!(
+        restored.live().timeout,
+        std::time::Duration::from_millis(777)
+    );
+    assert!(!format!("{null:?}").contains("credential"));
+}
+
+#[test]
+fn concurrent_equal_version_checkpoints_capture_the_complete_serialized_state() {
+    let f = forwarder("http://127.0.0.1:9001/first");
+    let start = std::sync::Barrier::new(2);
+    let (url, timeout) = std::thread::scope(|scope| {
+        let url = scope.spawn(|| {
+            start.wait();
+            f.configure_checkpoint(
+                serde_json::json!({"url":"http://127.0.0.2:9002/second"})
+                    .as_object()
+                    .unwrap(),
+                2,
+            )
+            .unwrap()
+            .unwrap()
+        });
+        let timeout = scope.spawn(|| {
+            start.wait();
+            f.configure_checkpoint(
+                serde_json::json!({"timeout_ms":777}).as_object().unwrap(),
+                2,
+            )
+            .unwrap()
+            .unwrap()
+        });
+        (url.join().unwrap(), timeout.join().unwrap())
+    });
+    assert_ne!(url.revision, timeout.revision);
+    let latest = if url.revision > timeout.revision {
+        url
+    } else {
+        timeout
+    };
+    let restored = forwarder("http://127.0.0.1:9001/first");
+    let settings: serde_json::Value = serde_json::from_slice(latest.settings()).unwrap();
+    restored
+        .configure(settings.as_object().unwrap(), latest.settings_version)
+        .unwrap();
+    assert_eq!(restored.live().url.as_str(), "http://127.0.0.2:9002/second");
+    assert_eq!(
+        restored.live().timeout,
+        std::time::Duration::from_millis(777)
+    );
+}
+
 fn current_live(f: &Forwarder) -> Arc<Live> {
-    f.entry_live(ticket(1))
+    f.live()
 }
 
 // This wrapper only exposes a Weak witness for the real Forwarder's state. The actual

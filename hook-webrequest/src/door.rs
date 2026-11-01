@@ -16,8 +16,6 @@
 //!   and logged as a warning at `open`, `refresh` and an acknowledged `configure`.
 //! * `status` / `describe` — the forwarder's own documents ([`crate::report`]), never the target's.
 
-use std::cell::Cell;
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::Poll;
@@ -27,18 +25,18 @@ use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, KEEP_NAMED,
 };
 use busbar_contract::abi::mechanism::door::{Rewrite, Statement};
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 use busbar_contract::abi::sdk::cred::Cred;
 use busbar_contract::abi::sdk::door::{abi_str, alias, statement};
-use busbar_contract::abi::sdk::exchange::{Op, Request, SealedField};
+use busbar_contract::abi::sdk::exchange::{Op, OpFailure, Request, SealedField, REPLY_OVER_BOUND};
 use busbar_contract::abi::sdk::hook::{
-    lower_decide_reply, lower_transform_reply, statement_with_tail, tail, Decoded, DecodedTap,
-    Hook, HookOpen, RewriteVerdict, Verdict,
+    lower_decide_reply, lower_transform_reply, statement_with_tail, tail, ConfigureCheckpoint,
+    Decoded, DecodedTap, Hook, HookOpen, RewriteVerdict, Verdict,
 };
 use busbar_contract::hook_wire::{OP_DECIDE, OP_NOTIFY, OP_TRANSFORM};
 
 use crate::config::{self, Target};
+use crate::owners::Parts;
 use crate::{reply, report, wire};
 
 /// The need index every op's exchange establishes on.
@@ -72,6 +70,7 @@ busbar_contract::statement_extensions!(
     /// written (never refused as a secret literal). The value is not a secret: it is never lent.
     /// A reference anywhere else is refused (OWNER RULING, CHIP-REVIEW-v4 change 2).
     pub EXTENSIONS: [
+    (busbar_contract::abi::mechanism::extensions::EXT_DECLARES, include_bytes!("../declares.json")),
     (busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS, br#"["url"]"#),
 ]);
 
@@ -96,11 +95,9 @@ pub const STATEMENT: Statement = Statement {
 #[derive(Debug)]
 pub struct Forwarder {
     live: RwLock<Arc<Live>>,
-    /// The [`Live`] each parked op's exchange was built from, by its ticket.
-    parked: Mutex<HashMap<Ticket, Arc<Live>>>,
     /// Serialises `configure` (validate, merge, version check and swap) and holds the highest
     /// version applied: a push older than it is acknowledged and not applied.
-    applied: Mutex<u64>,
+    applied: Mutex<(u64, u64)>,
 }
 
 /// A [`Target`] with what every op's exchange needs of it, built once when the target is set (at
@@ -121,7 +118,7 @@ pub(crate) struct Live {
     timeout_ms: u64,
     /// What a failure's text is scrubbed of ([`crate::net_guard::secret_parts`]), computed once with
     /// the target rather than for every failed op.
-    secrets: Vec<String>,
+    secrets: Parts,
 }
 
 impl Deref for Live {
@@ -160,7 +157,7 @@ impl Live {
             plain,
             sealed,
             timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
-            secrets: crate::net_guard::secret_parts(&target.url),
+            secrets: Parts(crate::net_guard::secret_parts(&target.url)),
             target,
         })
     }
@@ -183,6 +180,14 @@ impl Live {
     }
 }
 
+impl Drop for Live {
+    fn drop(&mut self) {
+        drop(busbar_contract::abi::sdk::cred::Held::new(std::mem::take(
+            &mut self.request_target,
+        )));
+    }
+}
+
 /// What an op makes of the target's answer: its status, reason phrase and body.
 type Reading = fn(u16, Option<&str>, &[u8]) -> Result<serde_json::Value, String>;
 
@@ -196,52 +201,17 @@ impl Forwarder {
     pub(crate) fn over(live: Arc<Live>) -> Self {
         Self {
             live: RwLock::new(live),
-            parked: Mutex::new(HashMap::new()),
-            applied: Mutex::new(0),
+            applied: Mutex::new((0, 0)),
         }
     }
 
-    /// The [`Live`] an op entering on `ticket` runs against.
-    ///
-    /// The request is built, and the target read, only on an op's FIRST entry; the exchange it parks
-    /// is resumed against that request. So a re-entry (the op's wake) uses the [`Live`] its first
-    /// entry recorded ([`Forwarder::park_live`]), never the current one: a `configure` between the
-    /// two must not hand the old request to the new origin, nor scrub its failure with the new
-    /// target's secrets. Only a first entry reads the live target.
-    pub(crate) fn entry_live(&self, ticket: Ticket) -> Arc<Live> {
-        self.parked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&ticket)
-            .map_or_else(|| self.live(), Arc::clone)
+    /// The SDK retains the original target with this operation through pending re-entries and
+    /// configuration changes, and releases it on cancellation or completion.
+    pub(crate) fn entry_live(&self, on: &Op<'_>) -> Result<Arc<Live>, &'static str> {
+        on.context(|| self.live())
     }
 
-    /// Record the [`Live`] a parked op's exchange was built from.
-    ///
-    /// KNOWN LIMIT: an op cannot be told whether it is resuming or fresh (the SDK's `Op` does not
-    /// expose it), so an entry is trusted by its ticket alone. An op cancelled while parked leaves its
-    /// entry, and a fresh op that lands on the SAME ticket (same generation) before anything else
-    /// replaces it reuses that op's older, self-consistent [`Live`] (never a mix of two targets'
-    /// request and credentials). A recycled slot gets a new generation, so it never matches;
-    /// parking on it drops the slot's older entries. This closes when core exposes resume.
-    pub(crate) fn park_live(&self, ticket: Ticket, live: &Arc<Live>) {
-        if ticket.is_none() {
-            return;
-        }
-        let mut parked = self.parked.lock().unwrap_or_else(PoisonError::into_inner);
-        parked.retain(|t, _| t.slot != ticket.slot);
-        parked.insert(ticket, Arc::clone(live));
-    }
-
-    /// The op on `ticket` is done: forget what it parked.
-    pub(crate) fn release_live(&self, ticket: Ticket) {
-        self.parked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&ticket);
-    }
-
-    fn live(&self) -> Arc<Live> {
+    pub(crate) fn live(&self) -> Arc<Live> {
         Arc::clone(&self.live.read().unwrap_or_else(PoisonError::into_inner))
     }
 
@@ -250,35 +220,47 @@ impl Forwarder {
     fn post(
         &self,
         on: &Op<'_>,
-        op: &str,
-        payload: impl FnOnce() -> serde_json::Value,
+        head_only: bool,
+        payload: impl FnOnce(&mut Vec<u8>) -> Result<(), serde_json::Error>,
         read: Reading,
     ) -> Poll<Result<serde_json::Value, String>> {
-        let ticket = on.ticket();
-        let live = self.entry_live(ticket);
-        let unsendable = Cell::new(None);
-        let answer = on.exchange_sealed(NEED, Some(&live.origin), || {
-            self.park_live(ticket, &live);
-            wire::envelope(op, &payload())
-                .map(|body| live.request(body))
-                .map_err(|e| {
-                    unsendable.set(Some(e));
-                    ConnFailure::Refused(String::new())
-                })
-        });
-        if answer.is_ready() {
-            self.release_live(ticket);
-        }
-        if let Some(e) = unsendable.take() {
-            return Poll::Ready(Err(e));
-        }
+        let live = match self.entry_live(on) {
+            Ok(live) => live,
+            Err(why) => return Poll::Ready(Err(why.to_owned())),
+        };
+        let answer = on.exchange_sealed_bounded_with_head(
+            NEED,
+            Some(&live.origin),
+            reply::MAX_REPLY_BYTES,
+            head_only,
+            || {
+                let mut body = Vec::new();
+                payload(&mut body).map_err(|e| {
+                    format!("{}: failed to serialize op envelope: {e}", crate::ALIAS)
+                })?;
+                Ok(live.request(body))
+            },
+        );
         answer.map(|r| match r {
             Ok(got) => {
                 let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
                 let phrase = status_phrase(&live, phrase.as_deref());
                 read(got.status, phrase.as_deref(), &got.body)
             }
-            Err(failure) => Err(transport_failure(&live, &failure)),
+            Err(failure) => {
+                if let Some(head) = failure.head().filter(|h| (300..600).contains(&h.status)) {
+                    let phrase = head.reason.as_deref().map(String::from_utf8_lossy);
+                    let phrase = status_phrase(&live, phrase.as_deref());
+                    return read(head.status, phrase.as_deref(), &[]);
+                }
+                match failure.into_cause() {
+                    OpFailure::Unbuilt(reason) => Err(reason),
+                    OpFailure::Conn(ConnFailure::Failed(reason)) if reason == REPLY_OVER_BOUND => {
+                        Err(reply::cap_exceeded())
+                    }
+                    OpFailure::Conn(failure) => Err(transport_failure(&live, &failure)),
+                }
+            }
         })
     }
 }
@@ -302,8 +284,8 @@ impl Hook for Forwarder {
     fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
         self.post(
             op,
-            OP_DECIDE,
-            || view.projection_json(OP_DECIDE),
+            false,
+            |body| view.write_projection(OP_DECIDE, None, body),
             reply::interpret,
         )
         .map(|r| lower_decide_reply(reply::decide(r)))
@@ -312,54 +294,90 @@ impl Hook for Forwarder {
     fn transform(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
         self.post(
             op,
-            OP_TRANSFORM,
-            || view.projection_json(OP_TRANSFORM),
+            false,
+            |body| view.write_projection(OP_TRANSFORM, None, body),
             reply::interpret,
         )
         .map(|r| lower_transform_reply(reply::transform(r)))
     }
 
     fn notify(&self, tap: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
-        self.post(op, OP_NOTIFY, || tap.projection_json(), delivery)
-            .map(reply::notify)
+        self.post(
+            op,
+            true,
+            |body| tap.write_projection(OP_NOTIFY, None, body),
+            delivery,
+        )
+        .map(reply::notify)
     }
 
     fn configure(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
         version: u64,
-    ) -> bool {
+    ) -> Result<(), String> {
+        self.configure_checkpoint(settings, version).map(|_| ())
+    }
+
+    fn configure_checkpoint(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        version: u64,
+    ) -> Result<Option<ConfigureCheckpoint>, String> {
         // One configure at a time: the validation (the SSRF check and the merge) reads the live
         // target it is merged over, and the version check and the swap must not interleave with
         // another push's.
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
         // A push older than the applied one is acknowledged and not applied, whether or not it
         // would validate: the version check comes first.
-        if version < *applied {
-            return true;
-        }
         let current = self.live();
-        match config::configure(&current.target, settings) {
-            Ok(None) => {
-                *applied = version;
-                drop(applied);
-                config::log_warnings(settings);
-                true
-            }
-            Ok(Some(next)) => {
-                let next = Live::new(next);
-                *self.live.write().unwrap_or_else(PoisonError::into_inner) = next;
-                *applied = version;
-                drop(applied);
-                config::log_warnings(settings);
-                true
-            }
+        let stale = version < applied.0;
+        let next = match if stale {
+            Ok(None)
+        } else {
+            config::configure(&current.target, settings)
+        } {
+            Ok(next) => next.map(Live::new),
             Err(reason) => {
                 drop(applied);
                 tracing::warn!(diag = %crate::CONFIGURE_REFUSED, "{reason}");
-                false
+                return Err(reason);
             }
+        };
+        let revision = if stale {
+            applied.1
+        } else {
+            applied
+                .1
+                .checked_add(1)
+                .ok_or("configuration checkpoint revision exhausted")?
+        };
+        let settings_version = if stale { applied.0 } else { version };
+        let target = next.as_deref().unwrap_or(&current);
+        #[derive(serde::Serialize)]
+        struct Snapshot<'a> {
+            url: &'a str,
+            timeout_ms: u64,
         }
+        // Serialize borrowed fields directly: credential-bearing URL text is never cloned into
+        // a temporary JSON DOM. Construct the wiping checkpoint before publishing this change.
+        let bytes = serde_json::to_vec(&Snapshot {
+            url: target.target.url.as_str(),
+            timeout_ms: target.timeout_ms,
+        })
+        .map_err(|_| "cannot encode complete hook configuration")?;
+        let checkpoint = ConfigureCheckpoint::new(revision, settings_version, bytes)?;
+        if let Some(next) = next {
+            *self.live.write().unwrap_or_else(PoisonError::into_inner) = next;
+        }
+        if !stale {
+            *applied = (version, revision);
+        }
+        drop(applied);
+        if !stale {
+            config::log_warnings(settings);
+        }
+        Ok(Some(checkpoint))
     }
 
     fn status(&self) -> serde_json::Value {

@@ -27,6 +27,7 @@
 pub mod config;
 pub mod door;
 pub mod net_guard;
+mod owners;
 pub mod reply;
 pub mod report;
 pub mod wire;

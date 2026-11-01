@@ -3,6 +3,7 @@
 
 //! The settings document, the validated [`Target`], and `configure`'s commit-on-ack merge.
 
+use crate::owners::{ParsedUrl, SettingsValue, Text};
 use crate::{net_guard, ALIAS, TIMEOUT_CLAMPED};
 use serde::Deserialize;
 use std::time::Duration;
@@ -39,8 +40,8 @@ pub fn unknown_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Ve
 /// a JSON object (`open` refuses those).
 #[must_use]
 pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
-    match serde_json::from_slice::<serde_json::Value>(settings) {
-        Ok(serde_json::Value::Object(map)) => unknown_keys(&map),
+    match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
+        Ok(value) => value.as_object().map_or_else(Vec::new, unknown_keys),
         _ => Vec::new(),
     }
 }
@@ -50,10 +51,14 @@ pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
 #[derive(Deserialize, Default)]
 struct Config {
     /// Absent reads as blank, and a blank url is refused in one set of words (`settings.url is required`).
-    #[serde(default)]
-    url: String,
+    #[serde(default, deserialize_with = "owned_url")]
+    url: Text,
     #[serde(default)]
     timeout_ms: Option<u64>,
+}
+
+fn owned_url<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Text, D::Error> {
+    String::deserialize(de).map(Text)
 }
 
 /// The forwarding target: a validated URL and its timeout, taken together so `configure` swaps both
@@ -65,6 +70,12 @@ pub struct Target {
     pub url: url::Url,
     /// The wall-clock bound of one op, in `[1ms, MAX_TIMEOUT_MS]`.
     pub timeout: Duration,
+}
+
+impl Drop for Target {
+    fn drop(&mut self) {
+        crate::owners::wipe_url(&mut self.url);
+    }
 }
 
 impl std::fmt::Debug for Target {
@@ -129,10 +140,10 @@ pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
 /// [`log_warnings`] over a settings document as `open` reads it; nothing for a document that is not a
 /// JSON object (`open` refuses those).
 pub fn log_warnings_in(settings: &[u8]) {
-    if let Ok(serde_json::Value::Object(map)) =
-        serde_json::from_slice::<serde_json::Value>(settings)
-    {
-        log_warnings(&map);
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
+        if let Some(map) = value.as_object() {
+            log_warnings(map);
+        }
     }
 }
 
@@ -140,8 +151,8 @@ pub fn log_warnings_in(settings: &[u8]) {
 /// object (`open` refuses those).
 #[must_use]
 pub fn warnings_in(settings: &[u8]) -> Vec<String> {
-    match serde_json::from_slice::<serde_json::Value>(settings) {
-        Ok(serde_json::Value::Object(map)) => warnings(&map),
+    match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
+        Ok(value) => value.as_object().map_or_else(Vec::new, warnings),
         _ => Vec::new(),
     }
 }
@@ -194,7 +205,9 @@ pub fn configure(
             let raw = v
                 .as_str()
                 .ok_or_else(|| nack("settings.url is present but not a string"))?;
-            Some(net_guard::refuse_target_url(raw).map_err(|reason| nack(&reason))?)
+            Some(ParsedUrl::new(
+                net_guard::refuse_target_url(raw).map_err(|reason| nack(&reason))?,
+            ))
         }
     };
     // `null` is absent, as `open` reads it (the default).
@@ -210,12 +223,8 @@ pub fn configure(
     if new_url.is_none() && new_timeout.is_none() {
         return Ok(None);
     }
-    let mut next = live.clone();
-    if let Some(url) = new_url {
-        next.url = url;
-    }
-    if let Some(timeout) = new_timeout {
-        next.timeout = timeout;
-    }
-    Ok(Some(next))
+    Ok(Some(Target {
+        url: new_url.map_or_else(|| live.url.clone(), ParsedUrl::into_url),
+        timeout: new_timeout.unwrap_or(live.timeout),
+    }))
 }

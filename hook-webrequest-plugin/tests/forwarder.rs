@@ -758,14 +758,14 @@ fn script(arm: &Arm) -> Vec<String> {
         .configure(r#"{"url": "https://169.254.169.254/"}"#, 9)
         .expect_err("a blocked https URL is a NACK too");
     assert!(
-        nack.contains("did not acknowledge settings_version 9"),
+        nack.contains("configure() rejected: settings.url") && nack.contains("SSRF guard"),
         "{nack}"
     );
     let nack = b
         .configure(r#"{"url": "http://169.254.169.254/"}"#, 8)
         .expect_err("a blocked URL is a NACK");
     assert!(
-        nack.contains("did not acknowledge settings_version 8"),
+        nack.contains("configure() rejected: settings.url") && nack.contains("SSRF guard"),
         "{nack}"
     );
     let s = b.status();
@@ -1696,7 +1696,10 @@ fn a_pending_failure_scrubs_the_original_target_after_configure_through_both_doo
         b.dispatcher.recycle(ticket);
         assert_eq!(called.outcome, Outcome::Failed);
         let error = error_of(called.error.as_deref());
-        assert!(error.contains("503") && error.contains("denied"), "{error}");
+        assert!(
+            error.contains(&SERVICE_UNAVAILABLE.to_string()) && error.contains("denied"),
+            "{error}"
+        );
         let warns = b.recorder.warns();
         assert!(!warns.is_empty());
         for text in std::iter::once(&error).chain(warns.iter()) {
