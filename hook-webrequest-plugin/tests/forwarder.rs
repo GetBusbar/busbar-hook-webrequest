@@ -65,6 +65,13 @@ mod net_ban;
 /// The URL every opened forwarder is configured with: loopback plaintext, userinfo, a query.
 const URL: &str = "http://user:pa%20ss@127.0.0.1:9/hook?x=1";
 
+// The existing opaque CONFIGURE extension's v1 envelope: two little-endian u64 words,
+// followed by the complete normalized settings document. No new SDK API is needed to read it.
+const CONFIGURATION_CHECKPOINT_KEY: &str = "hook.configure_checkpoint.v1";
+const CONFIGURATION_WORD_BYTES: usize = std::mem::size_of::<u64>();
+const CONFIGURATION_CHECKPOINT_PREFIX_BYTES: usize = CONFIGURATION_WORD_BYTES * 2;
+type ConfigurationSnapshot = (u64, u64, Value);
+
 /// This crate's built cdylib (uplifted or under `deps`, newest wins). A missing artifact is a
 /// failure, never a skip: this test IS the dropped-in door's proof.
 fn cdylib() -> PathBuf {
@@ -477,6 +484,17 @@ impl Bound {
 
     /// `configure` with `settings` at `version`: `Ok` with the acked version, else the text.
     fn configure(&self, settings: &str, version: u64) -> Result<u64, String> {
+        self.configure_snapshot(settings, version)
+            .map(|(acked, _)| acked)
+    }
+
+    /// Read the existing opaque reply extension before releasing its lease. The regression uses
+    /// the old raw CONFIGURE surface, so an absent checkpoint is a behavior failure.
+    fn configure_snapshot(
+        &self,
+        settings: &str,
+        version: u64,
+    ) -> Result<(u64, Option<ConfigurationSnapshot>), String> {
         let mut f = Frame::new(
             ConfigureIn {
                 head: in_head(),
@@ -490,8 +508,49 @@ impl Bound {
             blank_out::<ConfigureOut>(),
         );
         let called = self.plugin.call(slot::CONFIGURE, &mut f);
+        let extension = f.out.head.extensions;
+        let bytes = if extension.len == 0 {
+            Vec::new()
+        } else {
+            assert!(!extension.ptr.is_null());
+            // SAFETY: the loader validated this reply; its lease is held until RELEASE below.
+            unsafe { std::slice::from_raw_parts(extension.ptr, extension.len) }.to_vec()
+        };
+        if called.lease != 0 {
+            let mut release = Frame::new(
+                ReleaseIn {
+                    head: in_head(),
+                    lease: called.lease,
+                },
+                out_head(),
+            );
+            assert_eq!(
+                self.plugin.call(life::RELEASE, &mut release).outcome,
+                Outcome::Ready
+            );
+        }
         match called.outcome {
-            Outcome::Ready => Ok(f.out.acked_version),
+            Outcome::Ready => {
+                let snapshot = busbar_contract::abi::mechanism::extensions::get(
+                    &bytes,
+                    CONFIGURATION_CHECKPOINT_KEY,
+                )
+                .map(|value| {
+                    assert!(value.len() > CONFIGURATION_CHECKPOINT_PREFIX_BYTES);
+                    let revision =
+                        u64::from_le_bytes(value[..CONFIGURATION_WORD_BYTES].try_into().unwrap());
+                    let version = u64::from_le_bytes(
+                        value[CONFIGURATION_WORD_BYTES..CONFIGURATION_CHECKPOINT_PREFIX_BYTES]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let settings =
+                        serde_json::from_slice(&value[CONFIGURATION_CHECKPOINT_PREFIX_BYTES..])
+                            .expect("complete JSON settings");
+                    (revision, version, settings)
+                });
+                Ok((f.out.acked_version, snapshot))
+            }
             _ => Err(error_of(called.error.as_deref())),
         }
     }
@@ -1460,5 +1519,194 @@ fn red_only_a_204_is_an_empty_abstain() {
         b.upstream.answer(200, "OK", b"");
         let failed = decide_failure(&b);
         assert!(failed.contains("empty reply (HTTP status 200)"), "{failed}");
+    }
+}
+
+#[test]
+fn concurrent_partial_configures_merge_through_both_loaded_doors() {
+    const SHARED_VERSION: u64 = 2;
+    const MERGED_TIMEOUT_MS: u64 = 777;
+    const MOVED_URL: &str = "http://127.0.0.2:8123/moved";
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let url = scope.spawn(|| {
+                start.wait();
+                b.configure(&json!({"url": MOVED_URL}).to_string(), SHARED_VERSION)
+            });
+            let timeout = scope.spawn(|| {
+                start.wait();
+                b.configure(
+                    &json!({"timeout_ms": MERGED_TIMEOUT_MS}).to_string(),
+                    SHARED_VERSION,
+                )
+            });
+            assert_eq!(url.join().unwrap(), Ok(SHARED_VERSION));
+            assert_eq!(timeout.join().unwrap(), Ok(SHARED_VERSION));
+        });
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        let sent = b.upstream.last();
+        assert_eq!(sent.target, "http://127.0.0.2:8123");
+        assert_eq!(sent.path, b"/moved");
+        assert_eq!(sent.timeout_ms, MERGED_TIMEOUT_MS);
+        assert_eq!(
+            b.status()["status"]["settings"]["timeout_ms"],
+            MERGED_TIMEOUT_MS
+        );
+        assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+    }
+}
+
+#[test]
+fn complete_checkpoints_keep_empty_null_stale_and_refused_pushes_through_both_doors() {
+    const CURRENT_VERSION: u64 = 8;
+    const STALE_VERSION: u64 = CURRENT_VERSION - 1;
+    const NEXT_VERSION: u64 = CURRENT_VERSION + 1;
+    const MOVED_URL: &str = "http://127.0.0.2:8123/moved";
+    const MERGED_TIMEOUT_MS: u64 = 777;
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+        let (_, first) = b
+            .configure_snapshot(&json!({"url": MOVED_URL}).to_string(), CURRENT_VERSION)
+            .unwrap();
+        let first = first.expect("an acknowledged configure returns complete settings");
+        let (_, second) = b
+            .configure_snapshot(
+                &json!({"timeout_ms": MERGED_TIMEOUT_MS}).to_string(),
+                CURRENT_VERSION,
+            )
+            .unwrap();
+        let second = second.expect("equal-version partial update returns complete settings");
+        assert!(second.0 > first.0);
+        let expected = json!({"url": MOVED_URL, "timeout_ms": MERGED_TIMEOUT_MS});
+        assert_eq!(second.1, CURRENT_VERSION);
+        assert_eq!(second.2, expected);
+        let (_, empty) = b.configure_snapshot("{}", NEXT_VERSION).unwrap();
+        let empty = empty.expect("empty push keeps complete effective settings");
+        assert!(empty.0 > second.0);
+        assert_eq!(empty.2, expected);
+        let (_, null) = b
+            .configure_snapshot(r#"{"timeout_ms":null}"#, NEXT_VERSION)
+            .unwrap();
+        let null = null.expect("null timeout keeps complete effective settings");
+        assert!(null.0 > empty.0);
+        assert_eq!(null.2, expected);
+        let (_, stale) = b
+            .configure_snapshot(r#"{"url":false}"#, STALE_VERSION)
+            .unwrap();
+        assert_eq!(
+            stale,
+            Some(null.clone()),
+            "stale ACK retains the effective version and revision"
+        );
+        assert!(b
+            .configure(r#"{"timeout_ms":false}"#, NEXT_VERSION)
+            .is_err());
+        let (_, after_refusal) = b
+            .configure_snapshot(r#"{"url":false}"#, STALE_VERSION)
+            .unwrap();
+        assert_eq!(
+            after_refusal,
+            Some(null.clone()),
+            "NACK leaves the checkpoint unchanged"
+        );
+        let restored = arm.bind();
+        restored.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+        assert_eq!(restored.configure(&null.2.to_string(), null.1), Ok(null.1));
+        assert_eq!(decide_verbs(&restored), VERB_ABSTAIN);
+        let sent = restored.upstream.last();
+        assert_eq!(sent.target, "http://127.0.0.2:8123");
+        assert_eq!(sent.path, b"/moved");
+        assert_eq!(sent.timeout_ms, MERGED_TIMEOUT_MS);
+    }
+}
+
+#[test]
+fn wrong_typed_configure_settings_never_echo_credentials_or_change_the_target() {
+    const PUSH_VERSION: u64 = 2;
+    const SECRET_MARKER: &str = "CONFIGURECANARY";
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&format!(r#"{{"url":"{URL}"}}"#)).unwrap();
+        let original = b.status();
+        for bad in [
+            r#"{"url":"http://127.0.0.2:8123/new","timeout_ms":"https://user:CONFIGURECANARY@h/key"}"#,
+            r#"{"url":["https://user:CONFIGURECANARY@h/key"],"timeout_ms":777}"#,
+        ] {
+            let error = b
+                .configure(bad, PUSH_VERSION)
+                .expect_err("wrong type is a NACK");
+            for text in std::iter::once(error).chain(b.recorder.warns()) {
+                assert!(!text.contains(SECRET_MARKER), "{text}");
+                assert!(!text.contains("user:"), "{text}");
+            }
+            assert_eq!(
+                b.status(),
+                original,
+                "a refused partial push commits neither field"
+            );
+        }
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        let sent = b.upstream.last();
+        assert_eq!(sent.target, "http://127.0.0.1:9");
+        assert_eq!(sent.path, b"/hook?x=1");
+    }
+}
+
+#[test]
+fn a_pending_failure_scrubs_the_original_target_after_configure_through_both_doors() {
+    const ORIGINAL_URL: &str = "http://user:OLDPASSWORD@127.0.0.1:9/OLDPATH?token=OLDQUERY";
+    const MOVED_URL: &str = "http://next:NEWPASSWORD@127.0.0.2:8123/NEWPATH?token=NEWQUERY";
+    const CONFIGURE_VERSION: u64 = 2;
+    const SERVICE_UNAVAILABLE: u32 = 503;
+    const FAILURE_PHRASE: &str =
+        "denied OLDPASSWORD /OLDPATH token=OLDQUERY dXNlcjpPTERQQVNTV09SRA==";
+    const OLD_SECRETS: [&str; 4] = [
+        "OLDPASSWORD",
+        "OLDPATH",
+        "OLDQUERY",
+        "dXNlcjpPTERQQVNTV09SRA==",
+    ];
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&json!({"url": ORIGINAL_URL}).to_string()).unwrap();
+        b.upstream.answer(SERVICE_UNAVAILABLE, FAILURE_PHRASE, b"");
+        let ticket = b.dispatcher.mint(0).expect("a ticket");
+        let view = decide_frame();
+        let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
+        assert_eq!(
+            b.plugin
+                .call_inline(ticket, false, slot::DECIDE, &mut first)
+                .outcome,
+            Outcome::Pending
+        );
+        assert_eq!(
+            b.configure(&json!({"url": MOVED_URL}).to_string(), CONFIGURE_VERSION),
+            Ok(CONFIGURE_VERSION)
+        );
+        let mut resumed = Frame::new(view.input(), blank_out::<DecideOut>());
+        let called = b
+            .plugin
+            .call_inline(ticket, true, slot::DECIDE, &mut resumed);
+        b.dispatcher.recycle(ticket);
+        assert_eq!(called.outcome, Outcome::Failed);
+        let error = error_of(called.error.as_deref());
+        assert!(error.contains("503") && error.contains("denied"), "{error}");
+        let warns = b.recorder.warns();
+        assert!(!warns.is_empty());
+        for text in std::iter::once(&error).chain(warns.iter()) {
+            for secret in OLD_SECRETS {
+                assert!(!text.contains(secret), "{text}");
+            }
+        }
+        assert_eq!(
+            b.upstream.sent.lock().unwrap().len(),
+            1,
+            "resume does not resend to the new target"
+        );
+        assert!(b.upstream.reads.lock().unwrap().is_empty());
     }
 }
