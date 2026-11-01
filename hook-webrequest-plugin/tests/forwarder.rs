@@ -40,7 +40,7 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, OutHead, Outcome, BLOB_JSON,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, CancelIn, CancelOut, OpenIn, OpenOut, ReleaseIn,
+    slot as life, CancelIn, CancelOut, OpenIn, OpenOut, RefreshIn, ReleaseIn,
 };
 use busbar_contract::abi::mechanism::rendering::{self, ReadNeed};
 use busbar_contract::abi::sdk::door::blank_out;
@@ -1275,8 +1275,10 @@ fn wrong_typed_open_settings_never_echo_credentials() {
             r#"{"url":["https://user:PASSCANARY@h/KEYCANARY"]}"#,
         ] {
             let b = arm.bind();
+            let validation = busbar_plugin_loader::hook_door::validate(&b.plugin, bad.as_bytes())
+                .expect_err("wrong type refuses validation");
             let error = b.open(bad).expect_err("wrong type refuses open");
-            for text in std::iter::once(error).chain(b.recorder.warns()) {
+            for text in [validation, error].into_iter().chain(b.recorder.warns()) {
                 assert!(!text.contains("CANARY"), "{text}");
                 assert!(!text.contains("user:"), "{text}");
             }
@@ -1708,5 +1710,83 @@ fn a_pending_failure_scrubs_the_original_target_after_configure_through_both_doo
             "resume does not resend to the new target"
         );
         assert!(b.upstream.reads.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn refresh_during_pending_retains_the_opening_target_until_completion_or_cancel() {
+    const ORIGINAL_URL: &str = "http://127.0.0.1:9/old";
+    const REFRESHED_URL: &str = "http://127.0.0.2:8123/refreshed";
+    const REFRESHED_GENERATION: u64 = 2;
+    enum Finish {
+        Resume,
+        Cancel,
+    }
+    for arm in arms() {
+        for finish in [Finish::Resume, Finish::Cancel] {
+            let b = arm.bind();
+            b.open(&json!({"url": ORIGINAL_URL}).to_string()).unwrap();
+            let ticket = b.dispatcher.mint(0).expect("a ticket");
+            let view = decide_frame();
+            let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
+            assert_eq!(
+                b.plugin
+                    .call_inline(ticket, false, slot::DECIDE, &mut first)
+                    .outcome,
+                Outcome::Pending
+            );
+            let original = b.upstream.last();
+            let settings = json!({"url": REFRESHED_URL}).to_string();
+            let mut refresh = Frame::new(
+                RefreshIn {
+                    head: in_head(),
+                    generation: REFRESHED_GENERATION,
+                    settings: json_blob(&settings),
+                    secrets: std::ptr::null(),
+                    secrets_len: 0,
+                },
+                out_head(),
+            );
+            assert_eq!(
+                b.plugin.call(life::REFRESH, &mut refresh).outcome,
+                Outcome::Ready
+            );
+            match finish {
+                Finish::Resume => {
+                    let mut resumed = Frame::new(view.input(), blank_out::<DecideOut>());
+                    assert_eq!(
+                        b.plugin
+                            .call_inline(ticket, true, slot::DECIDE, &mut resumed)
+                            .outcome,
+                        Outcome::Ready
+                    );
+                    assert_eq!(resumed.out.verbs, VERB_ABSTAIN);
+                }
+                Finish::Cancel => {
+                    let mut cancel = Frame::new(
+                        CancelIn {
+                            head: in_head(),
+                            ticket,
+                        },
+                        blank_out::<CancelOut>(),
+                    );
+                    assert_eq!(
+                        b.plugin.call(life::CANCEL, &mut cancel).outcome,
+                        Outcome::Ready
+                    );
+                    assert_eq!(
+                        cancel.out.disposition,
+                        busbar_contract::abi::hook::cancel::ABORTED
+                    );
+                }
+            }
+            b.dispatcher.recycle(ticket);
+            assert_eq!(b.upstream.sent.lock().unwrap().as_slice(), &[original]);
+            assert!(b.upstream.reads.lock().unwrap().is_empty());
+            assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+            let fresh = b.upstream.last();
+            assert_eq!(fresh.target, "http://127.0.0.2:8123");
+            assert_eq!(fresh.path, b"/refreshed");
+        }
     }
 }
