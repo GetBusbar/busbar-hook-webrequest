@@ -4,7 +4,7 @@ Historical core source: a35493a5e74cc935ff7dcc15c1af869290da91cb. Incremental so
 
 | Historical dependency/assertion | Current ordinary destination/status |
 |---|---|
-| `settings_as_the_kernel_resolves` reference resolution | `reference_url.rs` and `declared_secrets.rs` directly invoke production `secret_fields::resolve_declared_fields`, with unchanged success/refusal expectations |
+| `settings_as_the_kernel_resolves` reference resolution | `reference_url.rs` and `declared_secrets.rs` directly invoke production `secret_fields::resolve_declared_fields`, with unchanged success/refusal expectations. Declaration-only loads use ConnTable::Probe (no host calls); duplicate support-host tests remain in conformance.rs, not deleted globally |
 | forwarder clock-only ServicesDouble | production `KernelServices::new().with_mono_clock(now_ns)`, same actual loader deadline clock |
 | real forwarder requests/lifecycle/configure/failure/canary behavior | existing `forwarder.rs` assertions retained unchanged; now binds production Connector/Dispatched TCP+HTTP directly; no kit refs in forwarder.rs |
 | generated behavior parity / exact crossing / lifecycle / refresh / short-order-buffer | existing generated conformance suite retained pending ordinary equivalents |

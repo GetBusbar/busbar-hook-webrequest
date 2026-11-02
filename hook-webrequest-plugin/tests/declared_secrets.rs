@@ -26,9 +26,6 @@ fn resolve_settings(
     Ok(settings.to_string().into_bytes())
 }
 
-#[path = "support/conformance_host.rs"]
-mod conformance_host;
-
 fn linked() -> (Plugin<Hook>, Arc<Dispatcher>) {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let bind = Bind {
@@ -36,7 +33,7 @@ fn linked() -> (Plugin<Hook>, Arc<Dispatcher>) {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: ConnTable::Host(conformance_host::host(d.conn_waker(), None)),
+        conns: ConnTable::Probe,
     };
     let row = LinkedRow::of(busbar_hook_webrequest::door::door).expect("the row renders");
     (load_linked::<Hook>(&row, bind).expect("the door loads"), d)
