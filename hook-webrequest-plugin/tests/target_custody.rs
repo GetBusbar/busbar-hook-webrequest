@@ -35,6 +35,9 @@ fn retired_targets_wipe_each_owned_url_serialization() {
         // SAFETY: Url::as_str names the entire owned serialization, not spare capacity or
         // object representation. Its owner stays on this thread until the explicit drops.
         unsafe { watch_owner_prefix(bytes) };
+        registered += 1;
+        // SAFETY: the actual Target also exclusively owns the initialized raw URL spelling.
+        unsafe { watch_owner_prefix(target.url_text.as_bytes()) };
     }
     drop(updated);
     drop(clone);

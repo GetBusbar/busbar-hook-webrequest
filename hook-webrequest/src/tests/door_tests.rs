@@ -337,3 +337,66 @@ mod lifecycle {
         assert_eq!(closed.outcome, Outcome::Ready);
     }
 }
+
+#[test]
+fn concurrent_partial_configures_never_lose_an_update_under_repetition() {
+    for round in 0..300 {
+        let f = forwarder("http://127.0.0.1:9001/a");
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let settings = serde_json::json!({"url":"http://127.0.0.2:9002/b"});
+                start.wait();
+                assert!(f.configure(settings.as_object().unwrap(), 2).is_ok());
+            });
+            scope.spawn(|| {
+                let settings = serde_json::json!({"timeout_ms":777});
+                start.wait();
+                assert!(f.configure(settings.as_object().unwrap(), 2).is_ok());
+            });
+        });
+        let live = f.live();
+        assert_eq!(
+            live.url.as_str(),
+            "http://127.0.0.2:9002/b",
+            "round {round}"
+        );
+        assert_eq!(
+            live.timeout,
+            std::time::Duration::from_millis(777),
+            "round {round}"
+        );
+    }
+}
+
+#[test]
+fn complete_checkpoint_restores_status_spelling_and_effective_timeout() {
+    let initial = "https://hooks.example";
+    let f = forwarder(initial);
+    let settings = serde_json::json!({"timeout_ms":99999});
+    let checkpoint = f
+        .configure_checkpoint(settings.as_object().unwrap(), 2)
+        .unwrap()
+        .unwrap();
+    let restored = forwarder("https://different.example/start");
+    let settings: serde_json::Value = serde_json::from_slice(checkpoint.settings()).unwrap();
+    restored
+        .configure(settings.as_object().unwrap(), checkpoint.settings_version)
+        .unwrap();
+    assert_eq!(
+        crate::report::status(&f.live()),
+        crate::report::status(&restored.live())
+    );
+    assert_eq!(
+        restored.live().timeout,
+        std::time::Duration::from_millis(crate::config::MAX_TIMEOUT_MS)
+    );
+    assert_eq!(
+        crate::report::status(&restored.live())["status"]["settings"]["url"],
+        initial
+    );
+    assert_eq!(
+        crate::report::status(&restored.live())["status"]["settings"]["timeout_ms"],
+        99999
+    );
+}

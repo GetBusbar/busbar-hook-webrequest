@@ -89,14 +89,14 @@ pub fn host_is_blocked(url: &url::Url) -> bool {
 
 /// The internal-address predicate over the literal host [`host_is_blocked`] parsed, the loopback
 fn ip_is_internal(ip: &IpAddr) -> bool {
+    if ip_is_loopback(ip) {
+        return false;
+    }
     match ip {
-        IpAddr::V4(v4) => !v4.is_loopback() && ipv4_is_internal(v4),
+        IpAddr::V4(v4) => ipv4_is_internal(v4),
         IpAddr::V6(v6) => {
-            if v6.is_loopback() {
-                return false;
-            }
             if let Some(v4) = embedded_ipv4(v6) {
-                return !v4.is_loopback() && ipv4_is_internal(&v4);
+                return ipv4_is_internal(&v4);
             }
             ipv6_is_internal(v6) || is_site_local_v6(v6)
         }
@@ -117,7 +117,11 @@ fn scheme_is(url: &url::Url, want: &str) -> bool {
     url.scheme().eq_ignore_ascii_case(want)
 }
 
-/// Validate the operator-configured target URL against the SSRF guard, returning the canonicalized URL
+/// Validate the operator-configured target URL against the SSRF guard, returning the parsed `url::Url`
+/// on success or a stable, credential-free error on rejection. Accepts `https://` for any
+/// allowed host and `http://` ONLY for a loopback host (parity with the old webhook policy: a plaintext
+/// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
+/// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
 pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
     refuse_target_url(raw).map_err(|reason| format!("{ALIAS}: {reason}"))
 }

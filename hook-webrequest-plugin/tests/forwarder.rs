@@ -660,7 +660,10 @@ fn script(arm: &Arm) -> Vec<String> {
         (r#"{"url": ""}"#, "webrequest: settings.url is required"),
         ("{}", "webrequest: settings.url is required"),
         (r#"{"url": 5}"#, "webrequest: invalid plugin config"),
-        (r#"{"url": "http://169.254.169.254/"}"#, "webrequest:"),
+        (
+            r#"{"url": "http://169.254.169.254/"}"#,
+            "cloud-metadata host (SSRF guard",
+        ),
         (r#"{"url": "https://169.254.169.254/"}"#, "SSRF guard"),
     ] {
         let refused = arm.bind().open(bad).expect_err("refused");
@@ -1424,11 +1427,11 @@ fn red_a_clamped_timeout_is_warned() {
         );
         assert_eq!(b.configure(r#"{"timeout_ms": 0}"#, 2), Ok(2));
         assert!(
-            warned(&b, &["timeout_ms", "0", "clamp"]),
+            warned(&b, &["timeout_ms 0 ", "clamped to 1"]),
             "{:?}",
             b.recorder.warns()
         );
-        assert_eq!(b.status()["status"]["settings"]["timeout_ms"], json!(1));
+        assert_eq!(b.status()["status"]["settings"]["timeout_ms"], json!(0));
     }
 }
 

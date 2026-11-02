@@ -208,7 +208,9 @@ fn a_clamped_timeout_is_warned_once() {
         let w = warnings_in(settings.as_bytes());
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(
-            w[0].contains("timeout_ms") && w[0].contains(ms) && w[0].contains("clamp"),
+            w[0].contains("timeout_ms")
+                && w[0].contains(&format!("timeout_ms {ms} "))
+                && w[0].contains("clamp"),
             "{w:?}"
         );
     }
@@ -238,4 +240,32 @@ fn open_and_configure_refuse_an_ambiguous_url() {
         "{nack}"
     );
     assert!(!nack.contains("tok/en"), "{nack}");
+}
+
+/// A settings document that is not a JSON object is refused: serde's derive would otherwise read an
+/// array by position and make a live target of it.
+#[test]
+fn open_refuses_a_non_object_document() {
+    for bad in [
+        &br#"["https://hooks.example/x", 0]"#[..],
+        br#""https://hooks.example/x""#,
+        b"42",
+        b"null",
+    ] {
+        let err = open(bad).unwrap_err();
+        assert_eq!(
+            err, "webrequest: invalid plugin config: settings must be a JSON object",
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_truncated_object_after_an_owned_url_refuses_without_echoing_material() {
+    let error = open(
+        br#"{"url":"https://u:PARSEPASSCANARY@hooks.example/parse-path-canary","timeout_ms":"#,
+    )
+    .unwrap_err();
+    assert!(!error.contains("PARSEPASSCANARY"));
+    assert!(!error.contains("parse-path-canary"));
 }

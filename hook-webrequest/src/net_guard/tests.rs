@@ -29,6 +29,9 @@ fn alternate_encoding_flags_obfuscated_forms() {
     assert!(is_alternate_loopback_v4("2130706433"));
     assert!(is_alternate_loopback_v4("127.1"));
     assert!(!is_alternate_loopback_v4("2130706434"));
+    assert!(is_alternate_loopback_v4("0x7f000001"));
+    assert!(is_alternate_loopback_v4("017700000001"));
+    assert!(!is_alternate_loopback_v4("0x7f000002"));
 }
 
 #[test]
@@ -58,10 +61,13 @@ fn host_is_blocked_covers_the_classic_bypass_forms() {
         "http://[::ffff:169.254.169.254]/latest"
     )));
     assert!(host_is_blocked(&url("https://[::ffff:10.0.0.1]/x")));
+    assert!(host_is_blocked(&url("https://[::10.0.0.1]/x")));
+    assert!(host_is_blocked(&url("http://[::169.254.169.254]/latest")));
     assert!(host_is_blocked(&url("https://[::ffff:192.168.1.1]/x")));
     assert!(host_is_blocked(&url("https://[::ffff:100.100.100.200]/x")));
 
     assert!(!host_is_blocked(&url("http://[::ffff:127.0.0.1]:8080/x")));
+    assert!(!host_is_blocked(&url("http://[::127.0.0.1]:8080/x")));
 
     assert!(host_is_blocked(&url("http://2852039166/latest")));
     assert!(host_is_blocked(&url("http://0xa9fea9fe/latest")));
@@ -123,8 +129,25 @@ fn ipv6_embeddings_of_internal_ipv4_targets_are_blocked() {
         embedded_ipv4(&"2606:4700:4700::1111".parse().unwrap()),
         None
     );
-
-    assert!(!host_is_blocked(&url("http://[64:ff9b::7f00:1]:8080/x")));
+    // ...and a NAT64/6to4/Teredo form carrying LOOPBACK is NOT the loopback sidecar (it routes to a
+    // relay or gateway), so it is blocked, the same answer `host_is_loopback` gives it.
+    for addr in [
+        "64:ff9b::7f00:1",
+        "2002:7f00:1::",
+        "2001:0:0:0:0:0:80ff:fffe",
+    ] {
+        assert!(
+            !host_is_loopback(&url(&format!("https://[{addr}]/x"))),
+            "{addr}"
+        );
+        assert!(
+            host_is_blocked(&url(&format!("http://[{addr}]:8080/x"))),
+            "{addr}"
+        );
+    }
+    // The real loopback spellings keep the carve-out.
+    assert!(!host_is_blocked(&url("http://[::1]:8080/x")));
+    assert!(!host_is_blocked(&url("http://[::ffff:127.0.0.1]:8080/x")));
 }
 
 /// `fe80::/10` is a /10, not a /16. The only previous fixture was `fe80::1`, whose first segment is
@@ -346,6 +369,24 @@ fn secret_parts_include_the_authorization_value_and_its_token() {
     assert!(!scrubbed.contains("c3ZjOmh1bnRlcjI="), "{scrubbed}");
 }
 
+/// A far end or host that echoes the DECODED form of a percent-encoded credential (`pa ss` for
+/// `pa%20ss`) leaks it unless the scrub list carries the decoded parts too.
+#[test]
+fn secret_parts_include_the_percent_decoded_credential() {
+    let parts = secret_parts(&url(
+        "https://svc:pa%20ss@hooks.example/k%2FEY?token=t%3Dok",
+    ));
+    let scrubbed = scrub("echo: password pa ss, path /k/EY, query token=t=ok", &parts);
+    for decoded in ["pa ss", "/k/EY", "token=t=ok"] {
+        assert!(
+            !scrubbed.contains(decoded),
+            "{decoded} survived: {scrubbed}"
+        );
+    }
+}
+
+/// D1: a url with an `@` after its host is ambiguous (`tok/en` would be dialled as the host) and is
+/// refused in this plugin's words, without its credential; one that does not parse is read by hand.
 #[test]
 fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
     for raw in [

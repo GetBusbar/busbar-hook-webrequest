@@ -63,6 +63,14 @@ fn owned_url<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Text, D::Error> 
 pub struct Target {
     /// The validated URL every op envelope is POSTed to.
     pub url: url::Url,
+    /// The url text as the operator wrote it, which `status` echoes under `url` so the engine's
+    /// value-comparing drift check sees the desired settings (the parsed `url` is canonicalised).
+    /// Never logged: every log line names the URL through [`net_guard::loggable_url`].
+    pub url_text: String,
+    /// The `timeout_ms` as the operator wrote it (`Null` when absent or null), which `status` echoes
+    /// under `timeout_ms` for the same reason as `url_text`: the effective `timeout` is defaulted or
+    /// clamped, so reporting it would show drift against a desired `null` or out-of-range value.
+    pub timeout_text: serde_json::Value,
     /// The wall-clock bound of one op, in `[1ms, MAX_TIMEOUT_MS]`.
     pub timeout: Duration,
 }
@@ -70,6 +78,9 @@ pub struct Target {
 impl Drop for Target {
     fn drop(&mut self) {
         crate::owners::wipe_url(&mut self.url);
+        drop(busbar_contract::abi::sdk::cred::Held::new(std::mem::take(
+            &mut self.url_text,
+        )));
     }
 }
 
@@ -89,13 +100,15 @@ pub fn clamp_timeout(ms: u64) -> Duration {
 }
 
 impl Target {
-    fn validate(cfg: &Config) -> Result<Self, String> {
+    fn validate(cfg: &Config, timeout_text: serde_json::Value) -> Result<Self, String> {
         if cfg.url.trim().is_empty() {
             return Err(format!("{ALIAS}: settings.url is required"));
         }
         let url = net_guard::validate_target_url(&cfg.url)?;
         Ok(Self {
             url,
+            url_text: cfg.url.to_string(),
+            timeout_text,
             timeout: clamp_timeout(cfg.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         })
     }
@@ -155,6 +168,11 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
     let config: Config = if text.trim().is_empty() {
         Config::default()
     } else {
+        if !text.trim_start().starts_with('{') {
+            return Err(format!(
+                "{ALIAS}: invalid plugin config: settings must be a JSON object"
+            ));
+        }
         serde_json::from_str(text).map_err(|e| {
             if e.is_data() {
                 format!(
@@ -165,7 +183,10 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
             }
         })?
     };
-    Target::validate(&config)
+    let timeout_text = config
+        .timeout_ms
+        .map_or(serde_json::Value::Null, serde_json::Value::from);
+    Target::validate(&config, timeout_text)
 }
 
 /// The NACK text for `why`.
@@ -184,8 +205,9 @@ pub fn configure(
             let raw = v
                 .as_str()
                 .ok_or_else(|| nack("settings.url is present but not a string"))?;
-            Some(ParsedUrl::new(
-                net_guard::refuse_target_url(raw).map_err(|reason| nack(&reason))?,
+            Some((
+                ParsedUrl::new(net_guard::refuse_target_url(raw).map_err(|reason| nack(&reason))?),
+                Text(raw.to_string()),
             ))
         }
     };
@@ -202,8 +224,18 @@ pub fn configure(
     if new_url.is_none() && new_timeout.is_none() {
         return Ok(None);
     }
-    Ok(Some(Target {
-        url: new_url.map_or_else(|| live.url.clone(), ParsedUrl::into_url),
-        timeout: new_timeout.unwrap_or(live.timeout),
-    }))
+    let mut next = live.clone();
+    if let Some((parsed, mut text)) = new_url {
+        crate::owners::wipe_url(&mut next.url);
+        next.url = parsed.into_url();
+        drop(busbar_contract::abi::sdk::cred::Held::new(std::mem::take(
+            &mut next.url_text,
+        )));
+        next.url_text = std::mem::take(&mut text.0);
+    }
+    if let Some(timeout) = new_timeout {
+        next.timeout = timeout;
+        next.timeout_text = settings["timeout_ms"].clone();
+    }
+    Ok(Some(next))
 }

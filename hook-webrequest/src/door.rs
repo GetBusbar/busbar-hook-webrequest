@@ -333,12 +333,12 @@ impl Hook for Forwarder {
         #[derive(serde::Serialize)]
         struct Snapshot<'a> {
             url: &'a str,
-            timeout_ms: u64,
+            timeout_ms: &'a serde_json::Value,
         }
 
         let bytes = serde_json::to_vec(&Snapshot {
-            url: target.target.url.as_str(),
-            timeout_ms: target.timeout_ms,
+            url: &target.target.url_text,
+            timeout_ms: &target.target.timeout_text,
         })
         .map_err(|_| "cannot encode complete hook configuration")?;
         let checkpoint = ConfigureCheckpoint::new(revision, settings_version, bytes)?;

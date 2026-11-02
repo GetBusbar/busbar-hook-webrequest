@@ -19,7 +19,7 @@ pub fn read_response<T>(
 pub const MAX_REPLY_BYTES: usize = 64 * 1024;
 
 /// Maximum JSON nesting depth accepted in a reply (busbar's `MAX_JSON_DEPTH`, a security floor).
-pub const MAX_REPLY_DEPTH: usize = 128;
+pub const MAX_REPLY_DEPTH: usize = busbar_contract::spans::MAX_JSON_DEPTH;
 
 /// The transport failure text: connect, send, timeout and a malformed head all read as this, with the
 #[must_use]
@@ -27,7 +27,9 @@ pub fn request_failed() -> String {
     format!("{ALIAS}: request failed: error sending request")
 }
 
-/// The body-read failure text (a truncated or malformed body).
+/// The body-read failure text, the 1.5.5 reference wording that `wire_tests` pins. The host reports
+/// a body-read failure (a truncated or malformed body) as a `ConnFailure`, which has no body-read
+/// variant, so the plugin words it with [`request_failed`]; this text is not emitted in production.
 #[must_use]
 pub fn read_failed() -> String {
     format!("{ALIAS}: response read failed: error decoding response body")
@@ -91,37 +93,9 @@ pub fn parse_reply(bytes: &[u8]) -> Result<Value, String> {
         .map_err(|_| format!("{ALIAS}: invalid JSON reply ({} bytes)", bytes.len()))
 }
 
-/// Single-pass, string-aware scan for the maximum `{`/`[` nesting depth in `bytes`. Brackets inside JSON
-#[must_use]
-pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
-    let mut depth: usize = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-    for &b in bytes {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match b {
-            b'"' => in_string = true,
-            b'{' | b'[' => {
-                depth += 1;
-                if depth > max {
-                    return true;
-                }
-            }
-            b'}' | b']' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    false
-}
+/// The nesting-depth scanner is busbar's own (one copy, so a core fix or a changed floor reaches this
+/// plugin at a `.busbar-ref` bump).
+pub use busbar_contract::spans::exceeds_max_depth;
 
 /// The endpoint's answer as the framed http exchange hands it back: its status, reason phrase and
 pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value, String> {
