@@ -302,8 +302,9 @@ pub fn mask_userinfo(url: &url::Url) -> String {
 ///
 /// `mask_userinfo` alone is not enough. It masks credentials in the userinfo, but a sidecar that
 /// authenticates by query parameter (`?token=...`) is a common enough shape that echoing the raw
-/// query would leak the credential into the admin API, every status snapshot, and the logs. So the
-/// query is redacted to a marker rather than reproduced.
+/// query would leak the credential into the logs and the errors. So the query is redacted to a
+/// marker rather than reproduced. (`status` is not masked by this: it echoes the url as written, see
+/// [`crate::report::status`], because the reported settings never leave the engine's drift check.)
 ///
 /// The fragment goes too: it never reaches the wire on an HTTP request, so it can only be noise or
 /// an accident, and there is no reason to echo it.
