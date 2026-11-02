@@ -442,27 +442,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-test-kit"
-version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=a35493a5e74cc935ff7dcc15c1af869290da91cb#a35493a5e74cc935ff7dcc15c1af869290da91cb"
-dependencies = [
- "base64 0.22.1",
- "busbar-contract",
- "busbar-core-connector",
- "busbar-kernel",
- "busbar-plugin-loader",
- "hex",
- "libc",
- "ring",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
- "zeroize",
-]
-
-[[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=744b75731e7297a98d6e6c03f916906abc35da87#744b75731e7297a98d6e6c03f916906abc35da87"
