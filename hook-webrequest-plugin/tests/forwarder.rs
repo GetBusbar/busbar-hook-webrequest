@@ -581,7 +581,10 @@ fn script(arm: &Arm) -> Vec<String> {
         (r#"{"url": ""}"#, "webrequest: settings.url is required"),
         ("{}", "webrequest: settings.url is required"),
         (r#"{"url": 5}"#, "webrequest: invalid plugin config"),
-        (r#"{"url": "http://169.254.169.254/"}"#, "webrequest:"),
+        (
+            r#"{"url": "http://169.254.169.254/"}"#,
+            "cloud-metadata host (SSRF guard",
+        ),
         (r#"{"url": "https://169.254.169.254/"}"#, "SSRF guard"),
     ] {
         let refused = arm.bind().open(bad).expect_err("refused");

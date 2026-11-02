@@ -19,8 +19,8 @@
 //!
 //! ## Shared predicates
 //!
-//! The context-free address predicates (`is_cgnat_shared_v4`, `is_unique_local_v6`,
-//! `is_link_local_v6`, `embedded_ipv4`, `is_alternate_ipv4_encoding`) and the cloud-metadata host
+//! The context-free address predicates (`embedded_ipv4`, `ipv4_is_internal`,
+//! `ipv6_is_internal`, `is_alternate_ipv4_encoding`) and the cloud-metadata host
 //! list are the contract's (`busbar_contract::net`), the same ones the host's own guard reads. Only
 //! the policy lives here: loopback sidecars are carved out. The tests pin this module's verdicts
 //! against fixed vectors.
