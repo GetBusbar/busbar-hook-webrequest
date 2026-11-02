@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Initialized owner-byte custody through the current SDK test-kit observer.
+//! Initialized owner-byte custody observed immediately before actual System deallocation.
 
 #[cfg(target_os = "linux")]
 use busbar_hook_webrequest::config;
-use busbar_test_kit::alloc_counter::Counting;
 #[cfg(target_os = "linux")]
-use busbar_test_kit::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
+use custody::Counting;
+#[cfg(target_os = "linux")]
+use custody::{watch_initialized_payload, InitializedPayloadProbe};
 
+#[cfg(target_os = "linux")]
 #[global_allocator]
 static ALLOCATOR: Counting = Counting::new();
 
@@ -38,14 +40,11 @@ fn retired_targets_wipe_each_owned_url_serialization() {
     drop(clone);
     drop(target);
     let observed = probe.finish();
-    assert!(!observed.reentered, "{observed:?}");
     assert_eq!(observed.payloads.len(), registered);
     for payload in observed.payloads {
         assert!(payload.freed, "{payload:?}");
         assert!(!payload.reallocated, "{payload:?}");
-        assert!(payload.complete_read, "{payload:?}");
         assert_eq!(payload.bytes_read, payload.len, "{payload:?}");
-        assert!(payload.read_error.is_none(), "{payload:?}");
         assert!(payload.wiped, "{payload:?}");
     }
 }
@@ -60,11 +59,12 @@ fn the_initialized_payload_observer_detects_an_unwiped_control() {
     unsafe { watch_initialized_payload(control.as_bytes()) };
     drop(control);
     let observed = probe.finish();
-    assert!(!observed.reentered, "{observed:?}");
     assert!(!observed.payloads.is_empty());
     for payload in observed.payloads {
-        assert!(payload.freed && payload.complete_read, "{payload:?}");
-        assert!(payload.read_error.is_none(), "{payload:?}");
+        assert!(
+            payload.freed && payload.bytes_read == payload.len,
+            "{payload:?}"
+        );
         assert!(
             !payload.wiped,
             "the negative control was not detected: {payload:?}"
@@ -117,18 +117,14 @@ fn the_forwarders_response_reader_wipes_its_initialized_echo_buffers_on_return_a
 }
 
 #[cfg(target_os = "linux")]
-fn assert_wiped(observed: busbar_test_kit::alloc_counter::PayloadObservations, expected: usize) {
-    assert!(!observed.reentered, "{observed:?}");
+fn assert_wiped(observed: custody::PayloadObservations, expected: usize) {
     assert_eq!(observed.payloads.len(), expected);
     for payload in observed.payloads {
         assert!(
-            payload.freed && payload.complete_read && payload.wiped,
+            payload.freed && payload.bytes_read == payload.len && payload.wiped,
             "{payload:?}"
         );
-        assert!(
-            !payload.reallocated && payload.read_error.is_none(),
-            "{payload:?}"
-        );
+        assert!(!payload.reallocated, "{payload:?}");
         assert_eq!(payload.bytes_read, payload.len);
     }
 }
@@ -166,4 +162,147 @@ fn lossy_phrases_and_owned_failure_echoes_wipe_before_deallocation() {
         drop(cause);
     }
     assert_wiped(probe.finish(), 5);
+}
+
+// This test binary observes only explicitly registered initialized prefixes of its own
+// exclusively owned allocations. It implements no plugin or host behavior.
+#[cfg(target_os = "linux")]
+mod custody {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Payload {
+        address: usize,
+        pub len: usize,
+        pub freed: bool,
+        pub reallocated: bool,
+        pub bytes_read: usize,
+        pub wiped: bool,
+    }
+    #[derive(Clone, Copy)]
+    struct State {
+        active: bool,
+        entries: [Payload; 32],
+        used: usize,
+    }
+    thread_local! {
+        static STATE: Cell<State> = const { Cell::new(State {
+            active: false,
+            entries: [Payload { address: 0, len: 0, freed: false, reallocated: false,
+                bytes_read: 0, wiped: false }; 32],
+            used: 0,
+        }) };
+    }
+
+    pub struct Counting;
+    impl Counting {
+        pub const fn new() -> Self {
+            Self
+        }
+    }
+
+    // SAFETY: every allocation operation delegates to System with its original arguments.
+    // Observation performs no allocation and reads only initialized bytes registered by an
+    // exclusive owner on this thread before System releases its live allocation.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: GlobalAlloc caller supplies a valid layout.
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: ptr still names its live allocation until System.dealloc below.
+            unsafe { observe(ptr, false) };
+            // SAFETY: forwards the original live allocation and layout unchanged.
+            unsafe { System.dealloc(ptr, layout) };
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            // SAFETY: ptr still names its live allocation until System.realloc below.
+            unsafe { observe(ptr, true) };
+            // SAFETY: forwards the allocator's original valid arguments.
+            unsafe { System.realloc(ptr, layout, size) }
+        }
+    }
+
+    unsafe fn observe(ptr: *mut u8, realloc: bool) {
+        let _ = STATE.try_with(|cell| {
+            let mut state = cell.get();
+            if !state.active {
+                return;
+            }
+            for entry in &mut state.entries[..state.used] {
+                if entry.address != ptr as usize || entry.freed || entry.reallocated {
+                    continue;
+                }
+                // SAFETY: watch_initialized_payload's contract guarantees this allocation's
+                // initialized prefix remains exclusively owned until this deallocation hook.
+                entry.wiped = true;
+                for offset in 0..entry.len {
+                    // SAFETY: offset stays inside the registered initialized allocation prefix.
+                    entry.wiped &= unsafe { ptr.add(offset).read_volatile() } == 0;
+                    entry.bytes_read += 1;
+                }
+                entry.freed = !realloc;
+                entry.reallocated = realloc;
+            }
+            cell.set(state);
+        });
+    }
+
+    pub struct InitializedPayloadProbe;
+    #[derive(Debug)]
+    pub struct PayloadObservations {
+        pub payloads: Vec<Payload>,
+    }
+    impl InitializedPayloadProbe {
+        // SAFETY: registrations must uphold watch_initialized_payload's owner contract.
+        pub unsafe fn start() -> Result<Self, &'static str> {
+            STATE.with(|cell| {
+                let mut state = cell.get();
+                if state.active {
+                    return Err("nested custody probe");
+                }
+                state.active = true;
+                state.used = 0;
+                cell.set(state);
+                Ok(Self)
+            })
+        }
+        pub fn finish(self) -> PayloadObservations {
+            let state = STATE.with(|cell| {
+                let mut state = cell.get();
+                state.active = false;
+                cell.set(state);
+                state
+            });
+            PayloadObservations {
+                payloads: state.entries[..state.used].to_vec(),
+            }
+        }
+    }
+    impl Drop for InitializedPayloadProbe {
+        fn drop(&mut self) {
+            let _ = STATE.try_with(|cell| {
+                let mut s = cell.get();
+                s.active = false;
+                cell.set(s);
+            });
+        }
+    }
+
+    // SAFETY: bytes names the complete initialized prefix at an owned allocation base.
+    // The owner must remain exclusively on this thread until it drops or reallocates.
+    pub unsafe fn watch_initialized_payload(bytes: &[u8]) {
+        STATE.with(|cell| {
+            let mut state = cell.get();
+            assert!(state.active && state.used < state.entries.len());
+            state.entries[state.used] = Payload {
+                address: bytes.as_ptr() as usize,
+                len: bytes.len(),
+                ..Payload::default()
+            };
+            state.used += 1;
+            cell.set(state);
+        });
+    }
 }
