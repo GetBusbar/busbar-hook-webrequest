@@ -49,20 +49,17 @@ const CONFIGURATION_WORD_BYTES: usize = std::mem::size_of::<u64>();
 const CONFIGURATION_CHECKPOINT_PREFIX_BYTES: usize = CONFIGURATION_WORD_BYTES * 2;
 type ConfigurationSnapshot = (u64, u64, Value);
 
-/// This crate's built cdylib (uplifted or under `deps`, newest wins). A missing artifact is a
+/// The freshly built actual forwarder image selected by CI.
 fn cdylib() -> PathBuf {
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let profile = exe
-        .parent()
-        .and_then(|d| d.parent())
-        .expect("target/<profile>");
-    let file = busbar_plugin_loader::plugin_library_filename("busbar_hook_webrequest_plugin");
-    [profile.join(&file), profile.join("deps").join(&file)]
-        .into_iter()
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .max()
-        .map(|(_, p)| p)
-        .unwrap_or_else(|| panic!("the busbar-hook-webrequest-plugin cdylib ({file}) is not built"))
+    let path = std::env::var_os("BUSBAR_PLUGIN_CDYLIB")
+        .map(PathBuf::from)
+        .expect("set BUSBAR_PLUGIN_CDYLIB to the freshly built forwarder image");
+    assert!(
+        path.is_absolute() && path.is_file(),
+        "actual forwarder cdylib required: {}",
+        path.display()
+    );
+    path
 }
 
 /// The door's Statement rendering, as the pack tool signs it into the manifest.
@@ -362,14 +359,7 @@ impl Arm {
         let upstream = Upstream::new();
         *upstream.wake.lock().unwrap() = Some(dispatcher.conn_waker());
         let conns: Arc<dyn DeclaredConns> = if real {
-            busbar_test_kit::conformance_host::host(
-                &[
-                    ("tcp", busbar_transport_tcp::linked::MACRO_DOOR),
-                    ("http", busbar_transport_http::door::MACRO_DOOR),
-                ],
-                dispatcher.conn_waker(),
-                None,
-            )
+            real_connector(dispatcher.conn_waker())
         } else {
             upstream.clone()
         };
@@ -1866,4 +1856,81 @@ fn the_real_connector_cuts_a_silent_partial_body_at_the_configured_whole_timeout
             server.join().unwrap();
         }
     }
+}
+
+// The real connector used by this file’s loopback wire tests.
+fn real_connector(
+    wake: busbar_contract::conn::ConnWake,
+) -> Arc<dyn busbar_contract::conn::DeclaredConns> {
+    use busbar_contract::transport::{EgressTrust, TransportSettings};
+    use busbar_core_connector::doors::Dispatched;
+    use busbar_core_connector::registry::{Entry, Transports};
+    use busbar_core_connector::{Connector, Judged, Verdict};
+    use busbar_plugin_loader::dispatch::kinds::transport::Transport;
+    use std::net::{SocketAddr, ToSocketAddrs};
+    use std::sync::OnceLock;
+
+    static IO: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    let io = IO
+        .get_or_init(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("response test reactor");
+            let handle = rt.handle().clone();
+            std::thread::spawn(move || rt.block_on(std::future::pending::<()>()));
+            handle
+        })
+        .clone();
+    busbar_core_connector::io::install_process_reactor(io.clone());
+    let transport_dispatcher = Arc::new(Dispatcher::new(Default::default()));
+    transport_dispatcher.install_runtime(io);
+    transport_dispatcher.install_io(busbar_core_connector::hostio::process());
+    let mut entries = Vec::new();
+    for (name, door) in [
+        ("tcp", busbar_transport_tcp::linked::MACRO_DOOR),
+        ("http", busbar_transport_http::door::MACRO_DOOR),
+    ] {
+        let row = LinkedRow::of_macro(door).expect("actual transport row states");
+        let transport = load_linked::<Transport>(
+            &row,
+            Bind {
+                instance: Arc::from(name),
+                max_inflight_cap: 1024,
+                sink: Arc::new(NoSink),
+                dispatcher: transport_dispatcher.adopter(),
+                conns: ConnTable::NoNeeds,
+            },
+        )
+        .expect("actual transport loads");
+        entries.push(Entry {
+            door: Arc::new(
+                Dispatched::open_on(
+                    transport,
+                    &TransportSettings::default(),
+                    Arc::clone(&transport_dispatcher),
+                )
+                .expect("actual transport opens"),
+            ),
+            alpn: Vec::new(),
+        });
+    }
+    let view = Transports::new(entries).expect("TCP and HTTP compose");
+    let trust = EgressTrust::default();
+    let tls =
+        busbar_core_connector::tls::client::build_client_config(&trust).expect("client TLS builds");
+    let judge = |dest: &str, _: u32, _: Judged| -> Option<Result<SocketAddr, Verdict>> {
+        Some(
+            dest.to_socket_addrs()
+                .ok()
+                .and_then(|mut addresses| addresses.find(|a| a.ip().is_loopback()))
+                .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE),
+        )
+    };
+    Arc::new(Connector::serving(
+        view,
+        Arc::new(judge),
+        Some(Arc::new(tls)),
+        wake,
+    ))
 }
