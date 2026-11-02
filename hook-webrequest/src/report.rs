@@ -4,11 +4,14 @@
 //! The `describe` and `status` documents: the forwarder's OWN self-description and observed state
 //! (neither is proxied to the target). No prompt or user content is ever surfaced here.
 
-use crate::config::Target;
+use crate::config::{Target, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS};
 
 /// `describe`: the forwarder's config schema (`url` + `timeout_ms`).
 #[must_use]
 pub fn describe() -> serde_json::Value {
+    let timeout_description = format!(
+        "Per-op wall-clock timeout in milliseconds (default {DEFAULT_TIMEOUT_MS}, clamped to [1, {MAX_TIMEOUT_MS}] — cannot exceed the engine's reference hook budget)."
+    );
     serde_json::json!({
         "schema": {
             "type": "object",
@@ -20,7 +23,7 @@ pub fn describe() -> serde_json::Value {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Per-op wall-clock timeout in milliseconds (default 5000, clamped to [1, 5000] — cannot exceed the engine's reference hook budget)."
+                    "description": timeout_description
                 }
             }
         }
