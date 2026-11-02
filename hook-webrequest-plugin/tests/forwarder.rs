@@ -346,6 +346,9 @@ impl Arm {
     }
 
     fn bind_mode(&self, real: bool) -> Bound {
+        self.bind_over(real, None, false)
+    }
+    fn bind_over(&self, real: bool, anchors: Option<&str>, guarded: bool) -> Bound {
         let dispatcher = Arc::new(Dispatcher::with_services(
             DispatchConfig {
                 workers: 2,
@@ -359,7 +362,7 @@ impl Arm {
         let upstream = Upstream::new();
         *upstream.wake.lock().unwrap() = Some(dispatcher.conn_waker());
         let conns: Arc<dyn DeclaredConns> = if real {
-            real_connector(dispatcher.conn_waker())
+            real_connector(dispatcher.conn_waker(), anchors, guarded)
         } else {
             upstream.clone()
         };
@@ -1878,6 +1881,8 @@ fn the_real_connector_cuts_a_silent_partial_body_at_the_configured_whole_timeout
 // The real connector used by this file’s loopback wire tests.
 fn real_connector(
     wake: busbar_contract::conn::ConnWake,
+    anchors: Option<&str>,
+    guarded: bool,
 ) -> Arc<dyn busbar_contract::conn::DeclaredConns> {
     use busbar_contract::transport::{EgressTrust, TransportSettings};
     use busbar_core_connector::doors::Dispatched;
@@ -1914,7 +1919,7 @@ fn real_connector(
             Bind {
                 instance: Arc::from(name),
                 max_inflight_cap: 1024,
-                sink: Arc::new(NoSink),
+                sink: Arc::new(busbar_plugin_loader::dispatch::NoSink),
                 dispatcher: transport_dispatcher.adopter(),
                 conns: ConnTable::NoNeeds,
             },
@@ -1933,7 +1938,17 @@ fn real_connector(
         });
     }
     let view = Transports::new(entries).expect("TCP and HTTP compose");
-    let trust = EgressTrust::default();
+    use rustls::pki_types::pem::PemObject;
+    let trust = EgressTrust {
+        extra_anchors: anchors
+            .map(|pem| {
+                rustls::pki_types::CertificateDer::pem_slice_iter(pem.as_bytes())
+                    .map(|cert| cert.expect("local CA PEM").to_vec())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        ..Default::default()
+    };
     let tls =
         busbar_core_connector::tls::client::build_client_config(&trust).expect("client TLS builds");
     let judge = |dest: &str, _: u32, _: Judged| -> Option<Result<SocketAddr, Verdict>> {
@@ -1944,10 +1959,514 @@ fn real_connector(
                 .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE),
         )
     };
-    Arc::new(Connector::serving(
-        view,
-        Arc::new(judge),
-        Some(Arc::new(tls)),
-        wake,
+    let judge: Arc<dyn busbar_core_connector::DialJudge> = if guarded {
+        let config = busbar_kernel::config::Destinations {
+            block_private_addresses:
+                busbar_kernel::config::sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES,
+            ..Default::default()
+        };
+        busbar_core_connector::process::judge(
+            busbar_core_connector::process::dest_judge(&config).unwrap(),
+            &[],
+        )
+    } else {
+        Arc::new(judge)
+    };
+    Arc::new(Connector::serving(view, judge, Some(Arc::new(tls)), wake))
+}
+
+fn tls_hook_response() -> (String, String, std::thread::JoinHandle<bool>) {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let ca_key = KeyPair::generate().unwrap();
+    let mut params = CertificateParams::new(Vec::new()).unwrap();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let ca = params.self_signed(&ca_key).unwrap();
+    let issuer = Issuer::from_params(&params, ca_key);
+    let leaf_key = KeyPair::generate().unwrap();
+    let leaf = CertificateParams::new(vec!["localhost".to_owned()])
+        .unwrap()
+        .signed_by(&leaf_key, &issuer)
+        .unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
     ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![leaf.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(leaf_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind(("localhost", 0)).unwrap();
+    let addr = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let served = std::thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        let mut tcp = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "actual TLS connection was attempted"
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("local TLS accept: {error}"),
+            }
+        };
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        tcp.set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut connection = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+        while connection.is_handshaking() {
+            if connection.complete_io(&mut tcp).is_err() {
+                return false;
+            }
+        }
+        let mut stream = rustls::StreamOwned::new(connection, tcp);
+        let mut header = Vec::new();
+        let mut byte = [0u8; 1];
+        while !header.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+        }
+        let header = String::from_utf8(header).unwrap();
+        assert!(header.starts_with("POST /route HTTP/1.1\r\n"));
+        let len: usize = header
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map(|(_, value)| value.trim().parse().unwrap())
+            })
+            .unwrap();
+        let mut payload = vec![0u8; len];
+        stream.read_exact(&mut payload).unwrap();
+        let payload: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(payload["op"], "decide");
+        let body = br#"{"order":[9,3]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+        stream.conn.send_close_notify();
+        let _ = stream.conn.complete_io(&mut stream.sock);
+        true
+    });
+    (addr, ca.pem(), served)
+}
+
+#[test]
+fn actual_hook_http_need_uses_trusted_tls_and_refuses_withheld_anchors() {
+    for arm in arms() {
+        for trusted in [true, false] {
+            let (address, ca, served) = tls_hook_response();
+            let b = arm.bind_over(true, trusted.then_some(ca.as_str()), false);
+            b.open(&json!({"url":format!("{address}/route"),"timeout_ms":2000}).to_string())
+                .unwrap();
+            let view = decide_frame();
+            let done = b.submit(slot::DECIDE, view.input(), blank_out::<DecideOut>());
+            if trusted {
+                assert_eq!(done.outcome, Outcome::Ready, "{:?}", done.error);
+                let out = done.frame.unwrap().out;
+                assert_eq!(out.verbs, VERB_PREFER);
+                assert_eq!(view.order(out.order_written), [9, 3]);
+            } else {
+                assert_eq!(done.outcome, Outcome::Failed);
+                assert!(done.error.as_deref().is_some_and(|error| !error.is_empty()));
+            }
+            assert_eq!(
+                served.join().unwrap(),
+                trusted,
+                "untrusted TLS never reaches HTTP request parsing"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_production_guard_refuses_private_and_metadata_dials_and_admits_operator_loopback() {
+    use busbar_contract::abi::host::conn::connector::{
+        DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE, KEEP_NAMED,
+    };
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{ConnError, InstanceId, NeedId, OpenDesc};
+    use std::net::TcpListener;
+    use std::time::Instant;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let table = real_connector(Arc::new(|_, _| {}), None, true);
+    let owner = InstanceId(7);
+    let mut sequence = 0;
+    let mut dial = |class, target: &str| {
+        sequence += 1;
+        let need_id = NeedId(sequence);
+        table
+            .declare(
+                owner,
+                need_id,
+                &ReadNeed {
+                    direction: DIRECTION_OUTBOUND,
+                    egress_class: class,
+                    transport: "tcp".to_owned(),
+                    auth: String::new(),
+                    target_from: String::new(),
+                    trust_from: String::new(),
+                    details: ReadBlob {
+                        fmt: 0,
+                        flags: 0,
+                        bytes: Vec::new(),
+                    },
+                    timeout_ms: 0,
+                    keep_mode: KEEP_NAMED,
+                    keep_response_headers: Vec::new(),
+                    deny_response_headers: Vec::new(),
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let answer = table.open(
+                owner,
+                need_id,
+                &OpenDesc {
+                    target,
+                    timeout_ms: 2000,
+                    ..Default::default()
+                },
+            );
+            match answer {
+                Err(ConnError::Pending) => {
+                    assert!(Instant::now() < until);
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                answer => break answer,
+            }
+        }
+    };
+    for (class, target) in [
+        (EGRESS_DEFAULT, "10.0.0.1:443"),
+        (EGRESS_DEFAULT, address.as_str()),
+        (EGRESS_OPERATOR_INFRASTRUCTURE, "169.254.169.254:80"),
+    ] {
+        assert_eq!(dial(class, target).map(|_| ()), Err(ConnError::Refused));
+    }
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "no refused destination is dialled"
+    );
+    let id =
+        dial(EGRESS_OPERATOR_INFRASTRUCTURE, &address).expect("operator loopback control admitted");
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < until,
+                    "admitted dial reached its actual listener"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            other => panic!("loopback listener: {other:?}"),
+        }
+    }
+    table
+        .close(owner, id)
+        .expect("close actual control connection");
+}
+
+#[test]
+fn actual_hook_short_order_answer_is_recalled_once_on_its_same_ticket() {
+    for arm in arms() {
+        for short_again in [false, true] {
+            let b = arm.bind();
+            b.open(URL_SETTINGS).unwrap();
+            b.upstream.answer(200, "OK", br#"{"order":[9,3,7]}"#);
+            let mut rows = candidates();
+            let mut third = candidates().remove(0);
+            third.idx = 7;
+            rows.push(third);
+            let view = DecideView::build(&request(), &rows, &context());
+            let caps = Caps {
+                order: 2,
+                ..Caps::initial(&view)
+            };
+            let first = DecideFrame::new(Arc::clone(&view), caps);
+            let ticket = b.dispatcher.mint(0).unwrap();
+            let entered = b.plugin.inner.crossings.load(Ordering::SeqCst);
+            let resumed = b.plugin.inner.resumes.load(Ordering::SeqCst);
+            let deadline = now_ns() + 10_000_000_000;
+            let short = b
+                .dispatcher
+                .submit_watched(
+                    &b.plugin,
+                    ticket,
+                    slot::DECIDE,
+                    Frame::new(first.input(), blank_out::<DecideOut>()),
+                    DeadlineClass::Call,
+                    deadline,
+                    Arc::clone(&first) as busbar_plugin_loader::dispatch::Lent,
+                    Duration::from_secs(10),
+                )
+                .wait_done();
+            assert!(short.short);
+            assert_eq!(short.outcome, Outcome::Failed);
+            assert_eq!(short.lease, 0);
+            let out = short.frame.unwrap().out;
+            assert_eq!(out.order_needed, 3);
+            assert_eq!(out.order_written, 0);
+            let grown = if short_again {
+                DecideFrame::new(Arc::clone(&view), caps)
+            } else {
+                first.regrown_decide(&out)
+            };
+            let answer = b
+                .dispatcher
+                .submit_watched(
+                    &b.plugin,
+                    ticket,
+                    slot::DECIDE,
+                    Frame::new(grown.input(), blank_out::<DecideOut>()),
+                    DeadlineClass::Call,
+                    deadline,
+                    Arc::clone(&grown) as busbar_plugin_loader::dispatch::Lent,
+                    Duration::from_secs(10),
+                )
+                .wait_done();
+            b.dispatcher.recycle(ticket);
+            let resumes = b.plugin.inner.resumes.load(Ordering::SeqCst) - resumed;
+            assert_eq!(
+                b.plugin.inner.crossings.load(Ordering::SeqCst) - entered - resumes,
+                2
+            );
+            assert!(resumes > 0);
+            assert_eq!(answer.lease, 0);
+            if short_again {
+                assert_eq!(answer.outcome, Outcome::Fault);
+            } else {
+                assert_eq!(answer.outcome, Outcome::Ready);
+                let out = answer.frame.unwrap().out;
+                assert_eq!(out.verbs, VERB_PREFER);
+                assert_eq!(grown.order(out.order_written), [9, 3, 7]);
+            }
+            assert_eq!(
+                b.upstream.sent.lock().unwrap().len(),
+                1,
+                "recall does not repeat the network request"
+            );
+            assert_eq!(b.dispatcher.stats().deadline_without_wake, 0);
+        }
+    }
+}
+
+const URL_SETTINGS: &str =
+    r#"{"url":"http://user:pa%20ss@127.0.0.1:9/hook?x=1","timeout_ms":2000}"#;
+
+fn counted_sync<I: InFrame, O: OutFrame>(
+    b: &Bound,
+    operation: u32,
+    frame: &mut Frame<I, O>,
+) -> Called {
+    let entered = b.plugin.inner.crossings.load(Ordering::SeqCst);
+    let resumed = b.plugin.inner.resumes.load(Ordering::SeqCst);
+    let answer = b.plugin.call(operation, frame);
+    assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst) - entered, 1);
+    assert_eq!(b.plugin.inner.resumes.load(Ordering::SeqCst) - resumed, 0);
+    answer
+}
+
+#[test]
+fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original_contract() {
+    use busbar_contract::abi::mechanism::call::InHead;
+    use busbar_contract::abi::mechanism::lifecycle::{TickIn, TickOut, ValidateIn};
+    for arm in arms() {
+        let b = arm.bind();
+        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        assert_eq!(
+            b.plugin.kind(),
+            busbar_contract::abi::mechanism::KindCode::Hook
+        );
+        assert!(!b.plugin.name().is_empty());
+        assert!(b.plugin.max_inflight() > 0);
+        assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst), before);
+        for bad in [
+            "not json",
+            "{}",
+            r#"{"url":""}"#,
+            r#"{"url":5}"#,
+            r#"{"url":"http://169.254.169.254/"}"#,
+            r#"{"url":"https://169.254.169.254/"}"#,
+        ] {
+            let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+            let mut reason = [0u8; 1024];
+            let mut frame: Frame<ValidateIn, OutHead> = Frame::new(
+                ValidateIn {
+                    head: in_head(),
+                    settings: json_blob(bad),
+                    err_buf: reason.as_mut_ptr(),
+                    err_cap: reason.len(),
+                },
+                out_head(),
+            );
+            let answer = counted_sync(&b, life::VALIDATE, &mut frame);
+            assert_eq!(answer.outcome, Outcome::Failed);
+            assert_eq!(answer.lease, 0);
+            assert!(!answer.error.as_deref().unwrap_or_default().is_empty());
+            assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst) - before, 1);
+            assert!(b.open(bad).is_err());
+        }
+        let ticket = b.dispatcher.mint(0).unwrap();
+        let view = decide_frame();
+        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        let mut unopened = Frame::new(view.input(), blank_out::<DecideOut>());
+        assert_ne!(
+            b.plugin
+                .call_inline(ticket, false, slot::DECIDE, &mut unopened)
+                .outcome,
+            Outcome::Ready
+        );
+        assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst), before);
+        b.dispatcher.recycle(ticket);
+        let mut valid: Frame<ValidateIn, OutHead> = Frame::new(
+            ValidateIn {
+                head: in_head(),
+                settings: json_blob(URL_SETTINGS),
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            out_head(),
+        );
+        assert_eq!(
+            counted_sync(&b, life::VALIDATE, &mut valid).outcome,
+            Outcome::Ready
+        );
+        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        b.plugin
+            .ready(&b.dispatcher, Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(
+            b.plugin.inner.crossings.load(Ordering::SeqCst) - before,
+            u64::from(b.plugin.has_ready())
+        );
+        let opened_before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        b.open(URL_SETTINGS).unwrap();
+        assert_eq!(
+            b.plugin.inner.crossings.load(Ordering::SeqCst) - opened_before,
+            1
+        );
+        let managed_before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        assert!(b.describe()["schema"].is_object());
+        assert!(b.status()["status"]["settings"].is_object());
+        assert_eq!(
+            b.plugin.inner.crossings.load(Ordering::SeqCst) - managed_before,
+            4,
+            "status and describe each cross once and release their lease once"
+        );
+        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        assert!(b.open(URL_SETTINGS).is_err());
+        assert_eq!(
+            b.plugin.inner.crossings.load(Ordering::SeqCst),
+            before,
+            "duplicate open is a host refusal"
+        );
+        let mut refresh = Frame::new(
+            RefreshIn {
+                head: in_head(),
+                generation: 2,
+                settings: json_blob("{}"),
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            out_head(),
+        );
+        assert_eq!(
+            counted_sync(&b, life::REFRESH, &mut refresh).outcome,
+            Outcome::Failed
+        );
+        b.upstream.answer(200, "OK", br#"{"order":[9,3]}"#);
+        assert_eq!(
+            decide_verbs(&b),
+            VERB_PREFER,
+            "refused refresh keeps the original target serving"
+        );
+        let settings = r#"{"url":"http://127.0.0.2:8123/refreshed","timeout_ms":2000}"#;
+        let mut refresh = Frame::new(
+            RefreshIn {
+                head: in_head(),
+                generation: 3,
+                settings: json_blob(settings),
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            out_head(),
+        );
+        assert_eq!(
+            counted_sync(&b, life::REFRESH, &mut refresh).outcome,
+            Outcome::Ready
+        );
+        b.upstream.answer(200, "OK", br#"{"order":[9,3]}"#);
+        assert_eq!(decide_verbs(&b), VERB_PREFER);
+        assert_eq!(b.upstream.last().path, b"/refreshed");
+        let mut unknown: Frame<ReleaseIn, OutHead> = Frame::new(
+            ReleaseIn {
+                head: in_head(),
+                lease: 42,
+            },
+            out_head(),
+        );
+        let refused = counted_sync(&b, life::RELEASE, &mut unknown);
+        assert_eq!(refused.outcome, Outcome::Refused);
+        assert_eq!(
+            refused.error.as_deref(),
+            Some(busbar_contract::abi::sdk::life::NO_SUCH_LEASE.as_bytes())
+        );
+        let mut tick = Frame::new(
+            TickIn {
+                head: in_head(),
+                now_ns: 1,
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 7,
+            },
+        );
+        assert_eq!(
+            counted_sync(&b, life::TICK, &mut tick).outcome,
+            Outcome::Ready
+        );
+        assert_eq!(tick.out.next_tick_ns, 0);
+        let mut close: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
+        assert_eq!(
+            counted_sync(&b, life::CLOSE, &mut close).outcome,
+            Outcome::Ready
+        );
+        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        let ticket = b.dispatcher.mint(0).unwrap();
+        let view = decide_frame();
+        let mut request = Frame::new(view.input(), blank_out::<DecideOut>());
+        assert_ne!(
+            b.plugin
+                .call_inline(ticket, false, slot::DECIDE, &mut request)
+                .outcome,
+            Outcome::Ready
+        );
+        b.dispatcher.recycle(ticket);
+        assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst), before);
+        assert_eq!(b.dispatcher.stats().deadline_without_wake, 0);
+    }
 }

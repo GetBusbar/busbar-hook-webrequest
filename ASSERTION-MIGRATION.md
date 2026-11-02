@@ -1,30 +1,30 @@
-# Ordinary assertion migration
+# Ordinary actual-product assertion migration
 
-Historical core source: a35493a5e74cc935ff7dcc15c1af869290da91cb. Incremental source; generated suite stays enabled while required assertions remain unmigrated.
+Historical framework source: core a35493a5e74cc935ff7dcc15c1af869290da91cb. All local framework macros, helper imports and kit dependency edges are removed. Actual linked and independently built dropped images are mandatory; BUSBAR_PLUGIN_CDYLIB names the fresh absolute image, with no stale scan or absent-image skip.
 
-| Historical dependency/assertion | Current ordinary destination/status |
+| Old assertion | Ordinary owner |
 |---|---|
-| `settings_as_the_kernel_resolves` reference resolution | `reference_url.rs` and `declared_secrets.rs` directly invoke production `secret_fields::resolve_declared_fields`, with unchanged success/refusal expectations. Declaration-only loads use ConnTable::Probe (no host calls); duplicate support-host tests remain in conformance.rs, not deleted globally |
-| forwarder clock-only ServicesDouble | production `KernelServices::new().with_mono_clock(now_ns)`, same actual loader deadline clock |
-| real forwarder requests/lifecycle/configure/failure/canary behavior | existing `forwarder.rs` assertions retained unchanged; now binds production Connector/Dispatched TCP+HTTP directly; no kit refs in forwarder.rs |
-| generated behavior parity / exact crossing / lifecycle / refresh / short-order-buffer | existing generated conformance suite retained pending ordinary equivalents |
-| kind ABI/layout/Statement/wrongkind/connection isolation/failingready/no-table negatives | retained pending core loader owner destination ACK |
-| moved count comparator | framework selfcheck; not yet retired |
-| emitted credentials canary | retained generated until direct output/log coverage equivalence demonstrated |
-| plane class/layout, transport frame-piece, outbound auth three cases, newer-store-schema | kind-conditional suite no-op for this hook |
-| needs declaration/profile | retained generated pending ordinary equivalents |
-| initialized URL/response/echo byte wiping including unwind and unwiped negative control | `target_custody.rs` now locally watches only registered initialized exclusive owner prefixes immediately before actual System deallocation. All real owner wipe/reallocation/byte-count assertions and unwiped negative control retained. Old observer reentry/process_vm_readv syscall-error flags retire as observer-selfchecks: the local Cell state and volatile pre-free direct reads perform no allocation, syscall or remote-memory read. |
-| linked raw cancellation/lifecycle frame tests | `hook-webrequest/src/tests/door_tests.rs` lifecycle module retained; raw-host test_support remains pending migration |
-| TLS far endpoint, real TCP+HTTP host | support macro retained; must migrate to local ordinary actual connector and TLS endpoint before deletion |
+| Behavior parity, absolute request bytes, actionable diagnostics, refusal/error/URL canaries | Existing `forwarder.rs` both-origin script and named failure/configuration/canary tests, retained |
+| Physical image distinction and identical actual Statements | `conformance.rs` image-address and declared-needs tests |
+| ABI ±1 pack/linked/dropped-manifest errors and rebuild reason | `the_actual_kind_abi_is_checked_by_pack_linked_and_dropped_origins` |
+| Layout ^1/0 pack and linked honest/own-row refusals | `the_actual_kind_layout_is_checked_under_honest_and_own_rows` |
+| Valid-but-different Statement, both origins and restated version | `the_actual_statement_matches_each_row_manifest_and_restated_version` |
+| Every other kind refused with honest actual product twins | `the_actual_image_is_refused_as_every_other_kind_through_both_origins` |
+| Short order answer, same-ticket regrow/re-call and second-short fault | `actual_hook_short_order_answer_is_recalled_once_on_its_same_ticket`; exact two first entries, separate resumes, one network request, host buffers and zero leases |
+| Facts/validate/refused opens/ready/duplicate open/refused refresh retaining state/valid refresh/tick/release/close/closed refusal | `actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original_contract`, actual physical counters plus existing pending-refresh/configure tests |
+| Configure, notify, status/describe and leased reply release | Existing ordinary script, configure/checkpoint/notification tests; management physical counters in the ordinary lifecycle test |
+| Exact operation crossings and pending wake discipline | Actual public Instance.crossings/resumes snapshots in submit and sequential lifecycle calls; deadline_without_wake=0 |
+| Declared needs and requested release profile | `declared_needs_and_requested_profile_match_the_actual_images` |
+| Trusted local TLS, withheld anchors, actual HTTP framer route/body | `actual_hook_http_need_uses_trusted_tls_and_refuses_withheld_anchors`, both actual origins and real TCP/HTTP transport doors |
+| Production destination guard refusal and operator-loopback positive control | `the_production_guard_refuses_private_and_metadata_dials_and_admits_operator_loopback` |
+| Initialized URL/response/error byte wiping, unwind and unwiped control | Four existing `target_custody.rs` tests retained with local pre-System-deallocation initialized-owner observations; actual URL serialization coverage expands from three to six prefixes |
 
-No kit dependency has been removed while it still supplies live assertions. No replacement shared framework introduced. Same-SDK busbar-kernel is a dev-only actual product dependency; SDK refs, lock sources and versions unchanged; lock dependency membership adds the actual KernelServices dev dependency. Build/test execution must use centralized lane; rustfmt and diff checks only so far.
+Generic loader source transfer: core 8227f0138ef2e44d4cefd25ce8fd3d51a9604b6a ordinary_load_negatives owns generic failed-ready/metadata safety; ef00f652 source ACK and actual GitHub image abd7663 own undeclared-need, cross-instance-connection and absent-table custody arms. Local per-product pack/origin/version/layout checks remain above. These are source ownership ACKs, not claims of root native qualification.
 
-## Monday audit composition
+The synthetic Watched/OpenWatched positive hook adapter and its raw FakeHost/Far/TestIn helpers are deleted. The two Weak-context retirement predicates transfer to CURRENT core 10f75e9ee9826da02231d88da28806d2cd6f77f0 `crates/busbar-contract/src/abi/sdk/tests/hook_tests.rs::operation_context_follows_pending_custody_and_retires_without_slot_reuse`: DECIDE/TRANSFORM/NOTIFY at high slots40..63, original snapshot retention through resume, cancellation/terminal/close retirement and stale-generation cancellation isolation. Root explicitly ACKed this SDK boundary. Actual Forwarder target/wire/configuration/cancellation tests remain in this repository and still run through both real origins.
 
-Both source histories are retained. The donor's concurrent-partial-configure fix is composed with the later typed Result API, applied-configuration mutex and complete checkpoints; the repeated race test is retained using that API. The mutex serializes the read/merge/checkpoint/swap transaction.
+Retired framework-only checks: perturbing the retired recorder's counts; plane-only billable classes/layout; transport-only frame-piece; outbound-auth-only plants; newer-store-schema branch. The old hook inputs supplied no credentials and the framework canary returned early for this non-Secret kind; direct real URL/field canary tests remain substantive here. The old observer's reentry/syscall-error flags retire because the local fixed Cell state and volatile pre-free reads allocate nothing and perform no syscall; freed/reallocated/full-byte-read/wipe/control assertions remain.
 
-The donor's status-drift fixes retain the operator's URL spelling and timeout JSON value. The additional raw URL owner is wiped by Target::drop; configure's pre-commit raw URL is held in the existing zeroizing Text guard. The initialized-owner custody test now watches both actual URL serializations. Checkpoints preserve the same desired spelling/value, so recovery retains both drift status and the clamped effective timeout; an ordinary replay test asserts both.
+Monday audit histories are both preserved. The actual applied mutex and full checkpoints retain serial configuration composition; the donor repeated-race test is adapted to the current typed API. Status preserves desired URL spelling and timeout values, while Target::drop and early-return Text/ParsedUrl guards wipe both raw and parsed URL owners. Checkpoints replay that spelling while deriving the same clamped effective timeout. The object-only guard retains original typed Config/Text parsing so partially parsed credentials remain guarded on syntax/type errors. The donor SSRF embedded-loopback fix, per-part and decoded canaries, clamp/refusal assertions and shared contract depth scanner remain.
 
-The donor's JSON-object-only settings check is retained with the current sanitized typed-setting refusals and direct typed Config/Text deserialization, including failed partial parses (an initial full Value parse was rejected during source review because it could discard partially parsed credentials before any zeroizing wrapper existed). Percent-decoded and per-part canary tests, strengthened clamp-warning needles and metadata-host refusal, and shared contract JSON-depth implementation are retained. The inconsistent NAT64/6to4/Teredo embedded-loopback carve-out is corrected per the audit: only actual loopback spellings receive the sidecar exception. The earlier contradictory allow assertion is replaced by the donor's blocked vectors, not retained as a history-based bug.
-
-Source review and native validation remain separate. No golden, oracle registry or SDK pin was changed.
+Native source qualification follows on the frozen SHA and reconciled authored lock. Final SDK/CI composition remains separately qualified; no pin or oracle registry was retargeted here. Raw status Value/lease custody in the current SDK was reported to its production owner for final SDK closure.

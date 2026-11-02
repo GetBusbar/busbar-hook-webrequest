@@ -278,7 +278,6 @@ name = "busbar-hook-webrequest"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-test-kit",
  "http",
  "reqwest",
  "serde",
@@ -298,9 +297,10 @@ dependencies = [
  "busbar-hook-webrequest-plugin",
  "busbar-kernel",
  "busbar-plugin-loader",
- "busbar-test-kit",
  "busbar-transport-http",
  "busbar-transport-tcp",
+ "rcgen",
+ "rustls",
  "serde_json",
  "tokio",
 ]

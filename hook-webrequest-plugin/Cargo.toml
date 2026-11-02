@@ -33,6 +33,8 @@ busbar-hook-webrequest = { path = "../hook-webrequest" }
 busbar-contract = { workspace = true }
 
 [dev-dependencies]
+rcgen = { workspace = true, features = ["pem"] }
+rustls = { workspace = true }
 busbar-kernel = { workspace = true }
 # The conformance test opens this crate's own cdylib WITH its dropped-in door on (see `[features]`).
 busbar-hook-webrequest-plugin = { path = ".", features = ["dropped-in"] }
@@ -40,9 +42,7 @@ busbar-hook-webrequest-plugin = { path = ".", features = ["dropped-in"] }
 # same loader — dev-only, never in the shipped artifact. Same pinned rev as busbar-contract above,
 # so one busbar source resolves.
 busbar-plugin-loader = { workspace = true }
-busbar-test-kit = { workspace = true }
-# THE SUITE'S HOST CONNECTOR (tests/support/conformance_host.rs, rendered): busbar's connector, its
-# TLS test kit, and the transport framers this plugin's needs name. Dev-only.
+# The actual production connector and TCP/HTTP transport doors used by ordinary local endpoints.
 busbar-core-connector = { workspace = true }
 busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
