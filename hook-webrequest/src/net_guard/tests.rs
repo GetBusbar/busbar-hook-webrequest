@@ -153,8 +153,25 @@ fn ipv6_embeddings_of_internal_ipv4_targets_are_blocked() {
         embedded_ipv4(&"2606:4700:4700::1111".parse().unwrap()),
         None
     );
-    // ...and a NAT64/6to4 form carrying LOOPBACK keeps the sidecar carve-out.
-    assert!(!host_is_blocked(&url("http://[64:ff9b::7f00:1]:8080/x")));
+    // ...and a NAT64/6to4/Teredo form carrying LOOPBACK is NOT the loopback sidecar (it routes to a
+    // relay or gateway), so it is blocked, the same answer `host_is_loopback` gives it.
+    for addr in [
+        "64:ff9b::7f00:1",
+        "2002:7f00:1::",
+        "2001:0:0:0:0:0:80ff:fffe",
+    ] {
+        assert!(
+            !host_is_loopback(&url(&format!("https://[{addr}]/x"))),
+            "{addr}"
+        );
+        assert!(
+            host_is_blocked(&url(&format!("http://[{addr}]:8080/x"))),
+            "{addr}"
+        );
+    }
+    // The real loopback spellings keep the carve-out.
+    assert!(!host_is_blocked(&url("http://[::1]:8080/x")));
+    assert!(!host_is_blocked(&url("http://[::ffff:127.0.0.1]:8080/x")));
 }
 
 /// `fe80::/10` is a /10, not a /16. The only previous fixture was `fe80::1`, whose first segment is

@@ -136,16 +136,18 @@ pub fn host_is_blocked(url: &url::Url) -> bool {
 }
 
 /// The internal-address predicate over the literal host [`host_is_blocked`] parsed, the loopback
-/// carve-out for sidecars included.
+/// carve-out for sidecars included. The carve-out is [`ip_is_loopback`], the same predicate
+/// [`host_is_loopback`] uses, so one address gets one answer; an embedded (6to4, Teredo, NAT64)
+/// loopback is not loopback, and falls to the internal check, which counts 127/8.
 fn ip_is_internal(ip: &IpAddr) -> bool {
+    if ip_is_loopback(ip) {
+        return false;
+    }
     match ip {
-        IpAddr::V4(v4) => !v4.is_loopback() && ipv4_is_internal(v4),
+        IpAddr::V4(v4) => ipv4_is_internal(v4),
         IpAddr::V6(v6) => {
-            if v6.is_loopback() {
-                return false; // `::1` loopback sidecar — allowed
-            }
             if let Some(v4) = embedded_ipv4(v6) {
-                return !v4.is_loopback() && ipv4_is_internal(&v4);
+                return ipv4_is_internal(&v4);
             }
             ipv6_is_internal(v6) || is_site_local_v6(v6)
         }
