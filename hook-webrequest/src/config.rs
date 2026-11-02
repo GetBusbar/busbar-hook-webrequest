@@ -152,7 +152,15 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
     let config: Config = if text.trim().is_empty() {
         Config::default()
     } else {
-        serde_json::from_str(text).map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?
+        let value: serde_json::Value = serde_json::from_str(text)
+            .map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?;
+        // serde's derive also reads a JSON array by position, so only an object is a settings map.
+        if !value.is_object() {
+            return Err(format!(
+                "{ALIAS}: invalid plugin config: settings must be a JSON object"
+            ));
+        }
+        serde_json::from_value(value).map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?
     };
     Target::validate(&config)
 }

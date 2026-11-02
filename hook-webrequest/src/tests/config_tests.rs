@@ -245,3 +245,21 @@ fn open_and_configure_refuse_an_ambiguous_url() {
     );
     assert!(!nack.contains("tok/en"), "{nack}");
 }
+
+/// A settings document that is not a JSON object is refused: serde's derive would otherwise read an
+/// array by position and make a live target of it.
+#[test]
+fn open_refuses_a_non_object_document() {
+    for bad in [
+        &br#"["https://hooks.example/x", 0]"#[..],
+        br#""https://hooks.example/x""#,
+        b"42",
+        b"null",
+    ] {
+        let err = open(bad).unwrap_err();
+        assert_eq!(
+            err, "webrequest: invalid plugin config: settings must be a JSON object",
+            "{bad:?}"
+        );
+    }
+}
