@@ -10,11 +10,18 @@ use crate::door::{transport_failure, Live};
 use crate::wire;
 use busbar_contract::abi::sdk::conn::ConnFailure;
 
-const CANARY: &str = "CANARYd41c07";
+/// One canary per part of the URL, so each arm of `secret_parts` is pinned on its own: a scrub that
+/// only cut the password would not hide the path key or the query token.
+const PWCANARY: &str = "PWCANARYd41c07";
+const PATHCANARY: &str = "PATHCANARYe52d18";
+const QUERYCANARY: &str = "QUERYCANARYf63e29";
+const CANARIES: [&str; 3] = [PWCANARY, PATHCANARY, QUERYCANARY];
 
 fn target() -> Target {
     config::open(
-        format!(r#"{{"url": "http://svc:{CANARY}@127.0.0.1:9/hook/{CANARY}?token={CANARY}"}}"#)
+        format!(
+            r#"{{"url": "http://svc:{PWCANARY}@127.0.0.1:9/hook/{PATHCANARY}?token={QUERYCANARY}"}}"#
+        )
             .as_bytes(),
     )
     .expect("a loopback sidecar opens")
@@ -42,10 +49,9 @@ fn debug_of_the_target_and_the_wire_request_carries_no_credential() {
         format!("{r:?}"),
         format!("{r:#?}"),
     ] {
-        assert!(
-            !text.contains(CANARY),
-            "Debug carried the credential: {text}"
-        );
+        for canary in CANARIES {
+            assert!(!text.contains(canary), "Debug carried {canary}: {text}");
+        }
         assert!(
             !text.contains(token),
             "Debug carried the Basic value: {text}"
@@ -59,18 +65,20 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_url() {
     let t = target();
     for failure in [
         ConnFailure::Failed(format!("error sending request for url ({}): reset", t.url)),
+        // Quotes ONLY the path and the query, so the password part cannot cut them for it.
         ConnFailure::Refused(format!(
-            "connect to {} refused; path {} query {}",
-            t.url.as_str(),
+            "refused; path {} query {}",
             t.url.path(),
             t.url.query().unwrap_or("")
         )),
     ] {
         let text = transport_failure(&Live::new(t.clone()), &failure);
-        assert!(
-            !text.contains(CANARY),
-            "the logged failure carried the credential: {text}"
-        );
+        for canary in CANARIES {
+            assert!(
+                !text.contains(canary),
+                "the logged failure carried {canary}: {text}"
+            );
+        }
         assert!(
             text.starts_with("webrequest: request failed: error sending request: "),
             "1.5.5's prefix is kept: {text}"
