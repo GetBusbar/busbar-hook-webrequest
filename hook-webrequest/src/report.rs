@@ -30,10 +30,11 @@ pub fn describe() -> serde_json::Value {
     })
 }
 
-/// `status`: the live target, reported under the SAME `url` key the operator pushes, with the url text
-/// as the operator wrote it. The engine's drift check compares the reported VALUE against the desired
-/// one, so a masked or canonicalised url would report drift on every poll for a hook running exactly
-/// its desired settings. The reported bag never leaves the drift check (only key names do), so the
+/// `status`: the live target, reported under the SAME `url` and `timeout_ms` keys the operator pushes,
+/// with the url text and the timeout as the operator wrote them (`timeout_ms` is `null` when none was
+/// given). The engine's drift check compares the reported VALUE against the desired one, so a masked
+/// or canonicalised url, or a defaulted or clamped timeout, would report drift on every poll for a
+/// hook running exactly its desired settings. The reported bag never leaves the drift check (only key names do), so the
 /// url is not masked here; every log line still names it through [`crate::net_guard::loggable_url`].
 #[must_use]
 pub fn status(live: &Target) -> serde_json::Value {
@@ -42,7 +43,7 @@ pub fn status(live: &Target) -> serde_json::Value {
             "settings": {
                 "url": live.url_text,
                 "target_host": live.url.host_str().unwrap_or(""),
-                "timeout_ms": live.timeout.as_millis() as u64
+                "timeout_ms": live.timeout_text
             },
             "metrics": []
         }

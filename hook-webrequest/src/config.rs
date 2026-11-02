@@ -62,6 +62,10 @@ pub struct Target {
     /// value-comparing drift check sees the desired settings (the parsed `url` is canonicalised).
     /// Never logged: every log line names the URL through [`net_guard::loggable_url`].
     pub url_text: String,
+    /// The `timeout_ms` as the operator wrote it (`Null` when absent or null), which `status` echoes
+    /// under `timeout_ms` for the same reason as `url_text`: the effective `timeout` is defaulted or
+    /// clamped, so reporting it would show drift against a desired `null` or out-of-range value.
+    pub timeout_text: serde_json::Value,
     /// The wall-clock bound of one op, in `[1ms, MAX_TIMEOUT_MS]`.
     pub timeout: Duration,
 }
@@ -82,7 +86,7 @@ pub fn clamp_timeout(ms: u64) -> Duration {
 }
 
 impl Target {
-    fn validate(cfg: &Config) -> Result<Self, String> {
+    fn validate(cfg: &Config, timeout_text: serde_json::Value) -> Result<Self, String> {
         if cfg.url.trim().is_empty() {
             return Err(format!("{ALIAS}: settings.url is required"));
         }
@@ -90,6 +94,7 @@ impl Target {
         Ok(Self {
             url,
             url_text: cfg.url.clone(),
+            timeout_text,
             timeout: clamp_timeout(cfg.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         })
     }
@@ -154,6 +159,7 @@ pub fn warnings_in(settings: &[u8]) -> Vec<String> {
 pub fn open(settings: &[u8]) -> Result<Target, String> {
     let text = std::str::from_utf8(settings)
         .map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?;
+    let mut timeout_text = serde_json::Value::Null;
     let config: Config = if text.trim().is_empty() {
         Config::default()
     } else {
@@ -165,9 +171,13 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
                 "{ALIAS}: invalid plugin config: settings must be a JSON object"
             ));
         }
+        timeout_text = value
+            .get("timeout_ms")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         serde_json::from_value(value).map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?
     };
-    Target::validate(&config)
+    Target::validate(&config, timeout_text)
 }
 
 /// The NACK text for `why`.
@@ -218,6 +228,7 @@ pub fn configure(
     }
     if let Some(timeout) = new_timeout {
         next.timeout = timeout;
+        next.timeout_text = settings["timeout_ms"].clone();
     }
     Ok(Some(next))
 }

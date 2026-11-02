@@ -43,3 +43,34 @@ fn status_url_is_the_configured_text() {
         "https://other.example"
     );
 }
+
+/// The drift check compares VALUES, so `status` echoes `timeout_ms` as the operator wrote it: an
+/// absent or `null` one reports `null` (not the 5000 ms default it runs with), and an out-of-range
+/// one reports the written number (not the clamped bound).
+#[test]
+fn status_timeout_ms_is_the_configured_value() {
+    let t = open(br#"{"url":"https://hooks.example/x","timeout_ms":null}"#).unwrap();
+    assert_eq!(
+        status(&t)["status"]["settings"]["timeout_ms"],
+        serde_json::Value::Null
+    );
+    let t = open(br#"{"url":"https://hooks.example/x"}"#).unwrap();
+    assert_eq!(
+        status(&t)["status"]["settings"]["timeout_ms"],
+        serde_json::Value::Null
+    );
+    let t = open(br#"{"url":"https://hooks.example/x","timeout_ms":99999999}"#).unwrap();
+    assert_eq!(status(&t)["status"]["settings"]["timeout_ms"], 99_999_999);
+    // configure: a non-null value moves it, null / absent leaves it alone.
+    let live = open(br#"{"url":"https://hooks.example/x","timeout_ms":250}"#).unwrap();
+    let pushed = serde_json::json!({"timeout_ms": 0});
+    let next = crate::config::configure(&live, pushed.as_object().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(status(&next)["status"]["settings"]["timeout_ms"], 0);
+    let pushed = serde_json::json!({"timeout_ms": null});
+    assert!(crate::config::configure(&live, pushed.as_object().unwrap())
+        .unwrap()
+        .is_none());
+    assert_eq!(status(&live)["status"]["settings"]["timeout_ms"], 250);
+}
