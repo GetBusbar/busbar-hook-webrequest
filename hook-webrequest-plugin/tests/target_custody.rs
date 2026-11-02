@@ -195,6 +195,7 @@ mod custody {
         }) };
     }
 
+    #[derive(Default)]
     pub struct Counting;
     impl Counting {
         pub const fn new() -> Self {
@@ -255,7 +256,8 @@ mod custody {
         pub payloads: Vec<Payload>,
     }
     impl InitializedPayloadProbe {
-        // SAFETY: registrations must uphold watch_initialized_payload's owner contract.
+        /// # Safety
+        /// Registrations must uphold watch_initialized_payload's exclusive owner contract.
         pub unsafe fn start() -> Result<Self, &'static str> {
             STATE.with(|cell| {
                 let mut state = cell.get();
@@ -290,8 +292,9 @@ mod custody {
         }
     }
 
-    // SAFETY: bytes names the complete initialized prefix at an owned allocation base.
-    // The owner must remain exclusively on this thread until it drops or reallocates.
+    /// # Safety
+    /// Bytes names the complete initialized prefix at an owned allocation base.
+    /// The owner must stay exclusively on this thread until it drops or reallocates.
     pub unsafe fn watch_initialized_payload(bytes: &[u8]) {
         STATE.with(|cell| {
             let mut state = cell.get();
