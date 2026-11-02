@@ -33,6 +33,7 @@ busbar-hook-webrequest = { path = "../hook-webrequest" }
 busbar-contract = { workspace = true }
 
 [dev-dependencies]
+url = { workspace = true }
 rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true }
 busbar-kernel = { workspace = true }

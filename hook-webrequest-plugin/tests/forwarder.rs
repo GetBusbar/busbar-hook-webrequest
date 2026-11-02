@@ -1905,9 +1905,13 @@ fn real_connector(
         })
         .clone();
     busbar_core_connector::io::install_process_reactor(io.clone());
-    let transport_dispatcher = Arc::new(Dispatcher::new(Default::default()));
-    transport_dispatcher.install_runtime(io);
-    transport_dispatcher.install_io(busbar_core_connector::hostio::process());
+    static TRANSPORT_DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
+    let transport_dispatcher = Arc::clone(TRANSPORT_DISPATCHER.get_or_init(|| {
+        let dispatcher = Arc::new(Dispatcher::new(Default::default()));
+        dispatcher.install_runtime(io);
+        dispatcher.install_io(busbar_core_connector::hostio::process());
+        dispatcher
+    }));
     let mut entries = Vec::new();
     for (name, door) in [
         ("tcp", busbar_transport_tcp::linked::MACRO_DOOR),
