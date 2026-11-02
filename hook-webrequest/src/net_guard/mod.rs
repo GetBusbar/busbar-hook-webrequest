@@ -266,8 +266,9 @@ fn scheme_of(raw: &str) -> String {
     echoable_scheme(raw.split_once(':').map_or("", |(scheme, _)| scheme))
 }
 
-/// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is
-/// what every URL echo uses; this alone leaves a `?token=` query in place.
+/// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], itself
+/// one step of [`loggable_url`], which is what every URL echo uses; this alone leaves a `?token=`
+/// query in place.
 ///
 /// Operates on the ALREADY-PARSED [`url::Url`] rather than doing textual `find("://")` surgery on
 /// the raw input string. This matters: WHATWG URL parsing (which both `url::Url::parse` and every
@@ -294,9 +295,10 @@ pub fn mask_userinfo(url: &url::Url) -> String {
     masked.to_string()
 }
 
-/// The target URL in a form that is safe to echo ANYWHERE: the ONE masker every URL echo in this
-/// crate goes through (the `status` surface and every `validate_target_url` error go through [`loggable_url`], which
-/// is this with the path cut).
+/// One step of [`loggable_url`], the masker every URL echo in this crate goes through (`Debug`, the
+/// logs and every `validate_target_url` error). This step masks userinfo and redacts the query and
+/// fragment but KEEPS THE PATH, which a sidecar may take its key in (`/v1/<key>`): do not echo its
+/// result directly. Only the scrub list ([`secret_parts`]) uses it as is.
 ///
 /// `mask_userinfo` alone is not enough. It masks credentials in the userinfo, but a sidecar that
 /// authenticates by query parameter (`?token=...`) is a common enough shape that echoing the raw
