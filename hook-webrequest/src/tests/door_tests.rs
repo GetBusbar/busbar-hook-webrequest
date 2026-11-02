@@ -102,3 +102,36 @@ fn concurrent_partial_configures_preserve_both_updates() {
     assert_eq!(live.url.as_str(), "http://127.0.0.2:9002/b");
     assert_eq!(live.timeout, std::time::Duration::from_millis(777));
 }
+
+/// The single-shot race above passes by luck on most schedules; repeat it so an unlocked
+/// read-merge-swap in `configure` is caught reliably.
+#[test]
+fn concurrent_partial_configures_never_lose_an_update_under_repetition() {
+    for round in 0..300 {
+        let f = forwarder("http://127.0.0.1:9001/a");
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let settings = serde_json::json!({"url":"http://127.0.0.2:9002/b"});
+                start.wait();
+                assert!(f.configure(settings.as_object().unwrap(), 2));
+            });
+            scope.spawn(|| {
+                let settings = serde_json::json!({"timeout_ms":777});
+                start.wait();
+                assert!(f.configure(settings.as_object().unwrap(), 2));
+            });
+        });
+        let live = f.entry_live(ticket(1));
+        assert_eq!(
+            live.url.as_str(),
+            "http://127.0.0.2:9002/b",
+            "round {round}"
+        );
+        assert_eq!(
+            live.timeout,
+            std::time::Duration::from_millis(777),
+            "round {round}"
+        );
+    }
+}

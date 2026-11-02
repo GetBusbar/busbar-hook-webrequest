@@ -317,21 +317,25 @@ impl Hook for Forwarder {
         settings: &serde_json::Map<String, serde_json::Value>,
         _version: u64,
     ) -> bool {
-        // Validated against a read snapshot (the SSRF check and the merge take time and need no
-        // lock); the write lock is held only to swap.
-        let current = self.live();
-        let result = config::configure(&current.target, settings);
-        if result.is_ok() {
-            config::log_warnings(settings);
-        }
+        // Read, merge and swap are one critical section under the write lock, so two overlapping
+        // partial pushes compose instead of the later swap dropping the earlier push's key. The
+        // check is pure (a literal-host test, no DNS or I/O), so holding the lock is cheap.
+        let mut guard = self.live.write().unwrap_or_else(PoisonError::into_inner);
+        let result = config::configure(&guard.target, settings);
         match result {
-            Ok(None) => true,
+            Ok(None) => {
+                drop(guard);
+                config::log_warnings(settings);
+                true
+            }
             Ok(Some(next)) => {
-                let next = Live::new(next);
-                *self.live.write().unwrap_or_else(PoisonError::into_inner) = next;
+                *guard = Live::new(next);
+                drop(guard);
+                config::log_warnings(settings);
                 true
             }
             Err(reason) => {
+                drop(guard);
                 tracing::warn!(diag = %crate::CONFIGURE_REFUSED, "{reason}");
                 false
             }
