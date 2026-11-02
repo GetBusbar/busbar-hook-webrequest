@@ -17,4 +17,4 @@ Historical core source: a35493a5e74cc935ff7dcc15c1af869290da91cb. Incremental so
 | linked raw cancellation/lifecycle frame tests | `hook-webrequest/src/tests/door_tests.rs` lifecycle module retained; raw-host test_support remains pending migration |
 | TLS far endpoint, real TCP+HTTP host | support macro retained; must migrate to local ordinary actual connector and TLS endpoint before deletion |
 
-No kit dependency has been removed while it still supplies live assertions. No replacement shared framework introduced. Same-SDK busbar-kernel is a dev-only actual product dependency; refs and locks unchanged. Build/test execution must use centralized lane; rustfmt and diff checks only so far.
+No kit dependency has been removed while it still supplies live assertions. No replacement shared framework introduced. Same-SDK busbar-kernel is a dev-only actual product dependency; SDK refs, lock sources and versions unchanged; lock dependency membership adds the actual KernelServices dev dependency. Build/test execution must use centralized lane; rustfmt and diff checks only so far.
