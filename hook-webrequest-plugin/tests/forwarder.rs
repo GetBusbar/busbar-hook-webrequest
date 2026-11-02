@@ -1157,7 +1157,7 @@ fn red_a_clamped_timeout_is_warned() {
         );
         assert_eq!(b.configure(r#"{"timeout_ms": 0}"#, 2), Ok(2));
         assert!(
-            warned(&b, &["timeout_ms", "0", "clamp"]),
+            warned(&b, &["timeout_ms 0 ", "clamped to 1"]),
             "{:?}",
             b.recorder.warns()
         );
