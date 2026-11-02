@@ -13,7 +13,7 @@ use serde_json::Value;
 pub const MAX_REPLY_BYTES: usize = 64 * 1024;
 
 /// Maximum JSON nesting depth accepted in a reply (busbar's `MAX_JSON_DEPTH`, a security floor).
-pub const MAX_REPLY_DEPTH: usize = 128;
+pub const MAX_REPLY_DEPTH: usize = busbar_contract::spans::MAX_JSON_DEPTH;
 
 /// The transport failure text: connect, send, timeout and a malformed head all read as this, with the
 /// URL removed so a `?token=` never reaches the engine's log.
@@ -97,38 +97,9 @@ pub fn parse_reply(bytes: &[u8]) -> Result<Value, String> {
         .map_err(|_| format!("{ALIAS}: invalid JSON reply ({} bytes)", bytes.len()))
 }
 
-/// Single-pass, string-aware scan for the maximum `{`/`[` nesting depth in `bytes`. Brackets inside JSON
-/// string literals (and `\`-escaped quotes) do not count. Short-circuits once `max` is exceeded.
-#[must_use]
-pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
-    let mut depth: usize = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-    for &b in bytes {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match b {
-            b'"' => in_string = true,
-            b'{' | b'[' => {
-                depth += 1;
-                if depth > max {
-                    return true;
-                }
-            }
-            b'}' | b']' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    false
-}
+/// The nesting-depth scanner is busbar's own (one copy, so a core fix or a changed floor reaches this
+/// plugin at a `.busbar-ref` bump).
+pub use busbar_contract::spans::exceeds_max_depth;
 
 /// The endpoint's answer as the framed http exchange hands it back: the status, its reason phrase and the body (the
 /// exchange holds it only to its own bound, busbar-contract's `REPLY_MAX`, and `Op::exchange` offers no way to
