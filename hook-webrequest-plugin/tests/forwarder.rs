@@ -402,7 +402,7 @@ impl Arm {
         let conns: Arc<dyn DeclaredConns> = if real {
             busbar_test_kit::conformance_host::host(
                 &[
-                    ("tcp", busbar_transport_tcp::door::MACRO_DOOR),
+                    ("tcp", busbar_transport_tcp::linked::MACRO_DOOR),
                     ("http", busbar_transport_http::door::MACRO_DOOR),
                 ],
                 dispatcher.conn_waker(),
