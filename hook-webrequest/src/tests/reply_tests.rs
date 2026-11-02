@@ -180,7 +180,6 @@ fn the_remote_reason_phrase_is_capped_and_escaped() {
         .contains("418 I'm a teapot)"));
 }
 
-/// R10: a notify is delivered by any 2xx/3xx, whatever the body (no parse, so no warn for a 204).
 #[test]
 fn a_notify_is_delivered_by_any_2xx_or_3xx_without_reading_the_body() {
     for code in [200, 204, 299, 301, 302, 399] {

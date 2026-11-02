@@ -778,8 +778,6 @@ fn the_linked_and_the_dropped_in_doors_answer_alike_and_as_1_5_5() {
     assert_eq!(linked, dropped);
 }
 
-/// RED: the Statement declares exactly one need: outbound, the loopback-allowed egress class, over
-
 #[test]
 fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     let read = rendering::read(&stated()).expect("the rendering reads");
@@ -796,8 +794,6 @@ fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     assert_eq!(dropped, stated());
 }
 
-/// D5: the Statement states its alias rewrite, the module name an operator writes, and the dropped-in
-
 #[test]
 fn red_the_statement_states_the_alias_rewrite() {
     let read = rendering::read(&stated()).expect("the rendering reads");
@@ -805,8 +801,6 @@ fn red_the_statement_states_the_alias_rewrite() {
     assert_eq!(read.rewrites[0].0, 1, "an alias rewrite");
     assert_eq!(read.rewrites[0].1, "webrequest");
 }
-
-/// D3: every operator-actionable line carries its declared catalogue code, and `declares.json`
 
 #[test]
 fn red_every_actionable_line_carries_its_declared_code() {
@@ -877,8 +871,6 @@ fn red_every_actionable_line_carries_its_declared_code() {
         );
     }
 }
-
-/// RED: a `decide` that cannot pend (no ticket) answers at once, FAILED (a request it could not
 
 #[test]
 fn red_a_ticketless_decide_fails_at_once() {
@@ -1008,7 +1000,6 @@ fn warned(b: &Bound, parts: &[&str]) -> bool {
         .any(|w| parts.iter().all(|p| w.contains(p)))
 }
 
-/// RED: a configure refusal is a NACK and says why in the plugin's log (1.5.5 wrote it to stderr).
 #[test]
 fn red_a_configure_refusal_is_logged() {
     for arm in arms() {
@@ -1298,8 +1289,6 @@ fn ambiguous_authority_refusals_never_echo_a_credential_fragment() {
     }
 }
 
-/// RED: a settings key the forwarder does not read is not refused (1.5.5 ignored it, so a 1.5.5
-
 #[test]
 fn red_an_unknown_setting_is_ignored_and_logged() {
     for arm in arms() {
@@ -1323,7 +1312,6 @@ fn red_an_unknown_setting_is_ignored_and_logged() {
     }
 }
 
-/// RED: an error status FAILS the decide (not an abstain), and the reason is logged.
 #[test]
 fn red_a_failed_decide_fails_and_is_logged() {
     for arm in arms() {
@@ -1339,8 +1327,6 @@ fn red_a_failed_decide_fails_and_is_logged() {
         );
     }
 }
-
-/// RED: a transport failure (the exchange cannot establish) reaches the plugin as a failure it
 
 #[test]
 fn red_a_transport_failure_fails_and_is_logged() {
@@ -1372,8 +1358,6 @@ fn red_a_transport_failure_fails_and_is_logged() {
         );
     }
 }
-
-/// RED: no diagnostic carries the URL's userinfo or query, through a configure refusal, an error
 
 #[test]
 fn red_the_log_never_leaks_the_url_secrets() {
@@ -1435,7 +1419,6 @@ fn a_committed_configure_moves_the_next_decide() {
     }
 }
 
-/// RED: a `timeout_ms` outside `[1, 5000]` is clamped and says so, at `open` and at `configure`.
 #[test]
 fn red_a_clamped_timeout_is_warned() {
     for arm in arms() {
@@ -1456,8 +1439,6 @@ fn red_a_clamped_timeout_is_warned() {
         assert_eq!(b.status()["status"]["settings"]["timeout_ms"], json!(1));
     }
 }
-
-/// RED: a notify the far end acknowledged with a `204` (or any 2xx/3xx, whatever the body) is
 
 #[test]
 fn red_a_notify_acknowledged_without_a_body_logs_no_warning() {
@@ -1495,7 +1476,6 @@ fn an_ipv6_loopback_sidecar_opens_and_is_dialled_by_its_bracketed_origin() {
     }
 }
 
-/// RED: only a `204` is an abstaining "no opinion"; an empty body on a `200` is a FAILED decide.
 #[test]
 fn red_only_a_204_is_an_empty_abstain() {
     for arm in arms() {

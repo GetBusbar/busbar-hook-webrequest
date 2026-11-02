@@ -295,8 +295,6 @@ fn refusal_texts_never_show_the_url_path() {
     );
 }
 
-/// R11: a literal IPv4 is refused for every range the contract's `ipv4_is_internal` names, not only the
-
 #[test]
 fn the_literal_host_check_refuses_every_contract_internal_ipv4() {
     for host in [
@@ -323,8 +321,6 @@ fn the_literal_host_check_refuses_every_contract_internal_ipv4() {
         );
     }
 }
-
-/// R11 (IPv6): a literal IPv6 is refused for every range the contract's `ipv6_is_internal` names
 
 #[test]
 fn the_literal_host_check_refuses_every_contract_internal_ipv6() {
@@ -356,8 +352,6 @@ fn secret_parts_include_the_authorization_value_and_its_token() {
     let scrubbed = scrub("echo: authorization: Basic c3ZjOmh1bnRlcjI=", &parts);
     assert!(!scrubbed.contains("c3ZjOmh1bnRlcjI="), "{scrubbed}");
 }
-
-/// D1: a url with an `@` after its host is ambiguous (`tok/en` would be dialled as the host) and is
 
 #[test]
 fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {

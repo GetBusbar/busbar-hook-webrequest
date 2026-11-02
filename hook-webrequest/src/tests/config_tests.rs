@@ -150,7 +150,6 @@ fn an_unknown_key_still_opens_as_1_5_5_did() {
     assert!(open(br#"{"url":"https://h/","timeout":100}"#).is_ok());
 }
 
-/// R6: the NACK carries the `webrequest: ` prefix once.
 #[test]
 fn a_configure_nack_has_one_prefix() {
     for v in [
@@ -169,7 +168,6 @@ fn a_configure_nack_has_one_prefix() {
     }
 }
 
-/// R5: a wrong-typed value is named by its key and never echoed (it may be a credential url).
 #[test]
 fn a_configure_nack_never_echoes_a_settings_value() {
     let nack = |v: serde_json::Value| configure(&live(), &map(v)).unwrap_err();
@@ -184,7 +182,6 @@ fn a_configure_nack_never_echoes_a_settings_value() {
     assert!(!t.contains("SECRET"), "{t}");
 }
 
-/// R8: `timeout_ms: null` is absent in `configure`, as it is default in `open`.
 #[test]
 fn configure_reads_a_null_timeout_as_absent() {
     assert_eq!(
@@ -202,7 +199,6 @@ fn configure_reads_a_null_timeout_as_absent() {
     assert!(open(br#"{"url":"https://a.example/","timeout_ms":null}"#).is_ok());
 }
 
-/// R7: an out-of-range `timeout_ms` is still clamped, and says so once.
 #[test]
 fn a_clamped_timeout_is_warned_once() {
     for (settings, ms) in [
@@ -222,8 +218,6 @@ fn a_clamped_timeout_is_warned_once() {
     let w = warnings(&map(serde_json::json!({"timeout_ms": 60000, "x": 1})));
     assert_eq!(w.len(), 2, "{w:?}");
 }
-
-/// D1: `open` and `configure` both refuse a url with an `@` after its host, in this plugin's words,
 
 #[test]
 fn open_and_configure_refuse_an_ambiguous_url() {

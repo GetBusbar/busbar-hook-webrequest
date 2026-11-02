@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DECLARED FIELD (OWNER RULING, CHIP-REVIEW-v4 change 2; busbar lead ruling item 7a): the
+//! The hook declares `url` as reference-capable and non-secret; other references are refused.
 
 use std::sync::Arc;
 
