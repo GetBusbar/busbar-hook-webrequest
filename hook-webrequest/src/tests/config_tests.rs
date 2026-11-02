@@ -212,7 +212,9 @@ fn a_clamped_timeout_is_warned_once() {
         let w = warnings_in(settings.as_bytes());
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(
-            w[0].contains("timeout_ms") && w[0].contains(ms) && w[0].contains("clamp"),
+            w[0].contains("timeout_ms")
+                && w[0].contains(&format!("timeout_ms {ms} "))
+                && w[0].contains("clamp"),
             "{w:?}"
         );
     }
