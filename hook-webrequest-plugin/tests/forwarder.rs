@@ -417,6 +417,8 @@ impl Bound {
 
     /// Op `s` on a fresh ticket, through the dispatcher: it may pend, and is resumed on its wake.
     fn submit<I: InFrame, O: OutFrame>(&self, s: u32, input: I, out: O) -> Done<I, O> {
+        let entered = self.plugin.inner.crossings.load(Ordering::Relaxed);
+        let resumed = self.plugin.inner.resumes.load(Ordering::Relaxed);
         let ticket = self.dispatcher.mint(0).expect("a ticket");
         let reply = self.dispatcher.submit(
             &self.plugin,
@@ -430,6 +432,18 @@ impl Bound {
             .wait(Duration::from_secs(30))
             .expect("the op completes");
         self.dispatcher.recycle(ticket);
+        let entries = self.plugin.inner.crossings.load(Ordering::Relaxed) - entered;
+        let resumes = self.plugin.inner.resumes.load(Ordering::Relaxed) - resumed;
+        assert_eq!(
+            entries - resumes,
+            1,
+            "one initial hook entry, with every continuation counted separately"
+        );
+        assert_eq!(
+            self.dispatcher.stats().deadline_without_wake,
+            0,
+            "a pending hook must arrange its wake"
+        );
         done
     }
 
