@@ -167,8 +167,8 @@ fn scheme_is(url: &url::Url, want: &str) -> bool {
     url.scheme().eq_ignore_ascii_case(want)
 }
 
-/// Validate the operator-configured target URL against the SSRF guard, returning the canonicalized URL
-/// string on success or a stable, credential-free error on rejection. Accepts `https://` for any
+/// Validate the operator-configured target URL against the SSRF guard, returning the parsed `url::Url`
+/// on success or a stable, credential-free error on rejection. Accepts `https://` for any
 /// allowed host and `http://` ONLY for a loopback host (parity with the old webhook policy: a plaintext
 /// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
 /// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
