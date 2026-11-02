@@ -1,27 +1,13 @@
 //! The door's per-op choices that need no host: which target a resumed op runs against.
 
-use std::sync::Arc;
-
-use busbar_contract::abi::sdk::conn::ConnFailure;
 use busbar_contract::abi::sdk::hook::Hook;
 
 use crate::config;
-use crate::door::{transport_failure, Forwarder, Live};
-
-const A_SECRET: &str = "AKEY-aaaa1111";
-const B_SECRET: &str = "BKEY-bbbb2222";
+use crate::door::{Forwarder, Live};
 
 fn forwarder(url: &str) -> Forwarder {
     let target = config::open(format!(r#"{{"url": "{url}"}}"#).as_bytes()).expect("opens");
     Forwarder::over(Live::new(target))
-}
-
-fn configure(f: &Forwarder, url: &str) {
-    let settings = serde_json::json!({ "url": url });
-    assert!(
-        f.configure(settings.as_object().unwrap(), 2).is_ok(),
-        "acked"
-    );
 }
 
 #[test]
