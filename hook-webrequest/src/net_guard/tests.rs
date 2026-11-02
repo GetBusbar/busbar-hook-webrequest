@@ -415,6 +415,22 @@ fn secret_parts_include_the_authorization_value_and_its_token() {
     assert!(!scrubbed.contains("c3ZjOmh1bnRlcjI="), "{scrubbed}");
 }
 
+/// A far end or host that echoes the DECODED form of a percent-encoded credential (`pa ss` for
+/// `pa%20ss`) leaks it unless the scrub list carries the decoded parts too.
+#[test]
+fn secret_parts_include_the_percent_decoded_credential() {
+    let parts = secret_parts(&url(
+        "https://svc:pa%20ss@hooks.example/k%2FEY?token=t%3Dok",
+    ));
+    let scrubbed = scrub("echo: password pa ss, path /k/EY, query token=t=ok", &parts);
+    for decoded in ["pa ss", "/k/EY", "token=t=ok"] {
+        assert!(
+            !scrubbed.contains(decoded),
+            "{decoded} survived: {scrubbed}"
+        );
+    }
+}
+
 /// D1: a url with an `@` after its host is ambiguous (`tok/en` would be dialled as the host) and is
 /// refused in this plugin's words, without its credential; one that does not parse is read by hand.
 #[test]
