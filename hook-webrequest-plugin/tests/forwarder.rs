@@ -370,15 +370,47 @@ struct Bound {
     plugin: Plugin<Hook>,
 }
 
+struct Clock;
+impl busbar_test_kit::services_double::ServicesDouble for Clock {
+    fn now(&self) -> busbar_contract::services::Reading {
+        busbar_contract::services::Reading {
+            wall_ns: 0,
+            mono_ns: now_ns(),
+        }
+    }
+}
+
 impl Arm {
     fn bind(&self) -> Bound {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-            workers: 2,
-            ..Default::default()
-        }));
+        self.bind_mode(false)
+    }
+
+    fn bind_real(&self) -> Bound {
+        self.bind_mode(true)
+    }
+
+    fn bind_mode(&self, real: bool) -> Bound {
+        let dispatcher = Arc::new(Dispatcher::with_services(
+            DispatchConfig {
+                workers: 2,
+                ..Default::default()
+            },
+            Arc::new(busbar_test_kit::services_double::Double(Clock)),
+        ));
         let upstream = Upstream::new();
         *upstream.wake.lock().unwrap() = Some(dispatcher.conn_waker());
-        let conns: Arc<dyn DeclaredConns> = upstream.clone();
+        let conns: Arc<dyn DeclaredConns> = if real {
+            busbar_test_kit::conformance_host::host(
+                &[
+                    ("tcp", busbar_transport_tcp::door::MACRO_DOOR),
+                    ("http", busbar_transport_http::door::MACRO_DOOR),
+                ],
+                dispatcher.conn_waker(),
+                None,
+            )
+        } else {
+            upstream.clone()
+        };
         let recorder = Arc::new(Recorder::default());
         let bind = Bind {
             instance: Arc::from("webrequest-conformance"),
@@ -1790,6 +1822,130 @@ fn refresh_during_pending_retains_the_opening_target_until_completion_or_cancel(
             let fresh = b.upstream.last();
             assert_eq!(fresh.target, "http://127.0.0.2:8123");
             assert_eq!(fresh.path, b"/refreshed");
+        }
+    }
+}
+
+#[test]
+fn bare_query_values_and_path_keys_never_escape_any_operation_or_the_pending_target() {
+    const OLD: &str = "http://127.0.0.1:9/v1/PATHONLYCANARY?token=QUERYONLYCANARY&other=RAW%2BCANARY&form=PLUS+CANARY";
+    const MOVED: &str = "http://127.0.0.2:8123/v1/NEWPATH?token=NEWQUERY";
+    const PHRASE: &str =
+        "denied PATHONLYCANARY QUERYONLYCANARY RAW%2BCANARY RAW+CANARY PLUS+CANARY PLUS CANARY";
+    const SECRETS: [&str; 6] = [
+        "PATHONLYCANARY",
+        "QUERYONLYCANARY",
+        "RAW%2BCANARY",
+        "RAW+CANARY",
+        "PLUS+CANARY",
+        "PLUS CANARY",
+    ];
+    for arm in arms() {
+        let b = arm.bind();
+        b.open(&json!({"url":OLD}).to_string()).unwrap();
+        b.upstream.answer(503, PHRASE, b"");
+        for text in [decide_failure(&b), transform_failure(&b)] {
+            assert!(text.contains("503") && text.contains("denied"));
+            for secret in SECRETS {
+                assert!(!text.contains(secret), "{text}");
+            }
+        }
+        let tap = NotifyFrame::build(&request(), None, true);
+        assert_eq!(
+            b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head())
+                .outcome,
+            Outcome::Ready
+        );
+        let ticket = b.dispatcher.mint(0).unwrap();
+        let view = decide_frame();
+        let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
+        assert_eq!(
+            b.plugin
+                .call_inline(ticket, false, slot::DECIDE, &mut first)
+                .outcome,
+            Outcome::Pending
+        );
+        b.configure(&json!({"url":MOVED}).to_string(), 2).unwrap();
+        let mut again = Frame::new(view.input(), blank_out::<DecideOut>());
+        let failed = b.plugin.call_inline(ticket, true, slot::DECIDE, &mut again);
+        assert_eq!(failed.outcome, Outcome::Failed);
+        b.dispatcher.recycle(ticket);
+        for text in std::iter::once(error_of(failed.error.as_deref())).chain(b.recorder.warns()) {
+            for secret in SECRETS {
+                assert!(!text.contains(secret), "{text}");
+            }
+        }
+        assert!(b.upstream.reads.lock().unwrap().is_empty());
+    }
+}
+
+/// The real HTTP framer and connector must honor the settings timeout after a prompt head;
+/// the much longer dispatcher deadline cannot stand in for this plugin's budget.
+#[test]
+fn the_real_connector_cuts_a_silent_partial_body_at_the_configured_whole_timeout() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Instant;
+    for arm in arms() {
+        for transform in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (closed, observed_close) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(4)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut bytes = [0u8; 4096];
+                loop {
+                    let n = socket.read(&mut bytes).unwrap();
+                    assert_ne!(n, 0, "the request arrives before the response");
+                    request.extend_from_slice(&bytes[..n]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let length = head
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n{")
+                    .unwrap();
+                // Keep the incomplete body silent. EOF, not a server timer or another data wake,
+                // must show that the caller's whole-exchange timer closed this connection.
+                let eof = matches!(socket.read(&mut bytes), Ok(0));
+                closed.send(eof).unwrap();
+            });
+            let b = arm.bind_real();
+            b.open(
+                &json!({"url":format!("http://127.0.0.1:{port}/hook"),"timeout_ms":1000})
+                    .to_string(),
+            )
+            .unwrap();
+            let started = Instant::now();
+            let failure = if transform {
+                transform_failure(&b)
+            } else {
+                decide_failure(&b)
+            };
+            assert!(failure.contains("deadline passed"), "{failure}");
+            assert!(
+                started.elapsed() < Duration::from_millis(3500),
+                "settings timeout was lost after the head"
+            );
+            assert!(
+                observed_close.recv_timeout(Duration::from_secs(5)).unwrap(),
+                "the expired exchange did not close its socket"
+            );
+            server.join().unwrap();
         }
     }
 }

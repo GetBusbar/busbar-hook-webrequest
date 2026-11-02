@@ -353,7 +353,7 @@ fn display_url(url: &url::Url, cut_path: bool, cut_query: bool, cut_fragment: bo
 
 /// Every part of `url` that can carry a credential, each also percent-decoded
 /// ([`sdk_url::and_decoded`]): the URL as written and as echoed, its path, query, username and
-/// password. What [`scrub`] cuts (longest first, empty parts dropped).
+/// password, individual path segments and query values. What [`scrub`] cuts (longest first, empty parts dropped).
 #[must_use]
 pub fn secret_parts(url: &url::Url) -> Vec<String> {
     let mut parts = Parts(vec![
@@ -363,9 +363,28 @@ pub fn secret_parts(url: &url::Url) -> Vec<String> {
     ]);
     if !matches!(url.path(), "" | "/") {
         parts.0.push(url.path().to_string());
+        // Endpoints commonly echo just the rejected key rather than its full /v1/<key> path.
+        parts.0.extend(
+            url.path()
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned),
+        );
     }
     if let Some(q) = url.query().filter(|q| !q.is_empty()) {
         parts.0.push(q.to_string());
+        for field in q.split('&') {
+            if let Some((_, value)) = field.split_once('=') {
+                if !value.is_empty() {
+                    parts.0.push(value.to_string());
+                    // A form decoder reads '+' as space. Keep both raw and form-decoded values;
+                    // and_decoded below also adds their percent-decoded spellings.
+                    if value.contains('+') {
+                        parts.0.push(value.replace('+', " "));
+                    }
+                }
+            }
+        }
     }
     if let Some(p) = url.password() {
         parts.0.push(p.to_string());

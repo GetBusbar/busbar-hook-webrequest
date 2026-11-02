@@ -94,3 +94,21 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_authorization() {
         );
     }
 }
+
+#[test]
+fn a_transport_failure_scrubs_independent_bare_query_and_path_keys() {
+    let target =
+        config::open(br#"{"url":"http://127.0.0.1:9/v1/PATHONLY?token=QUERYONLY"}"#).unwrap();
+    let live = Live::new(target);
+    for failure in [
+        ConnFailure::Failed("invalid key PATHONLY token QUERYONLY".to_string()),
+        ConnFailure::Refused("invalid key PATHONLY token QUERYONLY".to_string()),
+    ] {
+        let text = transport_failure(&live, &failure);
+        assert!(
+            !text.contains("PATHONLY") && !text.contains("QUERYONLY"),
+            "{text}"
+        );
+        assert!(text.contains("invalid key") && text.contains("token"));
+    }
+}

@@ -427,3 +427,17 @@ fn a_url_with_an_at_after_the_host_is_refused_without_its_credential() {
     assert!(validate_target_url("https://hooks.example/a%40b").is_ok());
     assert!(validate_target_url("https://svc:hunter2@hooks.example/x").is_ok());
 }
+
+#[test]
+fn separately_echoed_query_values_and_path_segments_are_scrubbed() {
+    let target = url(
+        "https://hooks.example/v1/PATHCANARY?token=QUERYCANARY&raw=ENC%2BCANARY&form=FORM+CANARY",
+    );
+    let parts = secret_parts(&target);
+    let echo = "denied PATHCANARY QUERYCANARY ENC%2BCANARY ENC+CANARY FORM+CANARY FORM CANARY";
+    assert_eq!(scrub(echo, &parts), "denied *** *** *** *** *** ***");
+    assert_eq!(
+        scrub("unrelated remote phrase", &parts),
+        "unrelated remote phrase"
+    );
+}

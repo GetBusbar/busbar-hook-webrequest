@@ -8,6 +8,18 @@
 use crate::{ALIAS, FORWARD_FAILED, NOTIFY_DROPPED};
 use serde_json::Value;
 
+/// Read an SDK response while retaining its raw body, reason and fields in wiping custody.
+/// A diagnostic may redact its text while its original bytes still contain an echoed credential;
+/// this owner wipes those bytes after the reader returns or unwinds. Separately parsed JSON values
+/// travel to the shared hook lowerer, which owns and wipes their complete trees.
+pub fn read_response<T>(
+    response: busbar_contract::abi::sdk::exchange::ExchangeResponse,
+    read: impl FnOnce(&busbar_contract::abi::sdk::exchange::ExchangeResponse) -> T,
+) -> T {
+    let response = crate::owners::Response(response);
+    read(&response)
+}
+
 /// Maximum reply body accepted from the target, in bytes: the reply is a small ranking/verdict object, so
 /// a body past this is a hostile or buggy target.
 pub const MAX_REPLY_BYTES: usize = 64 * 1024;

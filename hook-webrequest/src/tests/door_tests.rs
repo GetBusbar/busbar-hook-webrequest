@@ -162,10 +162,34 @@ mod lifecycle {
     use busbar_contract::abi::sdk::exchange::Op;
     use busbar_contract::abi::sdk::hook::{Decoded, HookOpen, Verdict};
     use busbar_test_kit::test_support::{
-        fake::FakeHost, far::Far, reply, test_in::TestIn, DoorView,
+        fake::{self, FakeHost, FakeService, ServiceCall},
+        far::Far,
+        reply,
+        test_in::TestIn,
+        DoorView,
     };
     use std::cell::RefCell;
     use std::task::Poll;
+
+    struct Clock;
+    impl FakeService for Clock {
+        type In = busbar_contract::abi::host::service::ClockNowIn;
+        fn serve(
+            call: &mut ServiceCall<Self::In>,
+        ) -> busbar_contract::abi::mechanism::call::Outcome {
+            call.put(
+                |i| &i.reading,
+                busbar_contract::abi::host::service::ClockReading {
+                    size: std::mem::size_of::<busbar_contract::abi::host::service::ClockReading>()
+                        as u32,
+                    _reserved: 0,
+                    wall_ns: 0,
+                    mono_ns: 1_000_000_000,
+                },
+            );
+            busbar_contract::abi::mechanism::call::Outcome::Ready
+        }
+    }
 
     thread_local! {
         static OPENING: RefCell<Option<Arc<Forwarder>>> = const { RefCell::new(None) };
@@ -192,7 +216,7 @@ mod lifecycle {
     #[test]
     fn cancel_retires_the_old_target_without_reusing_its_high_slot() {
         let _far = Far::answering(200, b"{}");
-        let host = FakeHost::new().far();
+        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock).far();
         let door = DoorView::of(MACRO_DOOR);
         for slot in 40..64 {
             let f = Arc::new(forwarder(&format!("http://127.0.0.1:9001/{A_SECRET}")));
@@ -249,7 +273,7 @@ mod lifecycle {
     #[test]
     fn pending_configuration_keeps_the_original_target_until_completion() {
         let far = Far::answering(200, b"{}");
-        let host = FakeHost::new().far();
+        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock).far();
         let door = DoorView::of(MACRO_DOOR);
         let f = Arc::new(forwarder(&format!("http://127.0.0.1:9001/{A_SECRET}")));
         let old = Arc::downgrade(&current_live(&f));

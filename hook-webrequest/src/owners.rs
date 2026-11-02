@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use std::borrow::Cow;
 use std::ops::Deref;
 
 use busbar_contract::abi::sdk::cred::Held;
@@ -108,5 +109,87 @@ impl Drop for SettingsValue {
             }
         }
         wipe(&mut self.0);
+    }
+}
+
+/// A borrowed valid UTF-8 phrase, or its owned lossy decoding kept in wiping custody.
+pub(crate) struct Phrase<'a>(Cow<'a, str>);
+
+impl<'a> Phrase<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self(String::from_utf8_lossy(bytes))
+    }
+}
+
+impl Deref for Phrase<'_> {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for Phrase<'_> {
+    fn drop(&mut self) {
+        if let Cow::Owned(text) = &mut self.0 {
+            drop(Held::new(std::mem::take(text)));
+        }
+    }
+}
+
+pub(crate) struct Response(pub(crate) busbar_contract::abi::sdk::exchange::ExchangeResponse);
+
+impl Deref for Response {
+    type Target = busbar_contract::abi::sdk::exchange::ExchangeResponse;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for Response {
+    fn drop(&mut self) {
+        drop(Held::new(std::mem::take(&mut self.0.reason)));
+        drop(Held::new(std::mem::take(&mut self.0.fields)));
+        drop(Held::new(std::mem::take(&mut self.0.body)));
+    }
+}
+
+pub(crate) struct Failure(pub(crate) busbar_contract::abi::sdk::exchange::OpFailure);
+
+impl Drop for Failure {
+    fn drop(&mut self) {
+        use busbar_contract::abi::sdk::conn::ConnFailure;
+        use busbar_contract::abi::sdk::exchange::OpFailure;
+        match &mut self.0 {
+            OpFailure::Unbuilt(text)
+            | OpFailure::Conn(ConnFailure::Failed(text) | ConnFailure::Refused(text)) => {
+                drop(Held::new(std::mem::take(text)));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Keep a failed exchange's raw cause guarded while its earlier head is interpreted too.
+pub(crate) struct FailedResponse(Option<busbar_contract::abi::sdk::exchange::ExchangeFailure>);
+
+impl FailedResponse {
+    pub(crate) fn new(failure: busbar_contract::abi::sdk::exchange::ExchangeFailure) -> Self {
+        Self(Some(failure))
+    }
+
+    pub(crate) fn head(&self) -> Option<&busbar_contract::abi::sdk::exchange::ExchangeResponse> {
+        self.0.as_ref().and_then(|failure| failure.head())
+    }
+
+    pub(crate) fn into_failure(mut self) -> Failure {
+        Failure(self.0.take().expect("owned failed response").into_cause())
+    }
+}
+
+impl Drop for FailedResponse {
+    fn drop(&mut self) {
+        if let Some(failure) = self.0.take() {
+            drop(Failure(failure.into_cause()));
+        }
     }
 }

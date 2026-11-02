@@ -62,7 +62,10 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
   3xx acknowledges delivery without interpreting the response body; a 4xx or
   5xx logs a dropped notification. None of these operations follows a redirect,
   so a target cannot redirect the plugin to an internal host.
-- **Tight timeouts**; `decide`/`transform` response collection refuses a body
+- **Tight whole-request timeouts**: the configured budget covers connection establishment, send,
+  and reply collection from one absolute host-clock expiry. A reply head or a Pending re-entry
+  never renews it; the host timer wakes a stalled body at expiry. The outer hook deadline caps it.
+  `decide`/`transform` response collection refuses a body
   beyond 64 KiB while reading it, before collecting the offending piece. A `notify`
   reads only the response head. Decision replies are depth-guarded before parse
   (past 128 levels, `MAX_REPLY_DEPTH`; serde_json's own recursion limit
@@ -161,9 +164,12 @@ SSRF predicates) and the plugin crate's integration tests
   notify-redirect, and non-UTF-8 Basic rules through both doors
   It also exercises concurrent partial configuration, checkpoint replay, wrong-type refusals and
   refresh during pending completion or cancellation through both doors
-  (`support/net_ban.rs` is its socket/TLS ban);
-- `target_custody.rs`: on Linux, registers only each owned URL serialization's initialized bytes
-  and checks them before deallocation, with an unwiped control;
+  (`support/net_ban.rs` is its socket/TLS ban). Bare query/path canaries cover each operation and
+  a Pending target change; real HTTP connector tests send a head and stall the partial body to
+  distinguish the configured whole-request timeout from the longer dispatcher deadline;
+- `target_custody.rs`: on Linux, registers only owned URL serializations and the response reader's
+  reason/body/field allocations plus lossy/error-text guards, and checks initialized bytes before
+  deallocation on return and unwind, with an unwiped control;
 - `declared_secrets.rs` and `reference_url.rs`: `url` is declared reference-capable and not a
   secret, so a `{env:}` reference there resolves in place and a literal passes as written.
 

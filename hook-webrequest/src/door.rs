@@ -36,7 +36,7 @@ use busbar_contract::abi::sdk::hook::{
 use busbar_contract::hook_wire::{OP_DECIDE, OP_NOTIFY, OP_TRANSFORM};
 
 use crate::config::{self, Target};
-use crate::owners::Parts;
+use crate::owners::{FailedResponse, Parts, Phrase, Text};
 use crate::{reply, report, wire};
 
 /// The need index every op's exchange establishes on.
@@ -228,6 +228,7 @@ impl Forwarder {
             Ok(live) => live,
             Err(why) => return Poll::Ready(Err(why.to_owned())),
         };
+        on.set_timeout_ms(live.timeout_ms);
         let answer = on.exchange_sealed_bounded_with_head(
             NEED,
             Some(&live.origin),
@@ -242,23 +243,33 @@ impl Forwarder {
             },
         );
         answer.map(|r| match r {
-            Ok(got) => {
-                let phrase = got.reason.as_deref().map(String::from_utf8_lossy);
+            Ok(got) => reply::read_response(got, |got| {
+                let phrase = got.reason.as_deref().map(Phrase::new);
                 let phrase = status_phrase(&live, phrase.as_deref());
                 read(got.status, phrase.as_deref(), &got.body)
-            }
+            }),
             Err(failure) => {
-                if let Some(head) = failure.head().filter(|h| (300..600).contains(&h.status)) {
-                    let phrase = head.reason.as_deref().map(String::from_utf8_lossy);
-                    let phrase = status_phrase(&live, phrase.as_deref());
-                    return read(head.status, phrase.as_deref(), &[]);
+                let failure = FailedResponse::new(failure);
+                let earlier = failure
+                    .head()
+                    .filter(|h| (300..600).contains(&h.status))
+                    .map(|head| {
+                        let phrase = head.reason.as_deref().map(Phrase::new);
+                        let phrase = status_phrase(&live, phrase.as_deref());
+                        read(head.status, phrase.as_deref(), &[])
+                    });
+                // Even when a received error head determines the answer, the transport's own
+                // cause can quote the credential-bearing URL and must stay in wiping custody.
+                let cause = failure.into_failure();
+                if let Some(answer) = earlier {
+                    return answer;
                 }
-                match failure.into_cause() {
-                    OpFailure::Unbuilt(reason) => Err(reason),
+                match &cause.0 {
+                    OpFailure::Unbuilt(reason) => Err(reason.clone()),
                     OpFailure::Conn(ConnFailure::Failed(reason)) if reason == REPLY_OVER_BOUND => {
                         Err(reply::cap_exceeded())
                     }
-                    OpFailure::Conn(failure) => Err(transport_failure(&live, &failure)),
+                    OpFailure::Conn(failure) => Err(transport_failure(&live, failure)),
                 }
             }
         })
@@ -276,7 +287,8 @@ pub(crate) fn status_phrase(live: &Live, phrase: Option<&str>) -> Option<String>
 /// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
 /// words may quote the URL.
 pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
-    let cause = crate::net_guard::scrub(&failure.to_string(), &live.secrets);
+    let raw = Text(failure.to_string());
+    let cause = crate::net_guard::scrub(&raw, &live.secrets);
     format!("{}: {cause}", reply::request_failed())
 }
 
