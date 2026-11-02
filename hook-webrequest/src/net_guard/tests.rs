@@ -29,6 +29,9 @@ fn alternate_encoding_flags_obfuscated_forms() {
     assert!(is_alternate_loopback_v4("2130706433"));
     assert!(is_alternate_loopback_v4("127.1"));
     assert!(!is_alternate_loopback_v4("2130706434"));
+    assert!(is_alternate_loopback_v4("0x7f000001"));
+    assert!(is_alternate_loopback_v4("017700000001"));
+    assert!(!is_alternate_loopback_v4("0x7f000002"));
 }
 
 #[test]
@@ -64,10 +67,13 @@ fn host_is_blocked_covers_the_classic_bypass_forms() {
         "http://[::ffff:169.254.169.254]/latest"
     )));
     assert!(host_is_blocked(&url("https://[::ffff:10.0.0.1]/x")));
+    assert!(host_is_blocked(&url("https://[::10.0.0.1]/x")));
+    assert!(host_is_blocked(&url("http://[::169.254.169.254]/latest")));
     assert!(host_is_blocked(&url("https://[::ffff:192.168.1.1]/x")));
     assert!(host_is_blocked(&url("https://[::ffff:100.100.100.200]/x")));
     // ...and the mapped form of loopback stays ALLOWED, matching the bare-v4 sidecar carve-out.
     assert!(!host_is_blocked(&url("http://[::ffff:127.0.0.1]:8080/x")));
+    assert!(!host_is_blocked(&url("http://[::127.0.0.1]:8080/x")));
 
     // ALTERNATE IPv4 ENCODINGS. Worth being precise about what this proves, because the obvious
     // reading is wrong: the URL parser canonicalizes every one of these to a dotted quad BEFORE the
