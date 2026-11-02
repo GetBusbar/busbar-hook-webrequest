@@ -50,7 +50,6 @@ const CONFIGURATION_CHECKPOINT_PREFIX_BYTES: usize = CONFIGURATION_WORD_BYTES * 
 type ConfigurationSnapshot = (u64, u64, Value);
 
 /// This crate's built cdylib (uplifted or under `deps`, newest wins). A missing artifact is a
-
 fn cdylib() -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary has a path");
     let profile = exe
@@ -92,7 +91,6 @@ struct ReadState {
 }
 
 /// THE FAR END, as a connection table: every need is framed; an open is the whole request (kept
-
 struct Upstream {
     wake: Mutex<Option<Wake>>,
     answer: Mutex<(u32, &'static str, Vec<u8>)>,
@@ -492,7 +490,6 @@ impl Bound {
     }
 
     /// Read the existing opaque reply extension before releasing its lease. The regression uses
-
     fn configure_snapshot(
         &self,
         settings: &str,
@@ -625,7 +622,6 @@ fn decide_frame() -> Arc<DecideFrame> {
 }
 
 /// The 1.5.5 op envelope for `op`: the projection 1.5.5's host built, enveloped as 1.5.5's
-
 fn envelope_155(op: &'static str) -> Vec<u8> {
     let cands = if op == "notify" {
         Vec::new()
@@ -1395,7 +1391,6 @@ fn a_successful_decide_logs_no_warning() {
 }
 
 /// A committed configure moves the NEXT op's origin, path and timeout: the target is read per op,
-
 #[test]
 fn a_committed_configure_moves_the_next_decide() {
     for arm in arms() {
@@ -1464,7 +1459,6 @@ fn red_a_notify_acknowledged_without_a_body_logs_no_warning() {
 }
 
 /// A loopback sidecar by its IPv6 literal opens through the door: `http://[::1]:9000/` is the
-
 #[test]
 fn an_ipv6_loopback_sidecar_opens_and_is_dialled_by_its_bracketed_origin() {
     for arm in arms() {
@@ -1813,7 +1807,6 @@ fn bare_query_values_and_path_keys_never_escape_any_operation_or_the_pending_tar
 }
 
 /// The real HTTP framer and connector must honor the settings timeout after a prompt head;
-
 #[test]
 fn the_real_connector_cuts_a_silent_partial_body_at_the_configured_whole_timeout() {
     use std::io::{Read, Write};

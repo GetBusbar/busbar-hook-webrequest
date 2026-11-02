@@ -7,7 +7,6 @@
 mod conformance_host;
 
 /// The operator's endpoint, as the far end answers it: once the whole POST (head and its
-
 fn endpoint(seen: &[u8]) -> Option<Vec<u8>> {
     let end = seen.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
     let head = String::from_utf8_lossy(&seen[..end]).to_ascii_lowercase();

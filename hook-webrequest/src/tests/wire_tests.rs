@@ -101,7 +101,6 @@ fn client_bytes(url: &str, timeout_ms: u64, body: &'static [u8]) -> Vec<u8> {
 }
 
 /// THE BYTE-IDENTITY ORACLE (C0 CAP webrequest): the request this crate writes equals, byte for byte,
-
 #[test]
 fn the_request_bytes_are_what_the_1_5_5_client_wrote() {
     let body: &'static [u8] = br#"{"request":{"pool":"p"},"op":"decide"}"#;
@@ -137,7 +136,6 @@ fn the_request_bytes_are_what_the_1_5_5_client_wrote() {
 }
 
 /// `host` or `host:port` as the http framer derives it from the origin: the port only when the URL
-
 fn host_header(url: &url::Url) -> String {
     let host = url.host_str().unwrap_or("");
     match url.port() {
@@ -147,7 +145,6 @@ fn host_header(url: &url::Url) -> String {
 }
 
 /// The bytes the http framer writes for `r`: the request line, the forwarder's fields in order, then
-
 fn assemble(r: &crate::wire::Request, url: &url::Url) -> Vec<u8> {
     let mut head = format!("{} {} HTTP/1.1\r\n", r.method, r.target);
     for (k, v) in &r.fields {
@@ -171,7 +168,6 @@ fn want_port(sent: &[u8], _url: &str) -> String {
 }
 
 /// The 1.5.5 client's own error texts, surfaced through the same `without_url` wrapper, are this crate's
-
 #[test]
 fn the_failure_texts_are_what_the_1_5_5_client_said() {
     let rt = tokio::runtime::Builder::new_current_thread()

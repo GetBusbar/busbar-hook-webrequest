@@ -77,7 +77,6 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_url() {
 }
 
 /// A host that echoes the request's `Authorization` back: neither the header's value nor its
-
 #[test]
 fn a_transport_failure_never_logs_the_hosts_echo_of_the_authorization() {
     let t = target();

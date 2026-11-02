@@ -9,15 +9,12 @@ use serde::Deserialize;
 use std::time::Duration;
 
 /// Default per-op wall-clock timeout when the operator does not set `timeout_ms`. Tight on purpose: a
-
 pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
 /// Upper bound an operator-supplied `timeout_ms` is clamped to: the engine's reference hook budget. A
-
 pub const MAX_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_MS;
 
 /// The settings keys the forwarder reads. Any other key is ignored (refusing it would break
-
 pub const KEYS: [&str; 2] = ["url", "timeout_ms"];
 
 /// The keys of a settings object the forwarder does not read, each as the warning the door logs.
@@ -36,7 +33,6 @@ pub fn unknown_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Ve
 }
 
 /// [`unknown_keys`] over a settings document as `open` reads it; none for a document that is not
-
 #[must_use]
 pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
     match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
@@ -117,7 +113,6 @@ fn clamp_warning(settings: &serde_json::Map<String, serde_json::Value>) -> Optio
 }
 
 /// Everything the door logs at `open`/`refresh`/an acknowledged `configure` about a settings map
-
 #[must_use]
 pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
     let mut all = unknown_keys(settings);
@@ -126,7 +121,6 @@ pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<St
 }
 
 /// Log what [`warnings`] returns, each as its own warn: a clamped `timeout_ms` carries its declared
-
 pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
     for warning in unknown_keys(settings) {
         tracing::warn!("{warning}");
@@ -137,7 +131,6 @@ pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
 }
 
 /// [`log_warnings`] over a settings document as `open` reads it; nothing for a document that is not a
-
 pub fn log_warnings_in(settings: &[u8]) {
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
         if let Some(map) = value.as_object() {
@@ -147,7 +140,6 @@ pub fn log_warnings_in(settings: &[u8]) {
 }
 
 /// [`warnings`] over a settings document as `open` reads it; none for a document that is not a JSON
-
 #[must_use]
 pub fn warnings_in(settings: &[u8]) -> Vec<String> {
     match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
@@ -157,7 +149,6 @@ pub fn warnings_in(settings: &[u8]) -> Vec<String> {
 }
 
 /// `open`: the settings document to a [`Target`]. An empty document, a malformed one, a missing URL or a
-
 pub fn open(settings: &[u8]) -> Result<Target, String> {
     let text = std::str::from_utf8(settings)
         .map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?;
@@ -183,7 +174,6 @@ fn nack(why: &str) -> String {
 }
 
 /// `configure`: merge a pushed settings map over the live target, commit-on-ack. Each key is
-
 pub fn configure(
     live: &Target,
     settings: &serde_json::Map<String, serde_json::Value>,

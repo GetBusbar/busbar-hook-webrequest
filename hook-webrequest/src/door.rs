@@ -30,7 +30,6 @@ use crate::{reply, report, wire};
 pub const NEED: u32 = 0;
 
 /// THE ONE NEED: outbound over the host's `http` framer, the target named by the plugin per op
-
 pub const NEEDS: &[Need] = &[Need {
     direction: DIRECTION_OUTBOUND,
     egress_class: EGRESS_LOOPBACK_ALLOWED,
@@ -40,7 +39,6 @@ pub const NEEDS: &[Need] = &[Need {
 }];
 
 /// A gate that may see and rewrite the prompt and read the caller (`needs_prompt: rw`,
-
 const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 
 /// How many ops one instance holds in flight; the host clamps.
@@ -62,7 +60,6 @@ busbar_contract::statement_extensions!(
 const REWRITES: &[Rewrite] = &[alias(crate::ALIAS)];
 
 /// THE STATEMENT: name, version, the hook tail, the alias, the one outbound need and the
-
 pub const STATEMENT: Statement = Statement {
     rewrites: REWRITES.as_ptr(),
     rewrites_len: REWRITES.len(),
@@ -85,7 +82,6 @@ pub struct Forwarder {
 }
 
 /// A [`Target`] with what every op's exchange needs of it, built once when the target is set (at
-
 pub(crate) struct Live {
     target: Target,
     pub(crate) origin: String,
@@ -185,7 +181,6 @@ impl Forwarder {
     }
 
     /// The SDK retains the original target with this operation through pending re-entries and
-
     pub(crate) fn entry_live(&self, on: &Op<'_>) -> Result<Arc<Live>, &'static str> {
         on.context(|| self.live())
     }
@@ -195,7 +190,6 @@ impl Forwarder {
     }
 
     /// POST `op`'s envelope over the projection `payload` builds to the live target: PENDING while
-
     fn post(
         &self,
         on: &Op<'_>,
@@ -255,13 +249,11 @@ impl Forwarder {
 }
 
 /// The remote's reason phrase as an error status may show it: the target's own words, which may
-
 pub(crate) fn status_phrase(live: &Live, phrase: Option<&str>) -> Option<String> {
     phrase.map(|p| crate::net_guard::scrub(p, &live.secrets))
 }
 
 /// The text a transport failure is logged in: a fixed prefix, then the host's cause with every
-
 pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
     let raw = Text(failure.to_string());
     let cause = crate::net_guard::scrub(&raw, &live.secrets);

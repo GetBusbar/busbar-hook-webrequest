@@ -10,7 +10,6 @@ use crate::ALIAS;
 use url::Position;
 
 /// The POST envelope for a per-request op: the engine's opaque `payload` projection (BORROWED, not
-
 struct Envelope<'a> {
     op: &'a str,
     payload: &'a serde_json::Value,
@@ -44,7 +43,6 @@ impl serde::Serialize for Envelope<'_> {
 }
 
 /// The JSON body for `op` over `payload`.
-
 pub fn envelope(op: &str, payload: &serde_json::Value) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&Envelope { op, payload })
         .map_err(|e| format!("{ALIAS}: failed to serialize op envelope: {e}"))
@@ -109,7 +107,6 @@ pub fn request(target: &Target, body: Vec<u8>) -> Request {
 }
 
 /// `Basic base64(user:pass)` from the URL's percent-decoded userinfo, read as text as reqwest
-
 pub(crate) fn basic_authorization(url: &url::Url) -> Option<String> {
     sdk_url::basic_authorization(url.username(), url.password(), Userinfo::Utf8)
 }

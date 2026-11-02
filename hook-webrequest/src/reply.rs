@@ -7,7 +7,6 @@ use crate::{ALIAS, FORWARD_FAILED, NOTIFY_DROPPED};
 use serde_json::Value;
 
 /// Read an SDK response while retaining its raw body, reason and fields in wiping custody.
-
 pub fn read_response<T>(
     response: busbar_contract::abi::sdk::exchange::ExchangeResponse,
     read: impl FnOnce(&busbar_contract::abi::sdk::exchange::ExchangeResponse) -> T,
@@ -17,14 +16,12 @@ pub fn read_response<T>(
 }
 
 /// Maximum reply body accepted from the target, in bytes: the reply is a small ranking/verdict object, so
-
 pub const MAX_REPLY_BYTES: usize = 64 * 1024;
 
 /// Maximum JSON nesting depth accepted in a reply (busbar's `MAX_JSON_DEPTH`, a security floor).
 pub const MAX_REPLY_DEPTH: usize = 128;
 
 /// The transport failure text: connect, send, timeout and a malformed head all read as this, with the
-
 #[must_use]
 pub fn request_failed() -> String {
     format!("{ALIAS}: request failed: error sending request")
@@ -46,7 +43,6 @@ pub fn cap_exceeded() -> String {
 pub const MAX_PHRASE_CHARS: usize = 128;
 
 /// The remote's reason phrase as a log line may carry it: cut to [`MAX_PHRASE_CHARS`] characters
-
 fn loggable_phrase(phrase: &str) -> String {
     let mut out = String::new();
     for c in phrase.chars().take(MAX_PHRASE_CHARS) {
@@ -63,7 +59,6 @@ fn loggable_phrase(phrase: &str) -> String {
 }
 
 /// The failure for an error status (4xx/5xx), worded without the URL. `phrase` is the reason phrase
-
 #[must_use]
 pub fn error_status(code: u16, phrase: Option<&str>) -> String {
     let (class, status) = match http::StatusCode::from_u16(code) {
@@ -85,7 +80,6 @@ pub fn redirect_not_followed(code: u16) -> String {
 }
 
 /// Parse a reply body into a `Value`, rejecting a pathologically nested body BEFORE building the value.
-
 pub fn parse_reply(bytes: &[u8]) -> Result<Value, String> {
     if exceeds_max_depth(bytes, MAX_REPLY_DEPTH) {
         return Err(format!(
@@ -98,7 +92,6 @@ pub fn parse_reply(bytes: &[u8]) -> Result<Value, String> {
 }
 
 /// Single-pass, string-aware scan for the maximum `{`/`[` nesting depth in `bytes`. Brackets inside JSON
-
 #[must_use]
 pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
     let mut depth: usize = 0;
@@ -131,7 +124,6 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
 }
 
 /// The endpoint's answer as the framed http exchange hands it back: its status, reason phrase and
-
 pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value, String> {
     if (400..600).contains(&status) {
         return Err(error_status(status, phrase));
@@ -153,7 +145,6 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
 }
 
 /// Whether a `notify` was delivered: any status short of an error status is, and the body is not read
-
 pub fn delivered(status: u16, phrase: Option<&str>) -> Result<(), String> {
     if (400..600).contains(&status) {
         return Err(error_status(status, phrase));
@@ -162,7 +153,6 @@ pub fn delivered(status: u16, phrase: Option<&str>) -> Result<(), String> {
 }
 
 /// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply, an
-
 pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
     reply.inspect_err(
         |e| tracing::warn!(diag = %FORWARD_FAILED, "{e}; decide failed (on_error applies)"),
@@ -170,7 +160,6 @@ pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
 }
 
 /// `transform`: any failure is the hook FAILING (the host's `on_error` for transform), as
-
 pub fn transform(reply: Result<Value, String>) -> Result<Value, String> {
     reply.inspect_err(
         |e| tracing::warn!(diag = %FORWARD_FAILED, "{e}; transform failed (on_error applies)"),
@@ -178,7 +167,6 @@ pub fn transform(reply: Result<Value, String>) -> Result<Value, String> {
 }
 
 /// `notify`: fire-and-forget. The reply is not read for meaning and every error is dropped from the
-
 pub fn notify(reply: Result<Value, String>) {
     if let Err(e) = reply {
         tracing::warn!(diag = %NOTIFY_DROPPED, "{e}; notify dropped");

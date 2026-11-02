@@ -27,7 +27,6 @@ pub fn describe() -> serde_json::Value {
 }
 
 /// `status`: the live target, reported under the SAME `url` key the operator pushes (the engine's drift
-
 #[must_use]
 pub fn status(live: &Target) -> serde_json::Value {
     serde_json::json!({

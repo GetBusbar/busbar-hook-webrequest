@@ -12,13 +12,11 @@ use busbar_contract::net::{
 };
 
 /// IPv6 site-local `fec0::/10`. Deprecated by RFC 3879 but still routed on plenty of real networks,
-
 pub fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfec0
 }
 
 /// True iff `host` is an alternate (non-dotted-quad) IPv4 encoding that unambiguously denotes the
-
 pub fn is_alternate_loopback_v4(host: &str) -> bool {
     if !host.contains('.') {
         if let Some(hex) = host.strip_prefix("0x").or_else(|| host.strip_prefix("0X")) {
@@ -45,7 +43,6 @@ pub fn is_alternate_loopback_v4(host: &str) -> bool {
 }
 
 /// True iff the target URL's host is the loopback/localhost target the forwarder MAY reach — the exact
-
 pub fn host_is_loopback(url: &url::Url) -> bool {
     let Some(host) = host_of(url) else {
         return false;
@@ -65,7 +62,6 @@ pub fn host_is_loopback(url: &url::Url) -> bool {
 }
 
 /// The loopback predicate over an IP literal ([`host_is_loopback`]): v4 loopback, `::1`, and the
-
 fn ip_is_loopback(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_loopback(),
@@ -74,7 +70,6 @@ fn ip_is_loopback(ip: &IpAddr) -> bool {
 }
 
 /// SSRF block predicate for the target URL: identical to a full internal check EXCEPT loopback and the
-
 pub fn host_is_blocked(url: &url::Url) -> bool {
     let Some(host) = host_of(url) else {
         return true;
@@ -93,7 +88,6 @@ pub fn host_is_blocked(url: &url::Url) -> bool {
 }
 
 /// The internal-address predicate over the literal host [`host_is_blocked`] parsed, the loopback
-
 fn ip_is_internal(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => !v4.is_loopback() && ipv4_is_internal(v4),
@@ -110,7 +104,6 @@ fn ip_is_internal(ip: &IpAddr) -> bool {
 }
 
 /// The URL's host with the IPv6 `[...]` brackets and a single trailing FQDN-root `.` stripped, so the
-
 fn host_of(url: &url::Url) -> Option<String> {
     let host = url.host_str()?;
     let host = host.strip_prefix('[').unwrap_or(host);
@@ -125,13 +118,11 @@ fn scheme_is(url: &url::Url, want: &str) -> bool {
 }
 
 /// Validate the operator-configured target URL against the SSRF guard, returning the canonicalized URL
-
 pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
     refuse_target_url(raw).map_err(|reason| format!("{ALIAS}: {reason}"))
 }
 
 /// [`validate_target_url`] with the refusal's reason WITHOUT the `webrequest: ` prefix, for a caller
-
 pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
     if let Some(refusal) = ambiguous_url(raw) {
         return Err(refusal);
@@ -162,7 +153,6 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
 }
 
 /// The ambiguous-URL refusal (without the `webrequest: ` prefix): `Some(the refusal)` when `raw`
-
 #[must_use]
 pub fn ambiguous_url(raw: &str) -> Option<String> {
     let (shown, from_path) = match ParsedUrl::parse(raw) {
@@ -190,7 +180,6 @@ fn echo_of(scheme: &str, rest: &str) -> String {
 }
 
 /// `scheme` when it is `http` or `https`, else `***`: a schemeless `admin:secret@host/x` parses
-
 fn echoable_scheme(scheme: &str) -> String {
     if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
         scheme.to_ascii_lowercase()
@@ -200,25 +189,21 @@ fn echoable_scheme(scheme: &str) -> String {
 }
 
 /// The scheme `raw` starts with (up to its first `:`), echoable per [`echoable_scheme`]; a url
-
 fn scheme_of(raw: &str) -> String {
     echoable_scheme(raw.split_once(':').map_or("", |(scheme, _)| scheme))
 }
 
 /// Replace any `user[:pass]@` userinfo on `url` with `***@`. One step of [`reportable_url`], which is
-
 pub fn mask_userinfo(url: &url::Url) -> String {
     display_url(url, false, false, false)
 }
 
 /// The target URL in a form that is safe to echo ANYWHERE: the ONE masker every URL echo in this
-
 pub fn reportable_url(url: &url::Url) -> String {
     display_url(url, false, true, true)
 }
 
 /// The target URL as a `Debug` rendering or a log line names it: [`reportable_url`] with the path
-
 #[must_use]
 pub fn loggable_url(url: &url::Url) -> String {
     display_url(url, true, true, true)
@@ -270,7 +255,6 @@ fn display_url(url: &url::Url, cut_path: bool, cut_query: bool, cut_fragment: bo
 }
 
 /// Every part of `url` that can carry a credential, each also percent-decoded
-
 #[must_use]
 pub fn secret_parts(url: &url::Url) -> Vec<String> {
     let mut parts = Parts(vec![
@@ -317,7 +301,6 @@ pub fn secret_parts(url: &url::Url) -> Vec<String> {
 }
 
 /// `text` (the host's words, which may quote the target) with every one of `parts`
-
 #[must_use]
 pub fn scrub(text: &str, parts: &[String]) -> String {
     sdk_url::scrub(text, parts.to_vec(), false)

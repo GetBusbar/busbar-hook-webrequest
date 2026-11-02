@@ -52,7 +52,6 @@ fn host_is_blocked_blocks_internal_targets() {
 }
 
 /// The classic SSRF bypass forms, driven through `host_is_blocked` itself rather than through the
-
 #[test]
 fn host_is_blocked_covers_the_classic_bypass_forms() {
     assert!(host_is_blocked(&url(
@@ -93,7 +92,6 @@ fn host_is_blocked_covers_the_classic_bypass_forms() {
 }
 
 /// IPv6 forms that CARRY an internal IPv4 target but that `Ipv6Addr::to_ipv4` does not unwrap.
-
 #[test]
 fn ipv6_embeddings_of_internal_ipv4_targets_are_blocked() {
     assert_eq!(
@@ -130,7 +128,6 @@ fn ipv6_embeddings_of_internal_ipv4_targets_are_blocked() {
 }
 
 /// `fe80::/10` is a /10, not a /16. The only previous fixture was `fe80::1`, whose first segment is
-
 #[test]
 fn link_local_v6_is_a_slash_10_not_a_slash_16() {
     for addr in ["fe80::1", "fe9f::1", "febf::1", "feb0::dead"] {
@@ -186,7 +183,6 @@ fn errors_mask_embedded_userinfo() {
 }
 
 /// The status surface must not republish a query string. A sidecar authenticating by query
-
 #[test]
 fn the_reportable_url_redacts_a_query_string_and_the_fragment() {
     assert_eq!(
@@ -212,7 +208,6 @@ fn the_reportable_url_redacts_a_query_string_and_the_fragment() {
 }
 
 /// Regression for the TAB-in-scheme-separator masking bypass: WHATWG URL parsing (which
-
 #[test]
 fn mask_userinfo_survives_tab_in_scheme_separator() {
     let raw = "https:\t//svc:hunter2@10.0.0.1/route";
@@ -229,7 +224,6 @@ fn mask_userinfo_survives_tab_in_scheme_separator() {
 }
 
 /// The one internal-address predicate and the literal-text guard agree about every spelling of one
-
 #[test]
 fn the_shared_predicate_agrees_with_the_literal_text_guard() {
     let cases: [(&str, bool); 20] = [
@@ -339,7 +333,6 @@ fn the_literal_host_check_refuses_every_contract_internal_ipv6() {
 }
 
 /// The secrets a failure is scrubbed of include the `Authorization` value the userinfo becomes and
-
 #[test]
 fn secret_parts_include_the_authorization_value_and_its_token() {
     let parts = secret_parts(&url("https://svc:hunter2@hooks.example/route"));
