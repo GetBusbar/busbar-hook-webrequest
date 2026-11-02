@@ -47,12 +47,12 @@ const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 pub const MAX_INFLIGHT: u32 = 64;
 
 busbar_contract::statement_extensions!(
-    /// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS (busbar lead ruling item 7a), stated in
+    /// Reference-capable, non-secret settings fields, stated in
     /// the Statement's extensions under the contract's `EXT_REFERENCE_FIELDS` key: a `{env:}`/
     /// `{file:}`/`{module:}` reference written at `url` is resolved by the kernel IN PLACE to its
     /// string (a 1.5.5 config's `url: {env: VAR}` keeps booting), and a literal url passes as
     /// written (never refused as a secret literal). The value is not a secret: it is never lent.
-    /// A reference anywhere else is refused (OWNER RULING, CHIP-REVIEW-v4 change 2).
+    /// A reference anywhere else is refused.
     pub EXTENSIONS: [
     (busbar_contract::abi::mechanism::extensions::EXT_DECLARES, include_bytes!("../declares.json")),
     (busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS, br#"["url"]"#),
