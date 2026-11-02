@@ -1050,7 +1050,11 @@ fn a_pending_op_keeps_its_opening_target_across_configure() {
     for arm in arms() {
         let b = arm.bind();
         b.open(r#"{"url":"http://127.0.0.1:9/old"}"#).unwrap();
-        let ticket = b.dispatcher.mint(0).expect("a ticket");
+        let inline = b
+            .dispatcher
+            .inline_ticket()
+            .expect("an authenticated inline ticket");
+        let ticket = inline.ticket();
         let view = decide_frame();
         let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
         assert_eq!(
@@ -1069,7 +1073,7 @@ fn a_pending_op_keeps_its_opening_target_across_configure() {
             .plugin
             .call_inline(ticket, true, slot::DECIDE, &mut resumed)
             .outcome;
-        b.dispatcher.recycle(ticket);
+        drop(inline);
 
         assert_eq!(outcome, Outcome::Ready);
         assert_eq!(resumed.out.verbs, VERB_ABSTAIN);
@@ -1087,7 +1091,11 @@ fn a_cancelled_op_does_not_pin_the_next_fresh_op_to_its_old_target() {
     for arm in arms() {
         let b = arm.bind();
         b.open(r#"{"url":"http://127.0.0.1:9/old"}"#).unwrap();
-        let ticket = b.dispatcher.mint(0).expect("a ticket");
+        let inline = b
+            .dispatcher
+            .inline_ticket()
+            .expect("an authenticated inline ticket");
+        let ticket = inline.ticket();
         let view = decide_frame();
         let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
         assert_eq!(
@@ -1123,7 +1131,7 @@ fn a_cancelled_op_does_not_pin_the_next_fresh_op_to_its_old_target() {
             .outcome;
         let sent = b.upstream.last();
         cancel();
-        b.dispatcher.recycle(ticket);
+        drop(inline);
 
         assert_eq!(outcome, Outcome::Pending);
         assert_eq!(sent.target, "http://127.0.0.2:8123");
@@ -1638,7 +1646,11 @@ fn a_pending_failure_scrubs_the_original_target_after_configure_through_both_doo
         let b = arm.bind();
         b.open(&json!({"url": ORIGINAL_URL}).to_string()).unwrap();
         b.upstream.answer(SERVICE_UNAVAILABLE, FAILURE_PHRASE, b"");
-        let ticket = b.dispatcher.mint(0).expect("a ticket");
+        let inline = b
+            .dispatcher
+            .inline_ticket()
+            .expect("an authenticated inline ticket");
+        let ticket = inline.ticket();
         let view = decide_frame();
         let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
         assert_eq!(
@@ -1655,7 +1667,7 @@ fn a_pending_failure_scrubs_the_original_target_after_configure_through_both_doo
         let called = b
             .plugin
             .call_inline(ticket, true, slot::DECIDE, &mut resumed);
-        b.dispatcher.recycle(ticket);
+        drop(inline);
         assert_eq!(called.outcome, Outcome::Failed);
         let error = error_of(called.error.as_deref());
         assert!(
@@ -1691,7 +1703,11 @@ fn refresh_during_pending_retains_the_opening_target_until_completion_or_cancel(
         for finish in [Finish::Resume, Finish::Cancel] {
             let b = arm.bind();
             b.open(&json!({"url": ORIGINAL_URL}).to_string()).unwrap();
-            let ticket = b.dispatcher.mint(0).expect("a ticket");
+            let inline = b
+                .dispatcher
+                .inline_ticket()
+                .expect("an authenticated inline ticket");
+            let ticket = inline.ticket();
             let view = decide_frame();
             let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
             assert_eq!(
@@ -1745,7 +1761,7 @@ fn refresh_during_pending_retains_the_opening_target_until_completion_or_cancel(
                     );
                 }
             }
-            b.dispatcher.recycle(ticket);
+            drop(inline);
             assert_eq!(b.upstream.sent.lock().unwrap().as_slice(), &[original]);
             assert!(b.upstream.reads.lock().unwrap().is_empty());
             assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
@@ -1786,7 +1802,11 @@ fn bare_query_values_and_path_keys_never_escape_any_operation_or_the_pending_tar
                 .outcome,
             Outcome::Ready
         );
-        let ticket = b.dispatcher.mint(0).unwrap();
+        let inline = b
+            .dispatcher
+            .inline_ticket()
+            .expect("an authenticated inline ticket");
+        let ticket = inline.ticket();
         let view = decide_frame();
         let mut first = Frame::new(view.input(), blank_out::<DecideOut>());
         assert_eq!(
@@ -1799,7 +1819,7 @@ fn bare_query_values_and_path_keys_never_escape_any_operation_or_the_pending_tar
         let mut again = Frame::new(view.input(), blank_out::<DecideOut>());
         let failed = b.plugin.call_inline(ticket, true, slot::DECIDE, &mut again);
         assert_eq!(failed.outcome, Outcome::Failed);
-        b.dispatcher.recycle(ticket);
+        drop(inline);
         for text in std::iter::once(error_of(failed.error.as_deref())).chain(b.recorder.warns()) {
             for secret in SECRETS {
                 assert!(!text.contains(secret), "{text}");
@@ -2334,7 +2354,11 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst) - before, 1);
             assert!(b.open(bad).is_err());
         }
-        let ticket = b.dispatcher.mint(0).unwrap();
+        let inline = b
+            .dispatcher
+            .inline_ticket()
+            .expect("an authenticated inline ticket");
+        let ticket = inline.ticket();
         let view = decide_frame();
         let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
         let mut unopened = Frame::new(view.input(), blank_out::<DecideOut>());
@@ -2345,7 +2369,7 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             Outcome::Ready
         );
         assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst), before);
-        b.dispatcher.recycle(ticket);
+        drop(inline);
         let mut valid: Frame<ValidateIn, OutHead> = Frame::new(
             ValidateIn {
                 head: in_head(),
@@ -2460,7 +2484,11 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             Outcome::Ready
         );
         let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
-        let ticket = b.dispatcher.mint(0).unwrap();
+        let inline = b
+            .dispatcher
+            .inline_ticket()
+            .expect("an authenticated inline ticket");
+        let ticket = inline.ticket();
         let view = decide_frame();
         let mut request = Frame::new(view.input(), blank_out::<DecideOut>());
         assert_ne!(
@@ -2469,7 +2497,7 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
                 .outcome,
             Outcome::Ready
         );
-        b.dispatcher.recycle(ticket);
+        drop(inline);
         assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst), before);
         assert_eq!(b.dispatcher.stats().deadline_without_wake, 0);
     }
