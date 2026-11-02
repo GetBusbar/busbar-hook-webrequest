@@ -58,6 +58,10 @@ struct Config {
 pub struct Target {
     /// The validated URL every op envelope is POSTed to.
     pub url: url::Url,
+    /// The url text as the operator wrote it, which `status` echoes under `url` so the engine's
+    /// value-comparing drift check sees the desired settings (the parsed `url` is canonicalised).
+    /// Never logged: every log line names the URL through [`net_guard::loggable_url`].
+    pub url_text: String,
     /// The wall-clock bound of one op, in `[1ms, MAX_TIMEOUT_MS]`.
     pub timeout: Duration,
 }
@@ -85,6 +89,7 @@ impl Target {
         let url = net_guard::validate_target_url(&cfg.url)?;
         Ok(Self {
             url,
+            url_text: cfg.url.clone(),
             timeout: clamp_timeout(cfg.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         })
     }
@@ -189,7 +194,8 @@ pub fn configure(
             let raw = v
                 .as_str()
                 .ok_or_else(|| nack("settings.url is present but not a string"))?;
-            Some(net_guard::refuse_target_url(raw).map_err(|reason| nack(&reason))?)
+            let parsed = net_guard::refuse_target_url(raw).map_err(|reason| nack(&reason))?;
+            Some((parsed, raw.to_string()))
         }
     };
     // `null` is absent, as `open` reads it (the default).
@@ -206,8 +212,9 @@ pub fn configure(
         return Ok(None);
     }
     let mut next = live.clone();
-    if let Some(url) = new_url {
+    if let Some((url, text)) = new_url {
         next.url = url;
+        next.url_text = text;
     }
     if let Some(timeout) = new_timeout {
         next.timeout = timeout;

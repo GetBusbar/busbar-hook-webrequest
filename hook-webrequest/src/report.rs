@@ -27,16 +27,17 @@ pub fn describe() -> serde_json::Value {
     })
 }
 
-/// `status`: the live target, reported under the SAME `url` key the operator pushes (the engine's drift
-/// check compares by name), as a log line names it ([`crate::net_guard::loggable_url`]): userinfo masked, path cut and query
-/// redacted, so neither a `?token=` nor a key in the path (`/v1/<key>`) reaches the operator-visible
-/// admin surface.
+/// `status`: the live target, reported under the SAME `url` key the operator pushes, with the url text
+/// as the operator wrote it. The engine's drift check compares the reported VALUE against the desired
+/// one, so a masked or canonicalised url would report drift on every poll for a hook running exactly
+/// its desired settings. The reported bag never leaves the drift check (only key names do), so the
+/// url is not masked here; every log line still names it through [`crate::net_guard::loggable_url`].
 #[must_use]
 pub fn status(live: &Target) -> serde_json::Value {
     serde_json::json!({
         "status": {
             "settings": {
-                "url": crate::net_guard::loggable_url(&live.url),
+                "url": live.url_text,
                 "target_host": live.url.host_str().unwrap_or(""),
                 "timeout_ms": live.timeout.as_millis() as u64
             },
