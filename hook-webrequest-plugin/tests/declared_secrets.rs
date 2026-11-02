@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DECLARED FIELD (OWNER RULING, CHIP-REVIEW-v4 change 2; busbar lead ruling item 7a): the
-//! hook's `url` is declared REFERENCE-CAPABLE, not secret, so a `{env:}` reference there resolves in
-//! place, as the kernel resolves it; one anywhere else is refused. The linked door is loaded the way
-//! the host binds a hook.
 
 use std::sync::Arc;
 

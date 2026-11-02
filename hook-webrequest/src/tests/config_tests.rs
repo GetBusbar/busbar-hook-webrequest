@@ -30,7 +30,7 @@ fn open_fails_closed_on_bad_config() {
     }
     assert!(open(br#"{"url":"https://api.example.com/route"}"#).is_ok());
     assert!(open(br#"{"url":"http://127.0.0.1:9000/route"}"#).is_ok());
-    // The IPv6 loopback sidecar is the same carve-out.
+
     assert!(open(br#"{"url":"http://[::1]:9000/route"}"#).is_ok());
 }
 
@@ -44,7 +44,7 @@ fn the_refusal_texts_are_1_5_5s() {
         open(br#"{"url":"  "}"#).unwrap_err(),
         "webrequest: settings.url is required"
     );
-    // `{}` says what a blank url says (R9), not serde's field text.
+
     assert_eq!(
         open(b"{}").unwrap_err(),
         "webrequest: settings.url is required"
@@ -113,7 +113,7 @@ fn configure_nacks_wrong_types_and_blocked_urls_and_never_half_applies() {
     assert!(nack(serde_json::json!({"timeout_ms": -1})).contains("not a non-negative integer"));
     assert!(nack(serde_json::json!({"url":"http://169.254.169.254/"}))
         .starts_with("webrequest: configure() rejected: settings.url must not target"));
-    // A good url beside a bad timeout: the whole push is refused.
+
     assert!(configure(
         &live(),
         &map(serde_json::json!({"url":"https://other.example/","timeout_ms":"x"}))
@@ -224,7 +224,7 @@ fn a_clamped_timeout_is_warned_once() {
 }
 
 /// D1: `open` and `configure` both refuse a url with an `@` after its host, in this plugin's words,
-/// and neither echoes the credential.
+
 #[test]
 fn open_and_configure_refuse_an_ambiguous_url() {
     let err = open(br#"{"url":"https://tok/en@hooks.example/x"}"#).unwrap_err();

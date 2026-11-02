@@ -2,21 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE BOTH-WAYS CONFORMANCE of `busbar-hook-webrequest`: busbar's PUBLISHED suite
-//! (`busbar_test_kit::conformance_suite!`, at the busbar commit this repo pins in `.busbar-ref`),
-//! run by this repo. It loads the LINKED door (the logic crate's `door::door`) and the BUILT cdylib
-//! (`busbar-hook-webrequest-plugin`) through busbar's real plugin loader and drives both with the
-//! hook kind's script over `conformance.json`. The forwarder's one outbound need (`http`) is carried
-//! by busbar's own connector, composed as the root composes it (`conformance_host`, rendered by the
-//! fleet template), to the suite's TLS far end on loopback, which answers the hook route the way an
-//! operator's endpoint does; the plugin holds no socket and no TLS. The forwarder's own wire proofs
-//! (the 1.5.5 envelope byte for byte, the red arms, the socket ban) are `forwarder.rs`.
+
 #[path = "support/conformance_host.rs"]
 mod conformance_host;
 
 /// The operator's endpoint, as the far end answers it: once the whole POST (head and its
-/// `content-length` body) is read, the route the settings name answers its order — `/route` the
-/// one the requests read, `/refreshed` the one the refresh moves the target to (so the decide
-/// after the refresh proves the new target is the one asked).
+
 fn endpoint(seen: &[u8]) -> Option<Vec<u8>> {
     let end = seen.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
     let head = String::from_utf8_lossy(&seen[..end]).to_ascii_lowercase();

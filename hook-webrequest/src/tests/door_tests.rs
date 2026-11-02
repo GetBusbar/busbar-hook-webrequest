@@ -152,8 +152,6 @@ fn current_live(f: &Forwarder) -> Arc<Live> {
     f.live()
 }
 
-// This wrapper only exposes a Weak witness for the real Forwarder's state. The actual
-// decide path and generic SDK CANCEL are entered through the existing safe test door.
 mod lifecycle {
     use super::*;
     use busbar_contract::abi::hook::{DecideIn, DecideOut, Ops};
@@ -255,7 +253,7 @@ mod lifecycle {
                 busbar_contract::abi::hook::cancel::ABORTED
             );
             let retired = old.upgrade().is_none();
-            // Clean up even on the regression side before reporting the missed retirement.
+
             let closed = reply::close_in(
                 door.op::<Ops>(|ops| &ops.head.close).unwrap(),
                 instance,

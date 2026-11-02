@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR: the webrequest forwarder on the hook kind's memory ABI (`hook_door!`), on the SDK's safe
-//! surface. No `unsafe` here.
-//!
-//! * `open` / `refresh` — [`crate::config::open`]: the settings to a live [`Target`], refused in
-//!   its words.
-//! * `decide` / `transform` / `notify` — the op's projection, enveloped ([`crate::wire`]) and
-//!   POSTed to the target through the ONE declared need ([`NEEDS`]: outbound, the loopback-allowed
-//!   egress class, over the host's `http` framer), one exchange per op. The op answers PENDING while
-//!   the exchange pends and is re-entered on the wake (Ready|Pending(wake)). The reply's meaning is
-//!   in [`crate::reply`].
-//! * `configure` — [`crate::config::configure`]'s commit-on-ack merge; a NACK is FAILED.
-//! * A settings key the forwarder does not read ([`crate::config::KEYS`]) is ignored
-//!   and logged as a warning at `open`, `refresh` and an acknowledged `configure`.
-//! * `status` / `describe` — the forwarder's own documents ([`crate::report`]), never the target's.
 
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -43,10 +30,7 @@ use crate::{reply, report, wire};
 pub const NEED: u32 = 0;
 
 /// THE ONE NEED: outbound over the host's `http` framer, the target named by the plugin per op
-/// (the configured URL's origin, so a `configure` that moves it is honoured), under the
-/// loopback-allowed egress class: `https://`, or plaintext to loopback only; the node's own ports,
-/// private, link-local and cloud-metadata hosts refused, the address resolved and pinned by the
-/// host.
+
 pub const NEEDS: &[Need] = &[Need {
     direction: DIRECTION_OUTBOUND,
     egress_class: EGRESS_LOOPBACK_ALLOWED,
@@ -56,7 +40,7 @@ pub const NEEDS: &[Need] = &[Need {
 }];
 
 /// A gate that may see and rewrite the prompt and read the caller (`needs_prompt: rw`,
-/// `needs_user: ro`); the operator's grant decides what it is handed.
+
 const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 
 /// How many ops one instance holds in flight; the host clamps.
@@ -78,7 +62,7 @@ busbar_contract::statement_extensions!(
 const REWRITES: &[Rewrite] = &[alias(crate::ALIAS)];
 
 /// THE STATEMENT: name, version, the hook tail, the alias, the one outbound need and the
-/// reference-capable `url`.
+
 pub const STATEMENT: Statement = Statement {
     rewrites: REWRITES.as_ptr(),
     rewrites_len: REWRITES.len(),
@@ -101,8 +85,7 @@ pub struct Forwarder {
 }
 
 /// A [`Target`] with what every op's exchange needs of it, built once when the target is set (at
-/// `open` and an acknowledged `configure`): the origin the need dials, and the
-/// method, request target and fields ([`wire::request`]) as the exchange takes them.
+
 pub(crate) struct Live {
     target: Target,
     pub(crate) origin: String,
@@ -111,13 +94,9 @@ pub(crate) struct Live {
     /// The fields that carry no credential, in order (`content-type`, `accept`).
     plain: Vec<(Vec<u8>, Vec<u8>)>,
     /// The fields that do (the `authorization` the userinfo became): each goes in before the plain
-    /// field `at` (their count: first), held as a [`Cred`] required to go out secured when the url
-    /// names a secure scheme, so the SDK frames and wipes the value and a formatted exchange shows
-    /// `<sealed>`.
     sealed: Vec<(usize, Vec<u8>, Cred)>,
     timeout_ms: u64,
     /// What a failure's text is scrubbed of ([`crate::net_guard::secret_parts`]), computed once with
-    /// the target rather than for every failed op.
     secrets: Parts,
 }
 
@@ -206,7 +185,7 @@ impl Forwarder {
     }
 
     /// The SDK retains the original target with this operation through pending re-entries and
-    /// configuration changes, and releases it on cancellation or completion.
+
     pub(crate) fn entry_live(&self, on: &Op<'_>) -> Result<Arc<Live>, &'static str> {
         on.context(|| self.live())
     }
@@ -216,7 +195,7 @@ impl Forwarder {
     }
 
     /// POST `op`'s envelope over the projection `payload` builds to the live target: PENDING while
-    /// the exchange pends; READY with the reply, or the failure text.
+
     fn post(
         &self,
         on: &Op<'_>,
@@ -258,8 +237,7 @@ impl Forwarder {
                         let phrase = status_phrase(&live, phrase.as_deref());
                         read(head.status, phrase.as_deref(), &[])
                     });
-                // Even when a received error head determines the answer, the transport's own
-                // cause can quote the credential-bearing URL and must stay in wiping custody.
+
                 let cause = failure.into_failure();
                 if let Some(answer) = earlier {
                     return answer;
@@ -277,15 +255,13 @@ impl Forwarder {
 }
 
 /// The remote's reason phrase as an error status may show it: the target's own words, which may
-/// quote its URL back, cut of every secret part of the target ([`Live::secrets`]) before
-/// [`reply::error_status`] caps and escapes it.
+
 pub(crate) fn status_phrase(live: &Live, phrase: Option<&str>) -> Option<String> {
     phrase.map(|p| crate::net_guard::scrub(p, &live.secrets))
 }
 
 /// The text a transport failure is logged in: a fixed prefix, then the host's cause with every
-/// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
-/// words may quote the URL.
+
 pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
     let raw = Text(failure.to_string());
     let cause = crate::net_guard::scrub(&raw, &live.secrets);
@@ -336,12 +312,8 @@ impl Hook for Forwarder {
         settings: &serde_json::Map<String, serde_json::Value>,
         version: u64,
     ) -> Result<Option<ConfigureCheckpoint>, String> {
-        // One configure at a time: the validation (the SSRF check and the merge) reads the live
-        // target it is merged over, and the version check and the swap must not interleave with
-        // another push's.
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
-        // A push older than the applied one is acknowledged and not applied, whether or not it
-        // would validate: the version check comes first.
+
         let current = self.live();
         let stale = version < applied.0;
         let next = match if stale {
@@ -371,8 +343,7 @@ impl Hook for Forwarder {
             url: &'a str,
             timeout_ms: u64,
         }
-        // Serialize borrowed fields directly: credential-bearing URL text is never cloned into
-        // a temporary JSON DOM. Construct the wiping checkpoint before publishing this change.
+
         let bytes = serde_json::to_vec(&Snapshot {
             url: target.target.url.as_str(),
             timeout_ms: target.timeout_ms,

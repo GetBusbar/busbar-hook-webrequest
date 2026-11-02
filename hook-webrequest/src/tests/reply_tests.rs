@@ -21,7 +21,7 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
         interpret(503, None, b"{}").unwrap_err(),
         "webrequest: target returned an error status: HTTP status server error (503 Service Unavailable)"
     );
-    // A redirect is never followed, and is a failure that says so (not "invalid JSON").
+
     for code in [300, 301, 302, 307, 399] {
         let text = interpret(code, None, b"{}").unwrap_err();
         assert!(
@@ -32,9 +32,9 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
         );
         assert!(!text.contains("invalid JSON"), "{text}");
     }
-    // A 204 (No Content) is a deliberate "no opinion": `{}`.
+
     assert_eq!(interpret(204, None, b"").unwrap(), json!({}));
-    // ...but only a 204 says "no opinion"; any other empty reply is a failure.
+
     assert_eq!(
         interpret(200, None, b"").unwrap_err(),
         "webrequest: empty reply (HTTP status 200)"
@@ -44,7 +44,7 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
         "webrequest: empty reply (HTTP status 202)"
     );
     assert!(interpret(200, None, b"  ").is_err());
-    // The phrase the server sent wins, exactly as the 1.5.5 client showed it; empty falls back.
+
     assert_eq!(
         interpret(418, Some("I'm A Teapot Custom"), b"{}").unwrap_err(),
         "webrequest: target returned an error status: HTTP status client error (418 I'm A Teapot Custom)"
@@ -53,7 +53,7 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
         interpret(404, Some(""), b"{}").unwrap_err(),
         interpret(404, None, b"{}").unwrap_err()
     );
-    // An unknown 5xx still reads as a server error.
+
     assert!(interpret(599, None, b"")
         .unwrap_err()
         .contains("server error"));
@@ -61,8 +61,6 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
 
 #[test]
 fn only_4xx_and_5xx_are_failures_so_a_600_status_relays_its_body() {
-    // reqwest 0.12.28 `error_for_status` fails only 400..=599; hyper accepts 600..=999, so the
-    // 1.5.5 client relayed such a body (a `reject` in it was honoured).
     assert_eq!(
         interpret(
             600,
@@ -103,7 +101,7 @@ fn depth_and_parse_errors_are_length_only() {
             deep.len()
         )
     );
-    // The boundary is exact: depth 127 (n arrays + the outer object) parses, 128 is refused.
+
     let nested = |n: usize| format!(r#"{{"order":{}{}}}"#, "[".repeat(n), "]".repeat(n));
     assert!(parse_reply(nested(MAX_REPLY_DEPTH - 2).as_bytes()).is_ok());
     assert!(parse_reply(nested(MAX_REPLY_DEPTH - 1).as_bytes()).is_err());
@@ -122,7 +120,7 @@ fn depth_and_parse_errors_are_length_only() {
         format!("webrequest: invalid JSON reply ({} bytes)", echo.len())
     );
     assert!(!err.contains("secret"));
-    // Brackets inside a string do not count.
+
     assert!(!exceeds_max_depth(
         format!("\"{}\"", "[".repeat(500)).as_bytes(),
         1
@@ -133,7 +131,7 @@ fn depth_and_parse_errors_are_length_only() {
 #[test]
 fn a_failure_means_a_different_thing_per_op() {
     let fail: Result<serde_json::Value, String> = Err("webrequest: request failed".into());
-    // decide and transform: the hook FAILS (the host applies `on_error`), the text passed through.
+
     assert_eq!(
         decide(fail.clone()),
         Err("webrequest: request failed".to_string())
@@ -142,20 +140,19 @@ fn a_failure_means_a_different_thing_per_op() {
         transform(fail.clone()),
         Err("webrequest: request failed".to_string())
     );
-    // A reply the target sent deliberately is passed on, `{}` included (an abstain once lowered).
+
     assert_eq!(decide(Ok(json!({}))), Ok(json!({})));
     assert_eq!(decide(Ok(json!({"order":[0]}))), Ok(json!({"order":[0]})));
     assert_eq!(
         transform(Ok(json!({"reject":"x"}))),
         Ok(json!({"reject":"x"}))
     );
-    // notify: swallowed.
+
     notify(fail);
 }
 
 #[test]
 fn the_remote_reason_phrase_is_capped_and_escaped() {
-    // Control bytes cannot forge a log line or recolour a terminal.
     let text = interpret(500, Some("Oops\r\n\x1b[31mwebrequest: forged"), b"").unwrap_err();
     assert!(
         !text.contains('\n') && !text.contains('\r') && !text.contains('\x1b'),
@@ -165,7 +162,7 @@ fn the_remote_reason_phrase_is_capped_and_escaped() {
         text.contains(r"500 Oops\r\n\u{1b}[31mwebrequest: forged"),
         "{text}"
     );
-    // A long phrase is cut at 128 characters and marked.
+
     let long = "x".repeat(5000);
     let text = interpret(500, Some(&long), b"").unwrap_err();
     assert!(text.len() < 300, "{} bytes", text.len());
@@ -173,7 +170,7 @@ fn the_remote_reason_phrase_is_capped_and_escaped() {
         text.contains(&format!("500 {}\u{2026})", "x".repeat(128))),
         "{text}"
     );
-    // Exactly 128 is shown whole, and an apostrophe is not escaped (1.5.5's text).
+
     let exact = "y".repeat(128);
     assert!(interpret(500, Some(&exact), b"")
         .unwrap_err()

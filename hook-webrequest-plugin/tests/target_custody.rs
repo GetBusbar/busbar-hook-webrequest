@@ -72,8 +72,6 @@ fn the_initialized_payload_observer_detects_an_unwiped_control() {
     }
 }
 
-// Use the exact production owner source for the private lossy/error guards. The response test
-// below enters the public reader called by Forwarder::post, rather than reproducing its Drop.
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 #[path = "../../hook-webrequest/src/owners.rs"]

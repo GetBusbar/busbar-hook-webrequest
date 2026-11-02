@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `describe` and `status` documents: the forwarder's OWN self-description and observed state
-//! (neither is proxied to the target). No prompt or user content is ever surfaced here.
 
 use crate::config::Target;
 
@@ -28,9 +27,7 @@ pub fn describe() -> serde_json::Value {
 }
 
 /// `status`: the live target, reported under the SAME `url` key the operator pushes (the engine's drift
-/// check compares by name), as a log line names it ([`crate::net_guard::loggable_url`]): userinfo masked, path cut and query
-/// redacted, so neither a `?token=` nor a key in the path (`/v1/<key>`) reaches the operator-visible
-/// admin surface.
+
 #[must_use]
 pub fn status(live: &Target) -> serde_json::Value {
     serde_json::json!({

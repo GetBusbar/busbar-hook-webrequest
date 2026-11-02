@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Credential-echo canaries (CREDENTIAL-LOCKDOWN H3 and A.3 for this hook): a credential planted in
-//! the target URL's userinfo, path and query never reaches a `Debug` rendering or a logged
-//! transport failure, even when the host's failure text quotes the URL back.
 
 use crate::config::{self, Target};
 use crate::door::{transport_failure, Live};
@@ -79,7 +77,7 @@ fn a_transport_failure_never_logs_the_hosts_echo_of_the_url() {
 }
 
 /// A host that echoes the request's `Authorization` back: neither the header's value nor its
-/// base64 token reaches the logged failure.
+
 #[test]
 fn a_transport_failure_never_logs_the_hosts_echo_of_the_authorization() {
     let t = target();

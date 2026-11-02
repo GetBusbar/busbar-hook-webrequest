@@ -2,27 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **ONE FORWARDER, BOTH DOORS** — webrequest's linked + dropped-in conformance on the hook kind's
-//! memory ABI, run against the busbar rev this repo pins (`.busbar-ref`).
-//!
-//! The forwarder is held two ways at once: LINKED (the logic crate's `door::door`, through the
-//! loader's `load_linked`) and DROPPED IN (this crate's built cdylib, exporting the same door as
-//! `busbar_plugin_door`, through `load_dropped`). Each arm is bound to a real dispatcher and to a
-//! connection table that plays the far end ([`Upstream`]): it takes the framed request the host's
-//! framer would put on the wire and answers a scripted reply, and it answers its FIRST read of every
-//! reply PENDING and wakes the op's ticket from another thread. So every `decide`, `transform` and
-//! `notify` crosses PENDING, is re-entered on the wake and completes from where its exchange parked
-//! (THE DESIGN, the plugin ABI: Ready|Pending(wake); ARCHITECT ruling 2026-10-02: no hook-specific
-//! seam). The two transcripts must agree, and every request must be the 1.5.5 client's: `POST` to
-//! the URL's path, its fields, the 1.5.5 op envelope byte for byte.
-//!
-//! THE RED ARMS: a configuration the forwarder refuses never opens, in 1.5.5's words; a configure
-//! that names a blocked URL is a NACK and leaves the live target; a far end's error status is an
-//! FAILED `decide` and a FAILED `transform` (the operator's `on_error` applies; SIGN-hookexport-
-//! webrequest-failure), while a deliberate `{}` reply stays an abstain; and the Statement declares exactly one need,
-//! outbound, in the loopback-allowed egress class, over the host's `http` framer.
-//!
-//! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
-//! DESIGN §5: no plugin opens a socket, dials, binds or does TLS), with its RED arm.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -65,15 +44,13 @@ mod net_ban;
 /// The URL every opened forwarder is configured with: loopback plaintext, userinfo, a query.
 const URL: &str = "http://user:pa%20ss@127.0.0.1:9/hook?x=1";
 
-// The existing opaque CONFIGURE extension's v1 envelope: two little-endian u64 words,
-// followed by the complete normalized settings document. No new SDK API is needed to read it.
 const CONFIGURATION_CHECKPOINT_KEY: &str = "hook.configure_checkpoint.v1";
 const CONFIGURATION_WORD_BYTES: usize = std::mem::size_of::<u64>();
 const CONFIGURATION_CHECKPOINT_PREFIX_BYTES: usize = CONFIGURATION_WORD_BYTES * 2;
 type ConfigurationSnapshot = (u64, u64, Value);
 
 /// This crate's built cdylib (uplifted or under `deps`, newest wins). A missing artifact is a
-/// failure, never a skip: this test IS the dropped-in door's proof.
+
 fn cdylib() -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary has a path");
     let profile = exe
@@ -93,8 +70,6 @@ fn cdylib() -> PathBuf {
 fn stated() -> Vec<u8> {
     rendering_of(busbar_hook_webrequest::door::door).expect("the door renders its Statement")
 }
-
-// ── the far end ──────────────────────────────────────────────────────────────────────────────────
 
 /// One request as the host's framer was handed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,8 +92,7 @@ struct ReadState {
 }
 
 /// THE FAR END, as a connection table: every need is framed; an open is the whole request (kept
-/// in `sent`); each reply is the scripted `(status, reason, body)`, its first read PENDING with
-/// the op's ticket woken from another thread.
+
 struct Upstream {
     wake: Mutex<Option<Wake>>,
     answer: Mutex<(u32, &'static str, Vec<u8>)>,
@@ -235,7 +209,6 @@ impl Conns for Upstream {
         };
         match step {
             0 => {
-                // The far end has not answered yet: the wake comes later, from elsewhere.
                 self.pended.fetch_add(1, Ordering::SeqCst);
                 let wake = self
                     .wake
@@ -303,8 +276,6 @@ impl DeclaredConns for Upstream {
         true
     }
 }
-
-// ── the host's side ──────────────────────────────────────────────────────────────────────────────
 
 /// A JSON blob over `text` (the host's bytes, alive for the call).
 fn json_blob(text: &str) -> Blob {
@@ -521,7 +492,7 @@ impl Bound {
     }
 
     /// Read the existing opaque reply extension before releasing its lease. The regression uses
-    /// the old raw CONFIGURE surface, so an absent checkpoint is a behavior failure.
+
     fn configure_snapshot(
         &self,
         settings: &str,
@@ -587,8 +558,6 @@ impl Bound {
         }
     }
 }
-
-// ── the request a hook is handed ─────────────────────────────────────────────────────────────────
 
 fn request() -> RoutingRequest<'static> {
     RoutingRequest {
@@ -656,7 +625,7 @@ fn decide_frame() -> Arc<DecideFrame> {
 }
 
 /// The 1.5.5 op envelope for `op`: the projection 1.5.5's host built, enveloped as 1.5.5's
-/// forwarder did.
+
 fn envelope_155(op: &'static str) -> Vec<u8> {
     let cands = if op == "notify" {
         Vec::new()
@@ -689,14 +658,11 @@ fn expected(op: &'static str) -> Sent {
     }
 }
 
-// ── the script ───────────────────────────────────────────────────────────────────────────────────
-
 /// Drive one arm through the whole script; its transcript.
 fn script(arm: &Arm) -> Vec<String> {
     let mut t = Vec::new();
     let b = arm.bind();
 
-    // RED: a configuration the forwarder refuses never opens, in 1.5.5's words.
     for (bad, words) in [
         (r#"{"url": ""}"#, "webrequest: settings.url is required"),
         ("{}", "webrequest: settings.url is required"),
@@ -712,7 +678,6 @@ fn script(arm: &Arm) -> Vec<String> {
     let settings = format!(r#"{{"url": "{URL}", "timeout_ms": 2000}}"#);
     b.open(&settings).expect("the forwarder opens");
 
-    // describe and status: the forwarder's own documents.
     let d = b.describe();
     assert_eq!(d["schema"]["required"], json!(["url"]));
     let s = b.status();
@@ -720,7 +685,6 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(s["status"]["settings"]["timeout_ms"], json!(2000));
     t.push(format!("status {s}"));
 
-    // decide: the far end's order, after a PENDING crossing resumed on its wake.
     let frame = decide_frame();
     b.upstream.answer(200, "OK", br#"{"order":[9,3]}"#);
     let pended = b.upstream.pended.load(Ordering::SeqCst);
@@ -741,8 +705,6 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(b.upstream.last(), expected("decide"));
     t.push("decide 200: prefer [9, 3]".into());
 
-    // RED: an error status is a FAILED decide, so the pool's `on_error` applies (a far-end 500
-    // under `on_error: reject` refuses the request); a deliberate `{}` reply is still an abstain.
     b.upstream.answer(503, "Busy", b"");
     let failed = decide_failure(&b);
     assert!(failed.contains("HTTP status server error (503"), "{failed}");
@@ -752,7 +714,6 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
     t.push("decide {}: abstain".into());
 
-    // transform: the far end's rewrite crosses as its JSON; a failure reaches on_error.
     let frame = decide_frame();
     let rewrite = json!({"messages": [{"role": "user", "content": "rewritten"}]});
     b.upstream.answer(
@@ -776,7 +737,6 @@ fn script(arm: &Arm) -> Vec<String> {
     assert!(failed.contains("HTTP status server error (500"), "{failed}");
     t.push("transform 500: failed".into());
 
-    // notify: fire-and-forget, the 1.5.5 notify envelope on the wire.
     let tap = NotifyFrame::build(&request(), None, true);
     b.upstream.answer(200, "OK", b"{}");
     let done = b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
@@ -784,7 +744,6 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(b.upstream.last(), expected("notify"));
     t.push("notify: ready".into());
 
-    // configure: commit-on-ack; a blocked URL is a NACK and leaves the live target.
     assert_eq!(b.configure(r#"{"timeout_ms": 100}"#, 7), Ok(7));
     let nack = b
         .configure(r#"{"url": "https://169.254.169.254/"}"#, 9)
@@ -805,7 +764,6 @@ fn script(arm: &Arm) -> Vec<String> {
     assert_eq!(s["status"]["settings"]["target_host"], json!("127.0.0.1"));
     t.push(format!("configure: ack 7, nack 8, nack 9; status {s}"));
 
-    // Every exchange pended once and completed on its wake.
     assert_eq!(
         b.upstream.pended.load(Ordering::SeqCst),
         b.upstream.sent.lock().unwrap().len() as u32
@@ -821,7 +779,7 @@ fn the_linked_and_the_dropped_in_doors_answer_alike_and_as_1_5_5() {
 }
 
 /// RED: the Statement declares exactly one need: outbound, the loopback-allowed egress class, over
-/// the host's `http` framer, its target named by the plugin per op (no `target_from`).
+
 #[test]
 fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     let read = rendering::read(&stated()).expect("the rendering reads");
@@ -831,7 +789,7 @@ fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
     assert_eq!(need.egress_class, EGRESS_LOOPBACK_ALLOWED);
     assert_eq!(need.transport, "http");
     assert!(need.target_from.is_empty());
-    // The dropped-in image states the same Statement as the linked door.
+
     let dropped = busbar_plugin_loader::dispatch::rendering_of_library(&cdylib())
         .expect("the cdylib opens")
         .expect("the cdylib exports the door");
@@ -839,7 +797,7 @@ fn red_the_statement_declares_one_outbound_loopback_allowed_http_need() {
 }
 
 /// D5: the Statement states its alias rewrite, the module name an operator writes, and the dropped-in
-/// image states the same.
+
 #[test]
 fn red_the_statement_states_the_alias_rewrite() {
     let read = rendering::read(&stated()).expect("the rendering reads");
@@ -849,7 +807,7 @@ fn red_the_statement_states_the_alias_rewrite() {
 }
 
 /// D3: every operator-actionable line carries its declared catalogue code, and `declares.json`
-/// declares exactly those codes.
+
 #[test]
 fn red_every_actionable_line_carries_its_declared_code() {
     let declares: Value =
@@ -881,13 +839,13 @@ fn red_every_actionable_line_carries_its_declared_code() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}", "timeout_ms": 99999}}"#))
             .expect("opens");
-        // 7154: the clamp.
+
         assert!(
             warned(&b, &["timeout_ms", "clamp", "BUSBAR-7154"]),
             "{:?}",
             b.recorder.warns()
         );
-        // 7153: a configure refusal.
+
         b.configure(r#"{"url": "http://169.254.169.254/"}"#, 2)
             .expect_err("a blocked URL is a NACK");
         assert!(
@@ -895,7 +853,7 @@ fn red_every_actionable_line_carries_its_declared_code() {
             "{:?}",
             b.recorder.warns()
         );
-        // 7151: a failed decide and a failed transform.
+
         b.upstream.answer(503, "Busy", b"");
         decide_failure(&b);
         assert!(
@@ -909,7 +867,7 @@ fn red_every_actionable_line_carries_its_declared_code() {
             "{:?}",
             b.recorder.warns()
         );
-        // 7152: a dropped notify.
+
         let tap = NotifyFrame::build(&request(), None, true);
         b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
         assert!(
@@ -921,8 +879,7 @@ fn red_every_actionable_line_carries_its_declared_code() {
 }
 
 /// RED: a `decide` that cannot pend (no ticket) answers at once, FAILED (a request it could not
-/// send is a hook failure, so `on_error` applies); it never blocks a thread and puts nothing on the
-/// wire.
+
 #[test]
 fn red_a_ticketless_decide_fails_at_once() {
     let b = Arm::Linked.bind();
@@ -939,8 +896,6 @@ fn red_a_ticketless_decide_fails_at_once() {
     assert!(error_of(called.error.as_deref()).contains("cannot pend"));
     assert!(b.upstream.sent.lock().unwrap().is_empty());
 }
-
-// ── nothing silent: every refusal is explained in the plugin's log ───────────────────────────────
 
 fn arms() -> [Arm; 2] {
     [Arm::Linked, Arm::Dropped(cdylib())]
@@ -1344,8 +1299,7 @@ fn ambiguous_authority_refusals_never_echo_a_credential_fragment() {
 }
 
 /// RED: a settings key the forwarder does not read is not refused (1.5.5 ignored it, so a 1.5.5
-/// document still opens), and not silent either: `open` and an acknowledged `configure` each log
-/// it by name.
+
 #[test]
 fn red_an_unknown_setting_is_ignored_and_logged() {
     for arm in arms() {
@@ -1387,15 +1341,14 @@ fn red_a_failed_decide_fails_and_is_logged() {
 }
 
 /// RED: a transport failure (the exchange cannot establish) reaches the plugin as a failure it
-/// answers itself: the decide FAILS with the request failure, which is logged; a transform against
-/// a dead target fails too.
+
 #[test]
 fn red_a_transport_failure_fails_and_is_logged() {
     for arm in arms() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
         b.upstream.fail_open.store(true, Ordering::SeqCst);
-        // The host's cause rides after the 1.5.5 prefix, not only the prefix.
+
         let failed = decide_failure(&b);
         assert!(
             failed.starts_with("webrequest: request failed: error sending request: "),
@@ -1421,7 +1374,7 @@ fn red_a_transport_failure_fails_and_is_logged() {
 }
 
 /// RED: no diagnostic carries the URL's userinfo or query, through a configure refusal, an error
-/// status and a failed open.
+
 #[test]
 fn red_the_log_never_leaks_the_url_secrets() {
     for arm in arms() {
@@ -1434,13 +1387,13 @@ fn red_the_log_never_leaks_the_url_secrets() {
         decide_failure(&b);
         b.upstream.fail_open.store(true, Ordering::SeqCst);
         decide_failure(&b);
-        // Guard against a vacuous pass: the three refusals were logged.
+
         let warns = b.recorder.warns();
         assert!(warns.len() >= 3, "{warns:?}");
         let all = format!("{:?}", b.recorder.diags.lock().unwrap());
         assert!(!all.contains("hunter2"), "{all}");
         assert!(!all.contains("SECRET123"), "{all}");
-        // Nor the Authorization the userinfo becomes (base64 of `user:hunter2`).
+
         assert!(!all.contains("dXNlcjpodW50ZXIy"), "{all}");
     }
 }
@@ -1458,7 +1411,7 @@ fn a_successful_decide_logs_no_warning() {
 }
 
 /// A committed configure moves the NEXT op's origin, path and timeout: the target is read per op,
-/// never cached at open.
+
 #[test]
 fn a_committed_configure_moves_the_next_decide() {
     for arm in arms() {
@@ -1505,7 +1458,7 @@ fn red_a_clamped_timeout_is_warned() {
 }
 
 /// RED: a notify the far end acknowledged with a `204` (or any 2xx/3xx, whatever the body) is
-/// delivered and logs nothing; an error status still warns.
+
 #[test]
 fn red_a_notify_acknowledged_without_a_body_logs_no_warning() {
     for arm in arms() {
@@ -1530,7 +1483,7 @@ fn red_a_notify_acknowledged_without_a_body_logs_no_warning() {
 }
 
 /// A loopback sidecar by its IPv6 literal opens through the door: `http://[::1]:9000/` is the
-/// plaintext carve-out, and reaches the host as the bracketed origin.
+
 #[test]
 fn an_ipv6_loopback_sidecar_opens_and_is_dialled_by_its_bracketed_origin() {
     for arm in arms() {
@@ -1880,7 +1833,7 @@ fn bare_query_values_and_path_keys_never_escape_any_operation_or_the_pending_tar
 }
 
 /// The real HTTP framer and connector must honor the settings timeout after a prompt head;
-/// the much longer dispatcher deadline cannot stand in for this plugin's budget.
+
 #[test]
 fn the_real_connector_cuts_a_silent_partial_body_at_the_configured_whole_timeout() {
     use std::io::{Read, Write};
@@ -1919,8 +1872,7 @@ fn the_real_connector_cuts_a_silent_partial_body_at_the_configured_whole_timeout
                 socket
                     .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n{")
                     .unwrap();
-                // Keep the incomplete body silent. EOF, not a server timer or another data wake,
-                // must show that the caller's whole-exchange timer closed this connection.
+
                 let eof = matches!(socket.read(&mut bytes), Ok(0));
                 closed.send(eof).unwrap();
             });

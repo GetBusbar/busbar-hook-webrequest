@@ -74,14 +74,11 @@ impl Drop for ParsedUrl {
     }
 }
 
-// Consume only Url's owned serialization through its public conversion. The parser's private
-// scratch is outside this owner; no private representation or allocation capacity is accessed.
 pub(crate) fn wipe_url(url: &mut url::Url) {
     let empty = url::Url::parse("about:blank").expect("constant URL");
     drop(ParsedUrl::new(std::mem::replace(url, empty)));
 }
 
-// Only the returned tree is owned here, not serde's private parser scratch or error storage.
 pub(crate) struct SettingsValue(pub(crate) serde_json::Value);
 
 impl Deref for SettingsValue {
