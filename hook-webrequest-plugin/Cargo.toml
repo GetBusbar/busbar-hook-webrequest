@@ -33,6 +33,7 @@ busbar-hook-webrequest = { path = "../hook-webrequest" }
 busbar-contract = { workspace = true }
 
 [dev-dependencies]
+busbar-kernel = { workspace = true }
 # The conformance test opens this crate's own cdylib WITH its dropped-in door on (see `[features]`).
 busbar-hook-webrequest-plugin = { path = ".", features = ["dropped-in"] }
 # The conformance test loads the built cdylib over the REAL loader and the linked door through the

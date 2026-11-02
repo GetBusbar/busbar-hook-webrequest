@@ -339,16 +339,6 @@ struct Bound {
     plugin: Plugin<Hook>,
 }
 
-struct Clock;
-impl busbar_test_kit::services_double::ServicesDouble for Clock {
-    fn now(&self) -> busbar_contract::services::Reading {
-        busbar_contract::services::Reading {
-            wall_ns: 0,
-            mono_ns: now_ns(),
-        }
-    }
-}
-
 impl Arm {
     fn bind(&self) -> Bound {
         self.bind_mode(false)
@@ -364,7 +354,10 @@ impl Arm {
                 workers: 2,
                 ..Default::default()
             },
-            Arc::new(busbar_test_kit::services_double::Double(Clock)),
+            Arc::new(
+                busbar_kernel::host_services::KernelServices::new()
+                    .with_mono_clock(Arc::new(now_ns)),
+            ),
         ));
         let upstream = Upstream::new();
         *upstream.wake.lock().unwrap() = Some(dispatcher.conn_waker());
