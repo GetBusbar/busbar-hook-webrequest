@@ -145,7 +145,7 @@ impl Live {
                 let mut v = serde_json::Value::String(value);
                 let cred = Cred::take(&mut v)
                     .unwrap_or_else(Cred::empty)
-                    .secure_for(target.url.as_str());
+                    .require_secure_if(target.url.scheme() == "https");
                 sealed.push((plain.len(), name.as_bytes().to_vec(), cred));
             } else {
                 plain.push((name.as_bytes().to_vec(), value.into_bytes()));
