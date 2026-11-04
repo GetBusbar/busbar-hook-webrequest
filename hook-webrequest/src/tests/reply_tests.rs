@@ -33,7 +33,10 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
         assert!(!text.contains("invalid JSON"), "{text}");
     }
 
-    assert_eq!(interpret(204, None, b"").unwrap(), json!({}));
+    assert_eq!(
+        interpret(204, None, b"").unwrap_err(),
+        "webrequest: empty reply (HTTP status 204)"
+    );
 
     assert_eq!(
         interpret(200, None, b"").unwrap_err(),
@@ -189,4 +192,25 @@ fn a_notify_is_delivered_by_any_2xx_or_3xx_without_reading_the_body() {
     assert!(delivered(503, Some("Busy"))
         .unwrap_err()
         .contains("503 Busy"));
+}
+
+/// A status that is no three-digit HTTP code (the exchange reports one that fits no `u16` as 0)
+/// fails every op rather than reading the body as a reply, so the pool's `on_error` applies.
+#[test]
+fn a_status_that_is_no_http_code_fails_every_op() {
+    for status in [0, 1, 99, 1000, 4242, u16::MAX] {
+        let decided = interpret(status, None, b"{}").unwrap_err();
+        assert!(
+            decided.contains("no valid HTTP status"),
+            "{status}: {decided}"
+        );
+        assert!(
+            interpret(status, None, br#"{"abstain":true}"#).is_err(),
+            "{status}"
+        );
+        assert!(delivered(status, None).is_err(), "{status}");
+    }
+    assert!(interpret(100, None, b"{}").is_ok());
+    assert!(interpret(999, None, b"{}").is_ok());
+    assert!(delivered(999, None).is_ok());
 }

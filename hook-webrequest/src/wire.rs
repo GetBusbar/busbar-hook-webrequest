@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! What goes on the wire to the endpoint: the op envelope and the HTTP/1.1 request bytes. The
+//! envelope is the projection with the `op` key last, and the request's fields are written in a
+//! fixed order.
 
 use busbar_contract::abi::sdk::url::{self as sdk_url, Userinfo};
 
@@ -10,6 +12,8 @@ use crate::ALIAS;
 use url::Position;
 
 /// The POST envelope for a per-request op: the engine's opaque `payload` projection (BORROWED, not
+/// cloned) with an `op` discriminator merged in, mirroring the old webhook wire. The projection is
+/// carried through UNCHANGED, so any opt-in `prompt`/`user` keys the CORE granted ride straight through.
 struct Envelope<'a> {
     op: &'a str,
     payload: &'a serde_json::Value,
@@ -107,6 +111,9 @@ pub fn request(target: &Target, body: Vec<u8>) -> Request {
 }
 
 /// `Basic base64(user:pass)` from the URL's percent-decoded userinfo, read as text as reqwest
+/// 0.12 read it for 1.5.5 ([`Userinfo::Utf8`]): a username that is not UTF-8 once decoded sends no
+/// header at all, a password that is not UTF-8 counts as absent, and the header goes only for a
+/// non-empty username or a present password.
 pub(crate) fn basic_authorization(url: &url::Url) -> Option<String> {
     sdk_url::basic_authorization(url.username(), url.password(), Userinfo::Utf8)
 }

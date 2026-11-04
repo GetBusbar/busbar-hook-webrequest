@@ -269,3 +269,19 @@ fn a_truncated_object_after_an_owned_url_refuses_without_echoing_material() {
     assert!(!error.contains("PARSEPASSCANARY"));
     assert!(!error.contains("parse-path-canary"));
 }
+
+/// A duplicated settings key is a data error too, and the refusal says a key may be given once
+/// rather than only naming the types (which a duplicate of a well-typed key already has).
+#[test]
+fn a_duplicated_setting_is_refused_in_words_that_name_it() {
+    let err = open(br#"{"url":"https://a.example/x","url":"https://b.example/x"}"#).unwrap_err();
+    assert!(
+        err.starts_with("webrequest: invalid plugin config: "),
+        "{err}"
+    );
+    assert!(err.contains("at most once"), "{err}");
+    assert!(
+        !err.contains("a.example") && !err.contains("b.example"),
+        "{err}"
+    );
+}

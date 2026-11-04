@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `describe` and `status` documents: the forwarder's OWN self-description and observed state
+//! (neither is proxied to the target). No prompt or user content is ever surfaced here.
 
 use crate::config::{Target, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS};
 
@@ -9,7 +10,7 @@ use crate::config::{Target, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS};
 #[must_use]
 pub fn describe() -> serde_json::Value {
     let timeout_description = format!(
-        "Per-op wall-clock timeout in milliseconds (default {DEFAULT_TIMEOUT_MS}, clamped to [1, {MAX_TIMEOUT_MS}] — cannot exceed the engine's reference hook budget)."
+        "Per-op wall-clock timeout in milliseconds (default {DEFAULT_TIMEOUT_MS}, clamped to [1, {MAX_TIMEOUT_MS}] — cannot exceed the engine's reference hook budget). `null` uses the default at open and keeps the live value in a configure push."
     );
     serde_json::json!({
         "schema": {
@@ -21,7 +22,8 @@ pub fn describe() -> serde_json::Value {
                     "description": "The https:// (or loopback http://) URL each hook op envelope is POSTed to."
                 },
                 "timeout_ms": {
-                    "type": "integer",
+                    "type": ["integer", "null"],
+                    "minimum": 0,
                     "description": timeout_description
                 }
             }

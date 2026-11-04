@@ -8,7 +8,7 @@ use busbar_hook_webrequest::config;
 #[cfg(target_os = "linux")]
 use custody::CustodyAllocator;
 #[cfg(target_os = "linux")]
-use custody::{watch_owner_prefix, OwnerProbe};
+use custody::{stop_watching, watch_allocations_of, watch_owner_prefix, OwnerProbe};
 
 #[cfg(target_os = "linux")]
 #[global_allocator]
@@ -52,6 +52,38 @@ fn retired_targets_wipe_each_owned_url_serialization() {
     }
 }
 
+/// A `configure` that moves the url supersedes the merge's copy of the old target: both of its
+/// owned serializations of the old url (the parsed url and the raw text) are wiped when replaced.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_url_replacing_configure_wipes_the_superseded_url_serializations() {
+    const LEN: usize = 111;
+    let prefix = "https://operator:password-canary@receiver.example/";
+    let old = format!("{prefix}{}", "p".repeat(LEN - prefix.len()));
+    let target = config::open(format!(r#"{{"url":"{old}"}}"#).as_bytes()).unwrap();
+    assert_eq!(
+        (target.url.as_str(), target.url_text.as_str()),
+        (&*old, &*old)
+    );
+    // Every allocation the merge makes for the short new url stays well under LEN bytes, so the
+    // allocations of exactly LEN bytes are the merge's clone of the old url and of its text.
+    let settings = serde_json::json!({"url": "https://next.example/"});
+    let settings = settings.as_object().unwrap();
+    // SAFETY: only allocations made on this thread during the merge below are registered: the two
+    // String clones of the old url, each fully initialized by its copy and dropped in the merge.
+    let probe = unsafe { OwnerProbe::start().expect("Linux memory observer") };
+    // SAFETY: as above; every LEN-byte allocation the merge makes is a fully copied clone.
+    unsafe { watch_allocations_of(LEN) };
+    let updated = config::configure(&target, settings).unwrap().unwrap();
+    stop_watching();
+    let observed = probe.finish();
+    assert_eq!(updated.url.as_str(), "https://next.example/");
+    assert_eq!(updated.url_text, "https://next.example/");
+    assert_wiped(observed, 2);
+    drop(updated);
+    drop(target);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn the_initialized_payload_observer_detects_an_unwiped_control() {
@@ -74,11 +106,6 @@ fn the_initialized_payload_observer_detects_an_unwiped_control() {
         );
     }
 }
-
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-#[path = "../../hook-webrequest/src/owners.rs"]
-mod owners;
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -133,182 +160,5 @@ fn assert_wiped(observed: custody::Observations, expected: usize) {
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn lossy_phrases_and_owned_failure_echoes_wipe_before_deallocation() {
-    use busbar_contract::abi::sdk::conn::ConnFailure;
-    use busbar_contract::abi::sdk::exchange::OpFailure;
-    // SAFETY: all registered guards stay exclusively owned and drop on this synchronous thread.
-    let probe = unsafe { OwnerProbe::start().expect("Linux memory observer") };
-    let phrase = owners::Phrase::new(b"denied PASSWORDCANARY \xff");
-    // SAFETY: invalid UTF-8 forces an owned String; Deref names its complete initialized prefix.
-    unsafe { watch_owner_prefix(phrase.as_bytes()) };
-    drop(phrase);
-    let text = owners::Text("raw URL https://u:RAWCANARY@receiver.example/key".to_string());
-    // SAFETY: Text owns this complete initialized String allocation until dropped below.
-    unsafe { watch_owner_prefix(text.as_bytes()) };
-    drop(text);
-    for cause in [
-        OpFailure::Conn(ConnFailure::Failed("FAILED-CANARY".to_string())),
-        OpFailure::Conn(ConnFailure::Refused("REFUSED-CANARY".to_string())),
-        OpFailure::Unbuilt("UNBUILT-CANARY".to_string()),
-    ] {
-        let cause = owners::Failure(cause);
-        let bytes = match &cause.0 {
-            OpFailure::Unbuilt(text)
-            | OpFailure::Conn(ConnFailure::Failed(text) | ConnFailure::Refused(text)) => {
-                text.as_bytes()
-            }
-            _ => unreachable!(),
-        };
-        // SAFETY: the guarded cause owns each String allocation, not a formatted scratch copy.
-        unsafe { watch_owner_prefix(bytes) };
-        drop(cause);
-    }
-    assert_wiped(probe.finish(), 5);
-}
-
-// This test binary observes only explicitly registered initialized prefixes of its own
-// exclusively owned allocations. It implements no plugin or host behavior.
-#[cfg(target_os = "linux")]
-mod custody {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct Payload {
-        address: usize,
-        pub len: usize,
-        pub freed: bool,
-        pub reallocated: bool,
-        pub bytes_read: usize,
-        pub wiped: bool,
-    }
-    #[derive(Clone, Copy)]
-    struct State {
-        active: bool,
-        entries: [Payload; 32],
-        used: usize,
-    }
-    thread_local! {
-        static STATE: Cell<State> = const { Cell::new(State {
-            active: false,
-            entries: [Payload { address: 0, len: 0, freed: false, reallocated: false,
-                bytes_read: 0, wiped: false }; 32],
-            used: 0,
-        }) };
-    }
-
-    #[derive(Default)]
-    pub struct CustodyAllocator;
-    impl CustodyAllocator {
-        pub const fn new() -> Self {
-            Self
-        }
-    }
-
-    // SAFETY: every allocation operation delegates to System with its original arguments.
-    // Observation performs no allocation and reads only initialized bytes registered by an
-    // exclusive owner on this thread before System releases its live allocation.
-    unsafe impl GlobalAlloc for CustodyAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            // SAFETY: GlobalAlloc caller supplies a valid layout.
-            unsafe { System.alloc(layout) }
-        }
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: ptr still names its live allocation until System.dealloc below.
-            unsafe { observe(ptr, false) };
-            // SAFETY: forwards the original live allocation and layout unchanged.
-            unsafe { System.dealloc(ptr, layout) };
-        }
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            // SAFETY: ptr still names its live allocation until System.realloc below.
-            unsafe { observe(ptr, true) };
-            // SAFETY: forwards the allocator's original valid arguments.
-            unsafe { System.realloc(ptr, layout, size) }
-        }
-    }
-
-    unsafe fn observe(ptr: *mut u8, realloc: bool) {
-        let _ = STATE.try_with(|cell| {
-            let mut state = cell.get();
-            if !state.active {
-                return;
-            }
-            for entry in &mut state.entries[..state.used] {
-                if entry.address != ptr as usize || entry.freed || entry.reallocated {
-                    continue;
-                }
-                // SAFETY: watch_owner_prefix's contract guarantees this allocation's
-                // initialized prefix remains exclusively owned until this deallocation hook.
-                entry.wiped = true;
-                for offset in 0..entry.len {
-                    // SAFETY: offset stays inside the registered initialized allocation prefix.
-                    entry.wiped &= unsafe { ptr.add(offset).read_volatile() } == 0;
-                    entry.bytes_read += 1;
-                }
-                entry.freed = !realloc;
-                entry.reallocated = realloc;
-            }
-            cell.set(state);
-        });
-    }
-
-    pub struct OwnerProbe;
-    #[derive(Debug)]
-    pub struct Observations {
-        pub payloads: Vec<Payload>,
-    }
-    impl OwnerProbe {
-        /// # Safety
-        /// Registrations must uphold watch_owner_prefix's exclusive owner contract.
-        pub unsafe fn start() -> Result<Self, &'static str> {
-            STATE.with(|cell| {
-                let mut state = cell.get();
-                if state.active {
-                    return Err("nested custody probe");
-                }
-                state.active = true;
-                state.used = 0;
-                cell.set(state);
-                Ok(Self)
-            })
-        }
-        pub fn finish(self) -> Observations {
-            let state = STATE.with(|cell| {
-                let mut state = cell.get();
-                state.active = false;
-                cell.set(state);
-                state
-            });
-            Observations {
-                payloads: state.entries[..state.used].to_vec(),
-            }
-        }
-    }
-    impl Drop for OwnerProbe {
-        fn drop(&mut self) {
-            let _ = STATE.try_with(|cell| {
-                let mut s = cell.get();
-                s.active = false;
-                cell.set(s);
-            });
-        }
-    }
-
-    /// # Safety
-    /// Bytes names the complete initialized prefix at an owned allocation base.
-    /// The owner must stay exclusively on this thread until it drops or reallocates.
-    pub unsafe fn watch_owner_prefix(bytes: &[u8]) {
-        STATE.with(|cell| {
-            let mut state = cell.get();
-            assert!(state.active && state.used < state.entries.len());
-            state.entries[state.used] = Payload {
-                address: bytes.as_ptr() as usize,
-                len: bytes.len(),
-                ..Payload::default()
-            };
-            state.used += 1;
-            cell.set(state);
-        });
-    }
-}
+#[path = "../../hook-webrequest/src/tests/support/custody.rs"]
+mod custody;

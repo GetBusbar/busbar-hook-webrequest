@@ -55,6 +55,9 @@ fn host_is_blocked_blocks_internal_targets() {
 }
 
 /// The classic SSRF bypass forms, driven through `host_is_blocked` itself rather than through the
+/// helper predicates. Each class below is named as blocked by the module doc and by the README, and
+/// each had NO test at the guard's entry point, which is the only place an operator's URL actually
+/// flows through. Deleting any one of these branches left the whole suite green.
 #[test]
 fn host_is_blocked_covers_the_classic_bypass_forms() {
     assert!(host_is_blocked(&url(
@@ -151,6 +154,8 @@ fn ipv6_embeddings_of_internal_ipv4_targets_are_blocked() {
 }
 
 /// `fe80::/10` is a /10, not a /16. The only previous fixture was `fe80::1`, whose first segment is
+/// exactly `0xfe80`, so widening the mask to `0xffff` (a /16) kept it green while genuine
+/// link-local addresses in the rest of the range stopped being blocked.
 #[test]
 fn link_local_v6_is_a_slash_10_not_a_slash_16() {
     for addr in ["fe80::1", "fe9f::1", "febf::1", "feb0::dead"] {
@@ -205,7 +210,8 @@ fn errors_mask_embedded_userinfo() {
     assert_eq!(mask_userinfo(&url("https://host/p")), "https://host/p");
 }
 
-/// The status surface must not republish a query string. A sidecar authenticating by query
+/// The reportable URL used in diagnostics redacts query tokens and fragments as well as userinfo.
+/// This helper is distinct from the raw configured spelling returned for settings drift checks.
 #[test]
 fn the_reportable_url_redacts_a_query_string_and_the_fragment() {
     assert_eq!(
@@ -231,6 +237,13 @@ fn the_reportable_url_redacts_a_query_string_and_the_fragment() {
 }
 
 /// Regression for the TAB-in-scheme-separator masking bypass: WHATWG URL parsing (which
+/// `url::Url::parse` uses, same as the real HTTP client) strips embedded TAB/CR/LF before the
+/// scheme separator, so `"https:\t//svc:hunter2@10.0.0.1/route"` parses and resolves completely
+/// normally to host `10.0.0.1` with userinfo `svc:hunter2` — even though the literal substring
+/// `"://"` never appears in the raw string. A masking function keyed on `raw.find("://")` would
+/// silently no-op here and leak `hunter2` verbatim into the SSRF-rejection error. Assert BOTH that the
+/// credential never reaches the error string AND that the URL was actually recognized as targeting the
+/// blocked host (i.e. this is exercising the real SSRF-rejection path, not an early scheme-parse bail).
 #[test]
 fn mask_userinfo_survives_tab_in_scheme_separator() {
     let raw = "https:\t//svc:hunter2@10.0.0.1/route";
@@ -247,6 +260,7 @@ fn mask_userinfo_survives_tab_in_scheme_separator() {
 }
 
 /// The one internal-address predicate and the literal-text guard agree about every spelling of one
+/// address (WREQ-16): dropping any arm from the shared predicate fails here.
 #[test]
 fn the_shared_predicate_agrees_with_the_literal_text_guard() {
     let cases: [(&str, bool); 20] = [
@@ -356,6 +370,7 @@ fn the_literal_host_check_refuses_every_contract_internal_ipv6() {
 }
 
 /// The secrets a failure is scrubbed of include the `Authorization` value the userinfo becomes and
+/// its base64 token: a far end that echoes the request's header back leaks neither.
 #[test]
 fn secret_parts_include_the_authorization_value_and_its_token() {
     let parts = secret_parts(&url("https://svc:hunter2@hooks.example/route"));
@@ -433,4 +448,45 @@ fn separately_echoed_query_values_and_path_segments_are_scrubbed() {
         scrub("unrelated remote phrase", &parts),
         "unrelated remote phrase"
     );
+}
+
+/// `fec0::/10` is the whole `fec0`..`feff` range: a guard narrowed to `fec0::/16` would let
+/// `fed0::`, `fef0::` and `feff::` through. Its neighbours, link-local `febf::` and multicast
+/// `ff00::`, are not site-local.
+#[test]
+fn site_local_v6_is_a_slash_10_not_a_slash_16() {
+    for addr in ["fec0::1", "fed0::1", "fef0::1", "feff:ffff::1"] {
+        assert!(is_site_local_v6(&addr.parse().unwrap()), "{addr}");
+        assert!(
+            host_is_blocked(&url(&format!("https://[{addr}]/x"))),
+            "{addr}"
+        );
+        assert!(
+            validate_target_url(&format!("https://[{addr}]/x")).is_err(),
+            "{addr}"
+        );
+    }
+    for addr in ["febf:ffff::1", "ff00::1", "fe7f::1"] {
+        assert!(!is_site_local_v6(&addr.parse().unwrap()), "{addr}");
+    }
+}
+
+/// A user name holding an encoded ':' cannot be sent as Basic credentials (RFC 7617: the first ':'
+/// ends the user-id), so such a url is refused at load, in words that echo none of the userinfo,
+/// rather than opening and forwarding every op without (or with an ambiguous) authorization.
+#[test]
+fn a_user_name_with_an_encoded_colon_is_refused_without_echoing_it() {
+    for raw in [
+        "https://us%3Aer:S3cr3t@hooks.example/x",
+        "https://us%3aer@hooks.example/x",
+        "http://a%3A:pw@127.0.0.1:9/x",
+    ] {
+        let refused = validate_target_url(raw).unwrap_err();
+        assert!(refused.contains("encoded ':'"), "{raw}: {refused}");
+        assert!(
+            !refused.contains("S3cr3t") && !refused.contains("%3"),
+            "{refused}"
+        );
+    }
+    assert!(validate_target_url("https://user:pa%3Ass@hooks.example/x").is_ok());
 }

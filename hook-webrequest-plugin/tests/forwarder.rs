@@ -2,6 +2,28 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **ONE FORWARDER, BOTH DOORS** — webrequest's linked + dropped-in conformance on the hook kind's
+//! memory ABI, run against the busbar rev this repo pins (`.busbar-ref`).
+//!
+//! The forwarder is held two ways at once: LINKED (the logic crate's `door::door`, through the
+//! loader's `load_linked`) and DROPPED IN (this crate's built cdylib, exporting the same door as
+//! `busbar_plugin_door`, through `load_dropped`). Each arm is bound to a real dispatcher and to a
+//! connection table that plays the far end ([`Upstream`]): it takes the framed request the host's
+//! framer would put on the wire and answers a scripted reply, and it answers its FIRST read of every
+//! reply PENDING and wakes the op's ticket from another thread. So every `decide`, `transform` and
+//! `notify` crosses PENDING, is re-entered on the wake and completes from where its exchange parked
+//! (THE DESIGN, the plugin ABI: Ready|Pending(wake); ARCHITECT ruling 2026-10-02: no hook-specific
+//! seam). The two transcripts must agree, and every request must be the 1.5.5 client's: `POST` to
+//! the URL's path, its fields, the 1.5.5 op envelope byte for byte.
+//!
+//! THE RED ARMS: a configuration the forwarder refuses never opens, in 1.5.5's words; a configure
+//! that names a blocked URL is a NACK and leaves the live target; a far end's error status is a
+//! FAILED `decide` and a FAILED `transform` (the operator's `on_error` applies;
+//! SIGN-hookexport-webrequest-failure), while a deliberate `{}` reply stays an abstain; and the
+//! Statement declares exactly one need, outbound, in the loopback-allowed egress class, over the
+//! host's `http` framer.
+//!
+//! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
+//! DESIGN §5: no plugin opens a socket, dials, binds or does TLS), with its RED arm.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -88,6 +110,8 @@ struct ReadState {
 }
 
 /// THE FAR END, as a connection table: every need is framed; an open is the whole request (kept
+/// in `sent`); each reply is the scripted `(status, reason, body)`, its first read PENDING with
+/// the op's ticket woken from another thread.
 struct Upstream {
     wake: Mutex<Option<Wake>>,
     answer: Mutex<(u32, &'static str, Vec<u8>)>,
@@ -490,6 +514,7 @@ impl Bound {
     }
 
     /// Read the existing opaque reply extension before releasing its lease. The regression uses
+    /// the old raw CONFIGURE surface, so an absent checkpoint is a behavior failure.
     fn configure_snapshot(
         &self,
         settings: &str,
@@ -622,6 +647,7 @@ fn decide_frame() -> Arc<DecideFrame> {
 }
 
 /// The 1.5.5 op envelope for `op`: the projection 1.5.5's host built, enveloped as 1.5.5's
+/// forwarder did.
 fn envelope_155(op: &'static str) -> Vec<u8> {
     let cands = if op == "notify" {
         Vec::new()
@@ -1402,6 +1428,7 @@ fn a_successful_decide_logs_no_warning() {
 }
 
 /// A committed configure moves the NEXT op's origin, path and timeout: the target is read per op,
+/// never cached at open.
 #[test]
 fn a_committed_configure_moves_the_next_decide() {
     for arm in arms() {
@@ -1470,6 +1497,7 @@ fn red_a_notify_acknowledged_without_a_body_logs_no_warning() {
 }
 
 /// A loopback sidecar by its IPv6 literal opens through the door: `http://[::1]:9000/` is the
+/// plaintext carve-out, and reaches the host as the bracketed origin.
 #[test]
 fn an_ipv6_loopback_sidecar_opens_and_is_dialled_by_its_bracketed_origin() {
     for arm in arms() {
@@ -1481,16 +1509,29 @@ fn an_ipv6_loopback_sidecar_opens_and_is_dialled_by_its_bracketed_origin() {
     }
 }
 
+/// An empty reply is a failure whatever its status, a `204` included, as the 1.5.5 client failed to
+/// parse it (busbar 1.5.5 `docs/hooks.md`: an "abstain via 204" fails under `on_error: reject`); only
+/// a deliberate `{}` abstains.
 #[test]
-fn red_only_a_204_is_an_empty_abstain() {
+fn red_an_empty_reply_fails_whatever_its_status() {
     for arm in arms() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}"}}"#)).expect("opens");
-        b.upstream.answer(204, "No Content", b"");
+        for (status, reason) in [(204, "No Content"), (200, "OK")] {
+            b.upstream.answer(status, reason, b"");
+            let failed = decide_failure(&b);
+            assert!(
+                failed.contains(&format!("empty reply (HTTP status {status})")),
+                "{failed}"
+            );
+            let failed = transform_failure(&b);
+            assert!(
+                failed.contains(&format!("empty reply (HTTP status {status})")),
+                "{failed}"
+            );
+        }
+        b.upstream.answer(200, "OK", b"{}");
         assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
-        b.upstream.answer(200, "OK", b"");
-        let failed = decide_failure(&b);
-        assert!(failed.contains("empty reply (HTTP status 200)"), "{failed}");
     }
 }
 

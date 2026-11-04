@@ -44,6 +44,8 @@ fn findings(tree: &str) -> Vec<String> {
 }
 
 /// `package`'s shipped closure under `dir`, as `cargo tree` resolves it: normal and build edges (no
+/// dev-dependencies, so features resolve as the shipped build does), every target platform. `extra`
+/// is `--locked` for the real crate and `--offline` for a fixture.
 fn tree_of(dir: &Path, package: &str, extra: &str) -> String {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let out = Command::new(cargo)
@@ -121,6 +123,7 @@ tokio v1.41.0|default,rt,time
 }
 
 /// A fixture: path crates named like the banned ones (no registry needed), and two one-member
+/// workspaces under a temp dir.
 struct Fixture(PathBuf);
 
 impl Fixture {

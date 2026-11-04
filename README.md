@@ -29,7 +29,9 @@ It implements the hook kind's `Hook` trait (via
 `abi::sdk::hook`) and has both doors: built as a `cdylib` it is a signed tarball
 busbar `dlopen`s in-process (never spawned as a separate process), and as
 an `rlib` a busbar build can link it (`door::door`) — the same boundary
-either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors are one hook.
+either way. `hook-webrequest-plugin/tests/forwarder.rs` drives the same script through both doors
+and checks they answer alike; `hook-webrequest-plugin/tests/conformance.rs` checks both images'
+kind ABI, layout, statement and declared needs.
 
 
 - **Migration** off the retired socket/webhook hook transport: point
@@ -37,9 +39,11 @@ either way. `hook-webrequest-plugin/tests/conformance.rs` proves the two doors a
   wire is compatible (`{op, ...projection}` POST → a
   `{order|abstain|reject|restrict|rewrite}` reply).
 - **Failures are failures.** A `decide` or `transform` whose forward fails (transport, timeout,
-  a 4xx/5xx, a redirect, an oversize, over-deep or invalid reply) FAILS the hook, so the pool's
-  `on_error` applies; only a reply the target sends deliberately (`{}`, `{"abstain":true}`) is
-  an abstain. A `notify` is fire-and-forget.
+  a 4xx/5xx, a redirect, a status that is no HTTP status code, an empty reply (a `204` included),
+  or an oversize, over-deep or not-JSON reply) FAILS the hook, so the pool's `on_error` applies. A reply
+  the target sends deliberately (`{}`, `{"abstain":true}`) is an abstain; so, as in 1.5.5, is a
+  well-formed JSON reply that is not a hook reply (`null`, `42`, `{"order":"0,1"}`), which busbar's
+  reply lowering reads as no opinion without a warning. A `notify` is fire-and-forget.
 - **Isolation** of untrusted hook logic: the untrusted brain runs
   *remotely* behind this trusted, signed, `dlopen`'d forwarder. The
   forwarder decides what is POSTed and where; the host's `http` framer
@@ -149,31 +153,64 @@ for the `hooks:` wiring (`kind: hook`, `settings: { url: ... }`).
 ## Tests
 
 `cargo test` runs the pure unit tests (`hook-webrequest/src/tests/*`: `config_tests.rs` the
-settings and `configure`, `door_tests.rs` which target a resumed op runs against, `echo_tests.rs`
-the credential-echo canaries, `custody_tests.rs` canonical URL redaction, `reply_tests.rs` the reply rules and the per-op meaning of a
+settings and `configure`, `door_tests.rs` the configure merge, its checkpoints and concurrent
+pushes, the sealed request parts and how a reply head is read, `echo_tests.rs`
+the credential-echo canaries, `custody_tests.rs` canonical URL redaction, `owner_custody_tests.rs`
+the actual door's owned error and lossy-phrase wiping on Linux, `reply_tests.rs` the reply rules and the per-op meaning of a
 failure, `report_tests.rs` the `status`/`describe` documents, `wire_tests.rs` the envelope and
-the request bytes against the 1.5.5 client; and `hook-webrequest/src/net_guard/tests.rs` for the
-SSRF predicates) and the plugin crate's integration tests
+the request bytes against the 1.5.5 client, and `net_guard_tests.rs` the SSRF predicates) and the
+plugin crate's integration tests
 (`hook-webrequest-plugin/tests/`):
 
-- `conformance.rs`: busbar's published conformance suite, run over the linked and the dropped-in
-  door (the two are one hook), driven by `conformance.json` through `support/conformance_host.rs`;
+- `conformance.rs`: the actual linked and dropped-in images against the loader's checks: the kind
+  ABI and layout, the statement against each manifest row, refusal as every other kind, the two
+  images being distinct, and the declared `http` need;
 - `forwarder.rs`: loads the *built* cdylib over the real `busbar-plugin-loader` ABI seam against a
   scripted far end, the same seam busbar's engine uses, so it exercises the actual `dlopen`/FFI
   path rather than calling Rust functions directly. It also covers the existing extension-status,
-  notify-redirect, and non-UTF-8 Basic rules through both doors
+  notify-redirect, and non-UTF-8 Basic rules through both doors.
   It also exercises concurrent partial configuration, checkpoint replay, wrong-type refusals and
   refresh during pending completion or cancellation through both doors
   (`support/net_ban.rs` is its socket/TLS ban). Bare query/path canaries cover each operation and
   a Pending target change; real HTTP connector tests send a head and stall the partial body to
   distinguish the configured whole-request timeout from the longer dispatcher deadline;
-- `target_custody.rs`: on Linux, registers only owned URL serializations and the response reader's
-  reason/body/field allocations plus lossy/error-text guards, and checks initialized bytes before
+- `target_custody.rs`: on Linux, registers only owned URL serializations (including the copies a
+  url-replacing `configure` supersedes) and the response reader's
+  reason/body/field allocations, and checks initialized bytes before
   deallocation on return and unwind, with an unwiped control;
 - `declared_secrets.rs` and `reference_url.rs`: `url` is declared reference-capable and not a
   secret, so a `{env:}` reference there resolves in place and a literal passes as written.
 
 `cargo test` builds the cdylib as part of the run.
+
+## Differences from 1.5.5
+
+Valid, well-formed settings and replies behave as in 1.5.5 except where an entry below says
+otherwise. The historical baseline here is `webrequest-hook` tag `v1.0.6`, whose `.busbar-ref`
+pins busbar 1.5.5; core 1.5.5 registers that external plugin in `plugins.yaml`.
+
+- **A user name holding an encoded `:` is refused.** A `settings.url` such as
+  `https://us%3Aer:pw@host/` is refused at `open` and NACKed by `configure` (BUSBAR-7153), in words
+  that echo none of the userinfo. The 1.5.5 client sent it as `Basic base64(us:er:pw)`, which a
+  receiver reads as user `us` (RFC 7617: the first `:` ends the user-id), so the target saw the
+  wrong credential. Write a `:` meant for the password after the first `:`.
+- **A failed `decide` or `transform` is a failure.** A transport failure, timeout, error status,
+  redirect or invalid reply fails the hook, so the pool's `on_error` applies. The historical
+  `v1.0.6` forwarder answered `{}` for either operation instead. Later external-plugin source
+  introduced a fallible `decide_result`; the released tag itself did not expose that failure.
+- **A 3xx reply fails `decide` and `transform`** ("redirect not followed"). The 1.5.5 forwarder did
+  not follow it either but read the redirect's body as the reply; busbar 1.5.5's sidecar contract
+  already called any non-2xx status an error and required a reply to ride a 2xx. A `notify` still
+  counts a 3xx as delivered.
+- **`timeout_ms: null` in a `configure` push keeps the live timeout** and is acknowledged; 1.5.5
+  NACKed it although `open` accepted the same `null`. The normalized settings this forwarder
+  reports (`status`, the configuration checkpoint) carry `null` for a timeout that was never set,
+  so they can be pushed back as they are.
+- **`status` reports the settings as the operator wrote them**: `url` is the configured text and
+  `timeout_ms` the written value (`null` when none), where `v1.0.6` reported only `target_host` and the
+  effective timeout. Busbar's drift check compares these values with the desired settings and
+  publishes only key names, so the historical form could not match the desired `url` key and
+  differed for every defaulted or clamped timeout. `target_host` is unchanged.
 
 ## License
 

@@ -9,12 +9,16 @@ use serde::Deserialize;
 use std::time::Duration;
 
 /// Default per-op wall-clock timeout when the operator does not set `timeout_ms`. Tight on purpose: a
+/// gate is on the request path, so a slow target must fail fast (the engine then applies `on_error`).
 pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
 /// Upper bound an operator-supplied `timeout_ms` is clamped to: the engine's reference hook budget. A
+/// fat-fingered large value can at worst make an op run as long as the engine already budgets for a
+/// hook, never past it.
 pub const MAX_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_MS;
 
 /// The settings keys the forwarder reads. Any other key is ignored (refusing it would break
+/// existing documents), and never silently: the door logs it ([`unknown_keys`]).
 pub const KEYS: [&str; 2] = ["url", "timeout_ms"];
 
 /// The keys of a settings object the forwarder does not read, each as the warning the door logs.
@@ -33,6 +37,7 @@ pub fn unknown_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Ve
 }
 
 /// [`unknown_keys`] over a settings document as `open` reads it; none for a document that is not
+/// a JSON object (`open` refuses those).
 #[must_use]
 pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
     match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
@@ -126,6 +131,7 @@ fn clamp_warning(settings: &serde_json::Map<String, serde_json::Value>) -> Optio
 }
 
 /// Everything the door logs at `open`/`refresh`/an acknowledged `configure` about a settings map
+/// that is accepted: a key not read ([`unknown_keys`]) and a `timeout_ms` clamped into range.
 #[must_use]
 pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
     let mut all = unknown_keys(settings);
@@ -134,6 +140,7 @@ pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<St
 }
 
 /// Log what [`warnings`] returns, each as its own warn: a clamped `timeout_ms` carries its declared
+/// code ([`TIMEOUT_CLAMPED`]), an unread key none.
 pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
     for warning in unknown_keys(settings) {
         tracing::warn!("{warning}");
@@ -144,6 +151,7 @@ pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
 }
 
 /// [`log_warnings`] over a settings document as `open` reads it; nothing for a document that is not a
+/// JSON object (`open` refuses those).
 pub fn log_warnings_in(settings: &[u8]) {
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
         if let Some(map) = value.as_object() {
@@ -153,6 +161,7 @@ pub fn log_warnings_in(settings: &[u8]) {
 }
 
 /// [`warnings`] over a settings document as `open` reads it; none for a document that is not a JSON
+/// object (`open` refuses those).
 #[must_use]
 pub fn warnings_in(settings: &[u8]) -> Vec<String> {
     match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
@@ -162,6 +171,10 @@ pub fn warnings_in(settings: &[u8]) -> Vec<String> {
 }
 
 /// `open`: the settings document to a [`Target`]. An empty document, a malformed one, a missing URL or a
+/// blocked URL is a fail-closed load error, never a live forwarder.
+///
+/// # Errors
+/// The refusal text.
 pub fn open(settings: &[u8]) -> Result<Target, String> {
     let text = std::str::from_utf8(settings)
         .map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?;
@@ -176,7 +189,7 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
         serde_json::from_str(text).map_err(|e| {
             if e.is_data() {
                 format!(
-                    "{ALIAS}: invalid plugin config: settings.url must be a string; settings.timeout_ms must be a non-negative integer or null"
+                    "{ALIAS}: invalid plugin config: settings.url must be a string; settings.timeout_ms must be a non-negative integer or null; each may be given at most once"
                 )
             } else {
                 format!("{ALIAS}: invalid plugin config: {e}")
@@ -190,11 +203,19 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
 }
 
 /// The NACK text for `why`.
-fn nack(why: &str) -> String {
+pub(crate) fn nack(why: &str) -> String {
     format!("{ALIAS}: configure() rejected: {why}")
 }
 
 /// `configure`: merge a pushed settings map over the live target, commit-on-ack. Each key is
+/// independently optional (absent, or a `null` `timeout_ms`, leaves the live value); a key that is
+/// PRESENT but wrong-typed or blocked NACKs the WHOLE push and commits neither.
+///
+/// `Ok(None)`: ACK, nothing changes. `Ok(Some(t))`: ACK, `t` is the new live target. `Err(reason)`:
+/// NACK, the live target is untouched (`reason` is the NACK text).
+///
+/// # Errors
+/// The NACK reason.
 pub fn configure(
     live: &Target,
     settings: &serde_json::Map<String, serde_json::Value>,

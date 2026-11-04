@@ -74,3 +74,14 @@ fn status_timeout_ms_is_the_configured_value() {
         .is_none());
     assert_eq!(status(&live)["status"]["settings"]["timeout_ms"], 250);
 }
+
+/// The published schema admits what the forwarder accepts: a `null` `timeout_ms` (the default at
+/// open, the live value in a push), and states that a negative one is refused.
+#[test]
+fn describe_admits_a_null_timeout_and_states_its_minimum() {
+    let timeout = &describe()["schema"]["properties"]["timeout_ms"];
+    assert_eq!(timeout["type"], serde_json::json!(["integer", "null"]));
+    assert_eq!(timeout["minimum"], 0);
+    assert!(open(br#"{"url":"https://hooks.example/x","timeout_ms":null}"#).is_ok());
+    assert!(open(br#"{"url":"https://hooks.example/x","timeout_ms":-1}"#).is_err());
+}

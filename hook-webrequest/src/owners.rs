@@ -9,6 +9,16 @@ use busbar_contract::abi::sdk::cred::Held;
 #[derive(Default)]
 pub(crate) struct Text(pub(crate) String);
 
+impl Text {
+    #[allow(clippy::let_and_return)] // The test-only observer borrows the initialized owner.
+    pub(crate) fn new(text: String) -> Self {
+        let owned = Self(text);
+        #[cfg(all(test, target_os = "linux"))]
+        crate::owner_custody_tests::observe(owned.as_bytes());
+        owned
+    }
+}
+
 impl Deref for Text {
     type Target = str;
     fn deref(&self) -> &Self::Target {
@@ -113,8 +123,14 @@ impl Drop for SettingsValue {
 pub(crate) struct Phrase<'a>(Cow<'a, str>);
 
 impl<'a> Phrase<'a> {
+    #[allow(clippy::let_and_return)] // The test-only observer borrows the initialized owner.
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
-        Self(String::from_utf8_lossy(bytes))
+        let phrase = Self(String::from_utf8_lossy(bytes));
+        #[cfg(all(test, target_os = "linux"))]
+        if let Cow::Owned(text) = &phrase.0 {
+            crate::owner_custody_tests::observe(text.as_bytes());
+        }
+        phrase
     }
 }
 
@@ -171,6 +187,8 @@ pub(crate) struct FailedResponse(Option<busbar_contract::abi::sdk::exchange::Exc
 
 impl FailedResponse {
     pub(crate) fn new(failure: busbar_contract::abi::sdk::exchange::ExchangeFailure) -> Self {
+        #[cfg(all(test, target_os = "linux"))]
+        crate::owner_custody_tests::observe_failure(failure.cause());
         Self(Some(failure))
     }
 
