@@ -490,3 +490,29 @@ fn a_user_name_with_an_encoded_colon_is_refused_without_echoing_it() {
     }
     assert!(validate_target_url("https://user:pa%3Ass@hooks.example/x").is_ok());
 }
+
+/// Accepted targets must never lose any configured Basic credential during request construction.
+#[test]
+fn invalid_decoded_userinfo_is_refused_without_echoing_credentials() {
+    for raw in [
+        "https://user%FF:password-canary@hooks.example/x",
+        "https://user:password-canary%FF@hooks.example/x",
+        "https://:%FF@hooks.example/x",
+        "https://user:%C0%AF@hooks.example/x",
+        "https://user:%ED%A0%80@hooks.example/x",
+    ] {
+        let refused = validate_target_url(raw).unwrap_err();
+        assert!(refused.contains("valid UTF-8"), "{refused}");
+        assert!(!refused.contains("password-canary"), "{refused}");
+        assert!(!refused.contains('%'), "{refused}");
+    }
+    for raw in [
+        "https://user:password@hooks.example/x",
+        "https://us%C3%A9r:p%C3%A4ss@hooks.example/x",
+        "https://user:pa%3Ass@hooks.example/x",
+        "https://user:@hooks.example/x",
+        "https://:password@hooks.example/x",
+    ] {
+        assert!(validate_target_url(raw).is_ok(), "{raw}");
+    }
+}

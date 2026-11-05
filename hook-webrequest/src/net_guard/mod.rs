@@ -198,6 +198,17 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
                 .to_string(),
         );
     }
+    for userinfo in std::iter::once(url.username()).chain(url.password()) {
+        let decoded = sdk_url::percent_decode(userinfo.as_bytes());
+        let valid_utf8 = std::str::from_utf8(&decoded).is_ok();
+        drop(busbar_contract::abi::sdk::cred::Held::new(decoded));
+        if !valid_utf8 {
+            return Err(
+                "settings.url userinfo must decode to valid UTF-8; credentials cannot be omitted or shortened"
+                    .to_string(),
+            );
+        }
+    }
     if host_is_blocked(&url) {
         return Err(format!(
             "settings.url must not target a link-local/private/CGNAT/cloud-metadata host \

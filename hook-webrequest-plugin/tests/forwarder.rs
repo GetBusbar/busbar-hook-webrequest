@@ -919,7 +919,7 @@ fn arms() -> [Arm; 2] {
 }
 
 #[test]
-fn extension_statuses_preserve_the_1_5_5_body_semantics_through_both_doors() {
+fn non_success_statuses_fail_through_both_doors() {
     for arm in arms() {
         for status in [600, 999] {
             let b = arm.bind();
@@ -929,25 +929,76 @@ fn extension_statuses_preserve_the_1_5_5_body_semantics_through_both_doors() {
                 "Custom",
                 br#"{"reject":{"status":403,"message":"no"}}"#,
             );
-            assert_ne!(decide_verbs(&b) & VERB_REJECT, 0);
-            assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
+            assert!(decide_failure(&b).contains("non-success HTTP status"));
+            b.upstream.answer(
+                status,
+                "Custom",
+                br#"{"rewrite":{"messages":[{"role":"user","content":"changed"}]}}"#,
+            );
+            assert!(transform_failure(&b).contains("non-success HTTP status"));
+            b.upstream.answer(status, "Custom", b"{}");
+            assert!(decide_failure(&b).contains("non-success HTTP status"));
+            let tap = NotifyFrame::build(&request(), None, true);
+            let done = b.submit::<NotifyIn, OutHead>(slot::NOTIFY, tap.input(), out_head());
+            assert_eq!(done.outcome, Outcome::Ready);
+            assert!(warned(&b, &["non-success HTTP status", "notify dropped"]));
             assert!(b.upstream.reads.lock().unwrap().is_empty());
         }
     }
 }
 
 #[test]
-fn non_utf8_userinfo_keeps_the_1_5_5_basic_authorization_rules() {
+fn invalid_decoded_userinfo_refuses_open_and_configure_through_both_doors() {
     for arm in arms() {
-        for (url, expected) in [
-            ("http://svc%FF:pw@127.0.0.1:9/hook", None),
-            (
-                "http://user:%FF@127.0.0.1:9/hook",
-                Some(&b"Basic dXNlcjo="[..]),
-            ),
+        for url in [
+            "http://user%FF:password-canary@127.0.0.1:9/hook",
+            "http://user:password-canary%FF@127.0.0.1:9/hook",
+            "http://:%FF@127.0.0.1:9/hook",
         ] {
             let b = arm.bind();
-            b.open(&serde_json::json!({"url":url}).to_string()).unwrap();
+            let settings = serde_json::json!({"url":url,"timeout_ms":777}).to_string();
+            let refused = b.open(&settings).unwrap_err();
+            assert!(refused.contains("valid UTF-8"), "{refused}");
+            assert!(!refused.contains("password-canary"), "{refused}");
+            assert!(b.upstream.sent.lock().unwrap().is_empty());
+
+            let b = arm.bind();
+            b.open(&format!(r#"{{"url":"{URL}","timeout_ms":2000}}"#))
+                .unwrap();
+            let original = b.status();
+            let refused = b.configure(&settings, 2).unwrap_err();
+            assert!(refused.contains("valid UTF-8"), "{refused}");
+            assert!(!refused.contains("password-canary"), "{refused}");
+            assert_eq!(b.status(), original);
+            assert!(b.upstream.sent.lock().unwrap().is_empty());
+            assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+            assert_eq!(b.upstream.last().target, "http://127.0.0.1:9");
+            assert_eq!(b.upstream.last().timeout_ms, 2000);
+            assert!(b
+                .recorder
+                .warns()
+                .iter()
+                .all(|line| !line.contains("password-canary")));
+        }
+    }
+}
+
+#[test]
+fn valid_userinfo_keeps_its_complete_authorization_through_both_doors() {
+    for arm in arms() {
+        for (userinfo, expected) in [
+            ("user:password", "Basic dXNlcjpwYXNzd29yZA=="),
+            ("user:", "Basic dXNlcjo="),
+            (":password", "Basic OnBhc3N3b3Jk"),
+            ("user:pa%3Ass", "Basic dXNlcjpwYTpzcw=="),
+            ("us%C3%A9r:p%C3%A4ss", "Basic dXPDqXI6cMOkc3M="),
+        ] {
+            let b = arm.bind();
+            b.open(
+                &serde_json::json!({"url":format!("http://{userinfo}@127.0.0.1:9/hook")})
+                    .to_string(),
+            )
+            .unwrap();
             assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
             let sent = b.upstream.last();
             let authorization = sent
@@ -955,9 +1006,8 @@ fn non_utf8_userinfo_keeps_the_1_5_5_basic_authorization_rules() {
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
                 .map(|(_, value)| value.as_slice());
-            assert_eq!(authorization, expected, "{url}");
-            assert!(b.recorder.warns().is_empty(), "{:?}", b.recorder.warns());
-            assert!(b.upstream.reads.lock().unwrap().is_empty());
+            assert_eq!(authorization, Some(expected.as_bytes()), "{userinfo}");
+            assert!(b.recorder.warns().is_empty());
         }
     }
 }

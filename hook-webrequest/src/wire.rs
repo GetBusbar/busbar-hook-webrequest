@@ -110,10 +110,9 @@ pub fn request(target: &Target, body: Vec<u8>) -> Request {
     }
 }
 
-/// `Basic base64(user:pass)` from the URL's percent-decoded userinfo, read as text as reqwest
-/// 0.12 read it for 1.5.5 ([`Userinfo::Utf8`]): a username that is not UTF-8 once decoded sends no
-/// header at all, a password that is not UTF-8 counts as absent, and the header goes only for a
-/// non-empty username or a present password.
+/// `Basic base64(user:pass)` from the validated URL's percent-decoded UTF-8 userinfo. Target
+/// validation refuses invalid decoded text before this function runs, so no credential is silently
+/// omitted or shortened. A header is sent for a non-empty username or a present password.
 pub(crate) fn basic_authorization(url: &url::Url) -> Option<String> {
     sdk_url::basic_authorization(url.username(), url.password(), Userinfo::Utf8)
 }

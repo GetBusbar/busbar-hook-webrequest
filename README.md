@@ -39,11 +39,10 @@ kind ABI, layout, statement and declared needs.
   wire is compatible (`{op, ...projection}` POST → a
   `{order|abstain|reject|restrict|rewrite}` reply).
 - **Failures are failures.** A `decide` or `transform` whose forward fails (transport, timeout,
-  a 4xx/5xx, a redirect, a status that is no HTTP status code, an empty reply (a `204` included),
+  a non-2xx status (including a redirect or 600–999), an empty reply (a `204` included),
   or an oversize, over-deep or not-JSON reply) FAILS the hook, so the pool's `on_error` applies. A reply
-  the target sends deliberately (`{}`, `{"abstain":true}`) is an abstain; so, as in 1.5.5, is a
-  well-formed JSON reply that is not a hook reply (`null`, `42`, `{"order":"0,1"}`), which busbar's
-  reply lowering reads as no opinion without a warning. A `notify` is fire-and-forget.
+  the target sends deliberately (`{}`, `{"abstain":true}`) is an abstain. Busbar's shared reply
+  lowering validates the hook reply and chooses its verdict. A `notify` is fire-and-forget.
 - **Isolation** of untrusted hook logic: the untrusted brain runs
   *remotely* behind this trusted, signed, `dlopen`'d forwarder. The
   forwarder decides what is POSTed and where; the host's `http` framer
@@ -63,8 +62,7 @@ kind ABI, layout, statement and declared needs.
   it hands a framed request to the host's `http` framer through its one
   declared need. For `decide` and `transform`, a 3xx reply fails with "redirect
   not followed". A `notify` keeps the 1.5.5 fire-and-forget behavior: a 2xx or
-  3xx acknowledges delivery without interpreting the response body; a 4xx or
-  5xx logs a dropped notification. None of these operations follows a redirect,
+  3xx acknowledges delivery without interpreting the response body; any other final status logs a dropped notification. None of these operations follows a redirect,
   so a target cannot redirect the plugin to an internal host.
 - **Tight whole-request timeouts**: the configured budget covers connection establishment, send,
   and reply collection from one absolute host-clock expiry. A reply head or a Pending re-entry
@@ -189,6 +187,14 @@ Valid, well-formed settings and replies behave as in 1.5.5 except where an entry
 otherwise. The historical baseline here is `webrequest-hook` tag `v1.0.6`, whose `.busbar-ref`
 pins busbar 1.5.5; core 1.5.5 registers that external plugin in `plugins.yaml`.
 
+- **Only 2xx replies carry decisions or rewrites.** The 1.5.5 client's treatment of 600–999 as
+  successful responses is no longer preserved. These statuses fail the hook so `on_error` applies.
+  A notify still acknowledges 2xx/3xx delivery without reading a reply; other final statuses log a
+  dropped notification.
+- **Invalid percent-decoded UTF-8 userinfo is refused at open and configure.** The 1.5.5 client
+  silently omitted a non-UTF-8 username or replaced a non-UTF-8 password with an absent password.
+  The new refusal echoes no credential and a refused configure preserves the complete live target.
+  Valid UTF-8 credentials, including percent-encoded Unicode and password colons, are unchanged.
 - **A user name holding an encoded `:` is refused.** A `settings.url` such as
   `https://us%3Aer:pw@host/` is refused at `open` and NACKed by `configure` (BUSBAR-7153), in words
   that echo none of the userinfo. The 1.5.5 client sent it as `Basic base64(us:er:pw)`, which a

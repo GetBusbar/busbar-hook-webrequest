@@ -63,18 +63,23 @@ fn error_statuses_are_failures_and_redirects_are_not_followed() {
 }
 
 #[test]
-fn only_4xx_and_5xx_are_failures_so_a_600_status_relays_its_body() {
-    assert_eq!(
-        interpret(
-            600,
-            Some("Custom"),
-            br#"{"reject":{"status":403,"message":"no"}}"#
-        )
-        .unwrap(),
-        json!({"reject": {"status": 403, "message": "no"}})
-    );
-    assert!(interpret(599, None, b"{}").is_err());
-    assert!(interpret(400, None, b"{}").is_err());
+fn only_2xx_responses_can_carry_a_verdict() {
+    for status in [100, 101, 199, 600, 699, 999] {
+        for body in [
+            &b"{}"[..],
+            &br#"{"reject":{"status":403,"message":"no"}}"#[..],
+            &br#"{"rewrite":{"messages":[{"role":"user","content":"changed"}]}}"#[..],
+        ] {
+            assert_eq!(
+                interpret(status, Some("Custom"), body),
+                Err(non_success_status(status))
+            );
+        }
+        assert_eq!(delivered(status, None), Err(non_success_status(status)));
+    }
+    for status in [200, 201, 299] {
+        assert_eq!(interpret(status, None, b"{}"), Ok(json!({})));
+    }
 }
 
 #[test]
@@ -210,7 +215,7 @@ fn a_status_that_is_no_http_code_fails_every_op() {
         );
         assert!(delivered(status, None).is_err(), "{status}");
     }
-    assert!(interpret(100, None, b"{}").is_ok());
-    assert!(interpret(999, None, b"{}").is_ok());
-    assert!(delivered(999, None).is_ok());
+    assert!(interpret(100, None, b"{}").is_err());
+    assert!(interpret(999, None, b"{}").is_err());
+    assert!(delivered(999, None).is_err());
 }

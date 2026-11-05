@@ -11,7 +11,7 @@
       "type": "string",
       "minLength": 1,
       "pattern": "\\S",
-      "description": "HTTP(S) URL to POST hook envelopes to. HTTPS is required except for loopback HTTP sidecars; private, link-local, metadata and ambiguous credential URLs are refused by runtime validation. References are resolved by the host before lifecycle validation."
+      "description": "HTTP(S) URL to POST hook envelopes to. HTTPS is required except for loopback HTTP sidecars; private, link-local, metadata and ambiguous or non-UTF-8 decoded credential URLs are refused by runtime validation. References are resolved by the host before lifecycle validation."
     },
     "timeout_ms": {
       "type": [

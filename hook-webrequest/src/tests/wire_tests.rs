@@ -129,6 +129,11 @@ fn the_request_bytes_are_what_the_1_5_5_client_wrote() {
             r#"{{"url":"{}"}}"#,
             url.replace("PORT", &want_port(&want, url))
         );
+        // Retain the historical observation, but invalid decoded credentials are now refused.
+        if url.contains("%FF") {
+            assert!(open(cfg.as_bytes()).unwrap_err().contains("valid UTF-8"));
+            continue;
+        }
         let target = open(cfg.as_bytes()).unwrap();
         let ours = assemble(&request(&target, body.to_vec()), &target.url);
         assert_eq!(

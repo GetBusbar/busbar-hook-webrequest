@@ -193,17 +193,19 @@ fn complete_checkpoint_restores_status_spelling_and_effective_timeout() {
 }
 
 /// A head that arrived before its exchange failed answers a head-only `notify` whatever its status
-/// (a 2xx head acknowledges delivery, as a 3xx one does); for `decide`/`transform` only a 3xx-5xx
-/// head answers, since a 2xx head without its body is no reply.
+/// (a 2xx head acknowledges delivery, as a 3xx one does); for `decide`/`transform` every non-2xx
+/// head fails, while a 2xx head without its body is no reply.
 #[test]
-fn an_earlier_head_answers_a_notify_at_any_status_and_a_decision_only_at_3xx_to_5xx() {
+fn an_earlier_non_success_head_preserves_the_failure() {
     for status in [200, 204, 299, 301, 399, 404, 503] {
         assert!(head_answers(true, status), "notify {status}");
     }
     for status in [200, 204, 299] {
         assert!(!head_answers(false, status), "decide {status}");
     }
-    for status in [300, 302, 399, 400, 404, 500, 599] {
+    for status in [
+        0, 100, 199, 300, 302, 399, 400, 404, 500, 599, 600, 999, 1000,
+    ] {
         assert!(head_answers(false, status), "decide {status}");
     }
 }

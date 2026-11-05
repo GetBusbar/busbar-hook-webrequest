@@ -83,8 +83,8 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
     format!("{ALIAS}: target returned an error status: HTTP status {class} error ({shown})")
 }
 
-/// Whether `status` is a three-digit HTTP status code (`100..=999`, what the 1.5.5 client could
-/// receive). The exchange reports a code that fits no `u16` as `0`.
+/// Whether `status` fits the three-digit HTTP status field. This is a syntax check, not a success
+/// predicate. The exchange reports a code that fits no `u16` as `0`.
 fn is_status_code(status: u16) -> bool {
     (100..1000).contains(&status)
 }
@@ -93,6 +93,12 @@ fn is_status_code(status: u16) -> bool {
 #[must_use]
 pub fn not_a_status(code: u16) -> String {
     format!("{ALIAS}: target answered no valid HTTP status (got {code})")
+}
+
+/// The failure for a final response outside the operation's accepted status classes.
+#[must_use]
+pub fn non_success_status(code: u16) -> String {
+    format!("{ALIAS}: target answered a non-success HTTP status ({code})")
 }
 
 /// The failure for a redirect (3xx), which is never followed.
@@ -120,10 +126,10 @@ pub use busbar_contract::spans::exceeds_max_depth;
 /// The endpoint's answer as the framed http exchange hands it back: its status, reason phrase and
 /// body. The door bounds collection to [`MAX_REPLY_BYTES`]; the check here also bounds direct calls.
 ///
-/// The status rule: 4xx/5xx (400..=599) is a failure, and so is a redirect (3xx: never followed, so
-/// there is no reply to read); everything else carries its body as the reply, as the 1.5.5 client
-/// read it. An EMPTY body is a failure whatever the status, a `204` included, as the 1.5.5 client
-/// failed to parse it: an abstain is a deliberate `{}` or `{"abstain":true}`, never a missing body.
+/// Only a 2xx response carries a decision or transform reply. Redirects are never followed; every
+/// other final status fails the call so the host applies `on_error`. An EMPTY body is a failure
+/// whatever the status, a `204` included: an abstain is a deliberate `{}` or `{"abstain":true}`,
+/// never a missing body.
 /// A body that is not JSON (or is too deep) fails; any JSON value is returned as is, and busbar's
 /// reply lowering reads its meaning.
 ///
@@ -139,6 +145,9 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
     if (300..400).contains(&status) {
         return Err(redirect_not_followed(status));
     }
+    if !(200..300).contains(&status) {
+        return Err(non_success_status(status));
+    }
     if body.len() > MAX_REPLY_BYTES {
         return Err(cap_exceeded());
     }
@@ -148,11 +157,11 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
     parse_reply(body)
 }
 
-/// Whether a `notify` was delivered: any status short of an error status is, and the body is not read
-/// (a tap's answer carries no meaning, so a `204` or an empty body is no warning).
+/// Whether a `notify` was delivered: a 2xx or 3xx head acknowledges delivery without following a
+/// redirect or reading the body. A tap's answer carries no meaning, so a `204` is no warning.
 ///
 /// # Errors
-/// The failure text of a 4xx/5xx.
+/// The failure text for any other final status.
 pub fn delivered(status: u16, phrase: Option<&str>) -> Result<(), String> {
     if !is_status_code(status) {
         return Err(not_a_status(status));
@@ -160,15 +169,18 @@ pub fn delivered(status: u16, phrase: Option<&str>) -> Result<(), String> {
     if (400..600).contains(&status) {
         return Err(error_status(status, phrase));
     }
+    if !(200..400).contains(&status) {
+        return Err(non_success_status(status));
+    }
     Ok(())
 }
 
 /// `decide`: any failure (transport, error status, timeout, malformed, oversize or over-deep reply, an
 /// envelope that cannot be sent) is the hook FAILING, not a verdict: the failure text goes on to the
 /// host, which applies the pool's `on_error`. A reply the target sends deliberately (`{}`,
-/// `{"abstain":true}`) is an abstain, and so, as in 1.5.5, is any well-formed JSON reply busbar's
-/// lowering does not read as a hook reply (`null`, `42`, `{"order":"0,1"}`): that abstain is not
-/// logged. A failure is also logged to the plugin's log (a warn).
+/// `{"abstain":true}`) is an abstain. The shared SDK lowering validates the hook reply and selects
+/// the verdict; this forwarder does not implement a second semantic parser. A forwarding failure is
+/// also logged to the plugin's log (a warn).
 ///
 /// # Errors
 /// The failure text, passed through.

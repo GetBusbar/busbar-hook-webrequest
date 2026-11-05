@@ -280,9 +280,9 @@ pub(crate) fn read_failed_response<T>(
 
 /// Whether a reply head that arrived before its exchange failed is the op's answer: for a head-only
 /// `notify` any head is (a 2xx or 3xx head acknowledges delivery, as 1.5.5 did once the head came);
-/// otherwise only a 3xx-5xx head is, since a 2xx head without its body is no reply.
+/// otherwise every non-2xx head is a failure, while a 2xx head without its body is no reply.
 pub(crate) fn head_answers(head_only: bool, status: u16) -> bool {
-    head_only || (300..600).contains(&status)
+    head_only || !(200..300).contains(&status)
 }
 
 /// The reason phrase a reply head shows: only an error status (4xx/5xx) shows it
