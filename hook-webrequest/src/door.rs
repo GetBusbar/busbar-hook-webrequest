@@ -81,6 +81,9 @@ const REWRITES: &[Rewrite] = &[alias(crate::ALIAS)];
 /// THE STATEMENT: name, version, the hook tail, the alias, the one outbound need and the
 /// reference-capable `url`.
 pub const STATEMENT: Statement = Statement {
+    settings_schema: busbar_contract::abi::mechanism::call::Blob::json(include_bytes!(
+        "../settings.schema.json"
+    )),
     rewrites: REWRITES.as_ptr(),
     rewrites_len: REWRITES.len(),
     needs: NEEDS.as_ptr(),
@@ -489,3 +492,7 @@ busbar_contract::hook_door! {
     open: Open,
     statement: STATEMENT,
 }
+
+#[cfg(test)]
+#[path = "tests/settings_schema_tests.rs"]
+mod settings_schema_tests;

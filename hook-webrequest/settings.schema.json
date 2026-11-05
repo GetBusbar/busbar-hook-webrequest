@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "url"
+  ],
+  "additionalProperties": true,
+  "description": "Lifecycle settings. Unrecognized keys are accepted with a warning. Configure pushes merge independently optional keys over the live settings. URL syntax, credential ambiguity and egress policy are additionally validated by the plugin at runtime.",
+  "properties": {
+    "url": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "HTTP(S) URL to POST hook envelopes to. HTTPS is required except for loopback HTTP sidecars; private, link-local, metadata and ambiguous credential URLs are refused by runtime validation. References are resolved by the host before lifecycle validation."
+    },
+    "timeout_ms": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "default": 5000,
+      "description": "Per-op timeout in milliseconds. Missing or null uses 5000 at open; supplied unsigned integer tokens are accepted and clamped to [1, 5000]. In configure pushes, missing or null retains the live value.",
+      "x-busbar-integer-token": "unsigned"
+    }
+  },
+  "x-busbar-settings-profile": "integer-token-v1"
+}

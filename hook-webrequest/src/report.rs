@@ -4,30 +4,14 @@
 //! The `describe` and `status` documents: the forwarder's OWN self-description and observed state
 //! (neither is proxied to the target). No prompt or user content is ever surfaced here.
 
-use crate::config::{Target, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS};
+use crate::config::Target;
 
 /// `describe`: the forwarder's config schema (`url` + `timeout_ms`).
 #[must_use]
 pub fn describe() -> serde_json::Value {
-    let timeout_description = format!(
-        "Per-op wall-clock timeout in milliseconds (default {DEFAULT_TIMEOUT_MS}, clamped to [1, {MAX_TIMEOUT_MS}] — cannot exceed the engine's reference hook budget). `null` uses the default at open and keeps the live value in a configure push."
-    );
     serde_json::json!({
-        "schema": {
-            "type": "object",
-            "required": ["url"],
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "The https:// (or loopback http://) URL each hook op envelope is POSTed to."
-                },
-                "timeout_ms": {
-                    "type": ["integer", "null"],
-                    "minimum": 0,
-                    "description": timeout_description
-                }
-            }
-        }
+        "schema": serde_json::from_slice::<serde_json::Value>(include_bytes!("../settings.schema.json"))
+            .expect("the published settings schema is valid JSON")
     })
 }
 

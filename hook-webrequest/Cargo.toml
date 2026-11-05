@@ -29,6 +29,7 @@ http = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+jsonschema = { workspace = true }
 # The byte-identity oracle: the request bytes this crate writes are compared with what the 1.5.5
 # client (reqwest, the version 1.5.5 shipped) put on the wire to a raw listener. Dev only.
 reqwest = { workspace = true }
