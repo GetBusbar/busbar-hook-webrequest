@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use busbar_contract::abi::hook::{
     slot, ConfigureIn, ConfigureOut, DecideOut, DescribeOut, NotifyIn, StatusOut, TransformOut,
-    VERB_ABSTAIN, VERB_PREFER, VERB_REJECT, VERB_REWRITE,
+    VERB_ABSTAIN, VERB_PREFER, VERB_REWRITE,
 };
 use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED};
 use busbar_contract::abi::host::hook::{Caps, DecideFrame, DecideView, NotifyFrame};
