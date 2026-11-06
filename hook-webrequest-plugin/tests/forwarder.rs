@@ -2144,6 +2144,9 @@ fn tls_hook_response() -> (String, String, std::thread::JoinHandle<bool>) {
                 Err(error) => panic!("local TLS accept: {error}"),
             }
         };
+        // Accepted sockets inherit the listener's nonblocking mode on macOS.
+        // This fixture drives rustls with blocking complete_io/read_exact calls.
+        tcp.set_nonblocking(false).unwrap();
         tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         tcp.set_write_timeout(Some(Duration::from_secs(10)))
             .unwrap();
