@@ -1,6 +1,18 @@
 use crate::config::open;
-use crate::reply::{error_status, read_failed, request_failed};
-use crate::wire::{envelope, request};
+use crate::reply::{error_status, request_failed};
+use crate::wire::request;
+use crate::ALIAS;
+#[path = "../../../testing/wire_oracle.rs"]
+mod oracle;
+use oracle::envelope;
+/// The body-read failure text, the 1.5.5 reference wording that `wire_tests` pins. The host reports
+/// a body-read failure (a truncated or malformed body) as a `ConnFailure`, which has no body-read
+/// variant, so the plugin words it with [`request_failed`]; this text is not emitted in production.
+#[must_use]
+pub fn read_failed() -> String {
+    format!("{ALIAS}: response read failed: error decoding response body")
+}
+
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpListener;

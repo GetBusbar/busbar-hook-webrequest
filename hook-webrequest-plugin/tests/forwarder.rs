@@ -25,6 +25,9 @@
 //! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
 //! DESIGN §5: no plugin opens a socket, dials, binds or does TLS), with its RED arm.
 
+#[path = "../../testing/wire_oracle.rs"]
+mod wire_oracle;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -661,7 +664,7 @@ fn envelope_155(op: &'static str) -> Vec<u8> {
         &context(),
     ))
     .expect("the projection serializes");
-    busbar_hook_webrequest::wire::envelope(op, &projection).expect("the envelope serializes")
+    wire_oracle::envelope(op, &projection).expect("the envelope serializes")
 }
 
 /// The request every op must put on the wire for `op`: the 1.5.5 client's.

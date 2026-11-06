@@ -33,6 +33,8 @@ busbar-hook-webrequest = { path = "../hook-webrequest" }
 busbar-contract = { workspace = true }
 
 [dev-dependencies]
+# Independent expected-wire oracle shared with the logic crate tests.
+serde = { workspace = true }
 url = { workspace = true }
 rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true }

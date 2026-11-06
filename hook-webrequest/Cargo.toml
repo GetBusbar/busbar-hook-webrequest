@@ -21,6 +21,7 @@ workspace = true
 busbar-contract = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+zeroize = { workspace = true }
 # The one URL grammar (WHATWG), the same crate reqwest parsed the operator's URL with in 1.5.5.
 url = { workspace = true }
 # Status-code reason phrases for the 1.5.5 error text.

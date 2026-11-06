@@ -13,7 +13,7 @@ pub fn read_response<T>(
     response: busbar_contract::abi::sdk::exchange::ExchangeResponse,
     read: impl FnOnce(&busbar_contract::abi::sdk::exchange::ExchangeResponse) -> T,
 ) -> T {
-    let response = crate::owners::Response(response);
+    let response = zeroize::Zeroizing::new(response);
     read(&response)
 }
 
@@ -29,14 +29,6 @@ pub const MAX_REPLY_DEPTH: usize = busbar_contract::spans::MAX_JSON_DEPTH;
 #[must_use]
 pub fn request_failed() -> String {
     format!("{ALIAS}: request failed: error sending request")
-}
-
-/// The body-read failure text, the 1.5.5 reference wording that `wire_tests` pins. The host reports
-/// a body-read failure (a truncated or malformed body) as a `ConnFailure`, which has no body-read
-/// variant, so the plugin words it with [`request_failed`]; this text is not emitted in production.
-#[must_use]
-pub fn read_failed() -> String {
-    format!("{ALIAS}: response read failed: error decoding response body")
 }
 
 /// The failure for a body past [`MAX_REPLY_BYTES`].

@@ -3,7 +3,7 @@
 
 //! The settings document, the validated [`Target`], and `configure`'s commit-on-ack merge.
 
-use crate::owners::{ParsedUrl, SettingsValue, Text};
+use crate::owners::{ParsedUrl, Text};
 use crate::{net_guard, ALIAS, TIMEOUT_CLAMPED};
 use serde::Deserialize;
 use std::time::Duration;
@@ -27,38 +27,92 @@ pub fn unknown_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Ve
     settings
         .keys()
         .filter(|k| !KEYS.contains(&k.as_str()))
-        .map(|k| {
-            format!(
-                "{ALIAS}: ignoring unknown setting '{}' (the settings are {KEYS:?})",
-                k.escape_debug()
-            )
-        })
+        .map(|k| unknown_warning(k))
         .collect()
 }
 
-/// [`unknown_keys`] over a settings document as `open` reads it; none for a document that is not
-/// a JSON object (`open` refuses those).
-#[must_use]
-pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
-    match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
-        Ok(value) => value.as_object().map_or_else(Vec::new, unknown_keys),
-        _ => Vec::new(),
-    }
+fn unknown_warning(key: &str) -> String {
+    format!(
+        "{ALIAS}: ignoring unknown setting '{}' (the settings are {KEYS:?})",
+        key.escape_debug()
+    )
 }
 
-/// The plugin's settings (the operator-owned `settings:` map, passed at `open` and re-pushed on
-/// `configure`).
-#[derive(Deserialize, Default)]
-struct Config {
-    /// Absent reads as blank, and a blank url is refused in one set of words (`settings.url is required`).
-    #[serde(default, deserialize_with = "owned_url")]
-    url: Text,
-    #[serde(default)]
+/// Diagnostics retained by the same typed parse that validates the target. Unknown values are
+/// skipped, not materialized; names wipe on drop and are sorted/deduplicated as the old map was.
+/// This does not change the upstream serde_json scratch-buffer wiping deferral.
+#[derive(Default)]
+pub(crate) struct Diagnostics {
+    unknown: zeroize::Zeroizing<Vec<String>>,
     timeout_ms: Option<u64>,
 }
 
-fn owned_url<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Text, D::Error> {
-    String::deserialize(de).map(Text)
+impl Diagnostics {
+    pub(crate) fn log(&self) {
+        for key in self.unknown.iter() {
+            tracing::warn!("{}", unknown_warning(key));
+        }
+        if let Some(warning) = self.timeout_ms.and_then(clamp_warning) {
+            tracing::warn!(diag = %TIMEOUT_CLAMPED, "{warning}");
+        }
+    }
+}
+
+#[derive(Default)]
+struct Config {
+    url: Text,
+    diagnostics: Diagnostics,
+}
+
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct ConfigVisitor;
+        impl<'de> serde::de::Visitor<'de> for ConfigVisitor {
+            type Value = Config;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a settings object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Config, M::Error> {
+                let mut cfg = Config::default();
+                let (mut url_seen, mut timeout_seen) = (false, false);
+                while let Some(key) = map.next_key::<String>()? {
+                    let mut key = Text::new(key);
+                    match key.as_str() {
+                        "url" if !url_seen => {
+                            cfg.url = Text::new(map.next_value()?);
+                            url_seen = true;
+                        }
+                        "timeout_ms" if !timeout_seen => {
+                            cfg.diagnostics.timeout_ms = map.next_value()?;
+                            timeout_seen = true;
+                        }
+                        "url" => return Err(serde::de::Error::duplicate_field("url")),
+                        "timeout_ms" => {
+                            return Err(serde::de::Error::duplicate_field("timeout_ms"))
+                        }
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                            cfg.diagnostics.unknown.push(std::mem::take(&mut *key));
+                        }
+                    }
+                }
+                cfg.diagnostics.unknown.sort();
+                cfg.diagnostics.unknown.dedup_by(|a, b| {
+                    if a == b {
+                        zeroize::Zeroize::zeroize(a);
+                        true
+                    } else {
+                        false
+                    }
+                });
+                Ok(cfg)
+            }
+        }
+        de.deserialize_map(ConfigVisitor)
+    }
 }
 
 /// The forwarding target: a validated URL and its timeout, taken together so `configure` swaps both
@@ -114,14 +168,13 @@ impl Target {
             url,
             url_text: cfg.url.to_string(),
             timeout_text,
-            timeout: clamp_timeout(cfg.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
+            timeout: clamp_timeout(cfg.diagnostics.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         })
     }
 }
 
 /// The warning for a `timeout_ms` outside `[1, MAX_TIMEOUT_MS]`, which is still clamped.
-fn clamp_warning(settings: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
-    let ms = settings.get("timeout_ms")?.as_u64()?;
+fn clamp_warning(ms: u64) -> Option<String> {
     let clamped = clamp_timeout(ms).as_millis();
     (u128::from(ms) != clamped).then(|| {
         format!(
@@ -130,43 +183,17 @@ fn clamp_warning(settings: &serde_json::Map<String, serde_json::Value>) -> Optio
     })
 }
 
-/// Everything the door logs at `open`/`refresh`/an acknowledged `configure` about a settings map
-/// that is accepted: a key not read ([`unknown_keys`]) and a `timeout_ms` clamped into range.
-#[must_use]
-pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
-    let mut all = unknown_keys(settings);
-    all.extend(clamp_warning(settings));
-    all
-}
-
-/// Log what [`warnings`] returns, each as its own warn: a clamped `timeout_ms` carries its declared
-/// code ([`TIMEOUT_CLAMPED`]), an unread key none.
+/// Log ignored keys and a clamped timeout for an acknowledged configuration push.
 pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
     for warning in unknown_keys(settings) {
         tracing::warn!("{warning}");
     }
-    if let Some(warning) = clamp_warning(settings) {
+    if let Some(warning) = settings
+        .get("timeout_ms")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(clamp_warning)
+    {
         tracing::warn!(diag = %TIMEOUT_CLAMPED, "{warning}");
-    }
-}
-
-/// [`log_warnings`] over a settings document as `open` reads it; nothing for a document that is not a
-/// JSON object (`open` refuses those).
-pub fn log_warnings_in(settings: &[u8]) {
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
-        if let Some(map) = value.as_object() {
-            log_warnings(map);
-        }
-    }
-}
-
-/// [`warnings`] over a settings document as `open` reads it; none for a document that is not a JSON
-/// object (`open` refuses those).
-#[must_use]
-pub fn warnings_in(settings: &[u8]) -> Vec<String> {
-    match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
-        Ok(value) => value.as_object().map_or_else(Vec::new, warnings),
-        _ => Vec::new(),
     }
 }
 
@@ -176,6 +203,10 @@ pub fn warnings_in(settings: &[u8]) -> Vec<String> {
 /// # Errors
 /// The refusal text.
 pub fn open(settings: &[u8]) -> Result<Target, String> {
+    open_with_diagnostics(settings).map(|(target, _)| target)
+}
+
+pub(crate) fn open_with_diagnostics(settings: &[u8]) -> Result<(Target, Diagnostics), String> {
     let text = std::str::from_utf8(settings)
         .map_err(|e| format!("{ALIAS}: invalid plugin config: {e}"))?;
     let config: Config = if text.trim().is_empty() {
@@ -197,9 +228,11 @@ pub fn open(settings: &[u8]) -> Result<Target, String> {
         })?
     };
     let timeout_text = config
+        .diagnostics
         .timeout_ms
         .map_or(serde_json::Value::Null, serde_json::Value::from);
-    Target::validate(&config, timeout_text)
+    let target = Target::validate(&config, timeout_text)?;
+    Ok((target, config.diagnostics))
 }
 
 /// The NACK text for `why`.
@@ -228,7 +261,7 @@ pub fn configure(
                 .ok_or_else(|| nack("settings.url is present but not a string"))?;
             Some((
                 ParsedUrl::new(net_guard::refuse_target_url(raw).map_err(|reason| nack(&reason))?),
-                Text(raw.to_string()),
+                Text::new(raw.to_string()),
             ))
         }
     };
@@ -252,7 +285,7 @@ pub fn configure(
         drop(busbar_contract::abi::sdk::cred::Held::new(std::mem::take(
             &mut next.url_text,
         )));
-        next.url_text = std::mem::take(&mut text.0);
+        next.url_text = std::mem::take(&mut *text);
     }
     if let Some(timeout) = new_timeout {
         next.timeout = timeout;
@@ -260,3 +293,7 @@ pub fn configure(
     }
     Ok(Some(next))
 }
+
+#[cfg(test)]
+#[path = "tests/config_diagnostics_tests.rs"]
+mod diagnostics_tests;

@@ -241,9 +241,9 @@ pub fn ambiguous_url(raw: &str) -> Option<String> {
     let (shown, from_path) = match ParsedUrl::parse(raw) {
         Ok(parsed) => (
             echo_of(&echoable_scheme(parsed.scheme()), "://***"),
-            Text(parsed[url::Position::BeforePath..].to_string()),
+            Text::new(parsed[url::Position::BeforePath..].to_string()),
         ),
-        Err(_) => (echo_of(&scheme_of(raw), ":***"), Text(raw.to_string())),
+        Err(_) => (echo_of(&scheme_of(raw), ":***"), Text::new(raw.to_string())),
     };
 
     let refusal = sdk_url::ambiguous_url(&shown, &from_path)?;
@@ -351,15 +351,15 @@ fn display_url(url: &url::Url, cut_path: bool, cut_query: bool, cut_fragment: bo
 /// What [`scrub`] cuts (longest first, empty parts dropped).
 #[must_use]
 pub fn secret_parts(url: &url::Url) -> Vec<String> {
-    let mut parts = Parts(vec![
+    let mut parts = Parts::new(vec![
         url.as_str().to_string(),
         mask_userinfo(url),
         reportable_url(url),
     ]);
     if !matches!(url.path(), "" | "/") {
-        parts.0.push(url.path().to_string());
+        parts.push(url.path().to_string());
 
-        parts.0.extend(
+        parts.extend(
             url.path()
                 .split('/')
                 .filter(|part| !part.is_empty())
@@ -367,31 +367,29 @@ pub fn secret_parts(url: &url::Url) -> Vec<String> {
         );
     }
     if let Some(q) = url.query().filter(|q| !q.is_empty()) {
-        parts.0.push(q.to_string());
+        parts.push(q.to_string());
         for field in q.split('&') {
             if let Some((_, value)) = field.split_once('=') {
                 if !value.is_empty() {
-                    parts.0.push(value.to_string());
+                    parts.push(value.to_string());
 
                     if value.contains('+') {
-                        parts.0.push(value.replace('+', " "));
+                        parts.push(value.replace('+', " "));
                     }
                 }
             }
         }
     }
     if let Some(p) = url.password() {
-        parts.0.push(p.to_string());
+        parts.push(p.to_string());
     }
-    parts.0.push(url.username().to_string());
+    parts.push(url.username().to_string());
 
     if let Some(value) = crate::wire::basic_authorization(url) {
-        parts
-            .0
-            .extend(value.strip_prefix("Basic ").map(str::to_owned));
-        parts.0.push(value);
+        parts.extend(value.strip_prefix("Basic ").map(str::to_owned));
+        parts.push(value);
     }
-    sdk_url::and_decoded(parts.into_vec())
+    sdk_url::and_decoded(std::mem::take(&mut *parts))
 }
 
 /// `text` (the host's words, which may quote the target) with every one of `parts`

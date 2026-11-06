@@ -1,7 +1,4 @@
-use crate::config::{
-    clamp_timeout, configure, open, unknown_keys, unknown_keys_in, warnings, warnings_in, Target,
-    MAX_TIMEOUT_MS,
-};
+use crate::config::{clamp_timeout, configure, open, unknown_keys, Target, MAX_TIMEOUT_MS};
 use std::time::Duration;
 
 fn map(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -140,9 +137,6 @@ fn an_unknown_key_is_named_and_the_known_ones_are_not() {
             .all(|m| m.contains("url") && m.contains("timeout_ms")),
         "{w:?}"
     );
-    assert!(unknown_keys_in(br#"{"url":"https://h/"}"#).is_empty());
-    assert!(unknown_keys_in(b"").is_empty());
-    assert!(unknown_keys_in(b"[1]").is_empty());
 }
 
 #[test]
@@ -197,28 +191,6 @@ fn configure_reads_a_null_timeout_as_absent() {
     assert_eq!(next.url.as_str(), "https://other.example/");
     assert_eq!(next.timeout, Duration::from_millis(2000));
     assert!(open(br#"{"url":"https://a.example/","timeout_ms":null}"#).is_ok());
-}
-
-#[test]
-fn a_clamped_timeout_is_warned_once() {
-    for (settings, ms) in [
-        (r#"{"url":"https://h/","timeout_ms":99999}"#, "99999"),
-        (r#"{"url":"https://h/","timeout_ms":0}"#, "0"),
-    ] {
-        let w = warnings_in(settings.as_bytes());
-        assert_eq!(w.len(), 1, "{w:?}");
-        assert!(
-            w[0].contains("timeout_ms")
-                && w[0].contains(&format!("timeout_ms {ms} "))
-                && w[0].contains("clamp"),
-            "{w:?}"
-        );
-    }
-    let in_range = warnings_in(br#"{"url":"https://h/","timeout_ms":5000}"#);
-    assert!(in_range.is_empty(), "{in_range:?}");
-    assert!(warnings_in(br#"{"url":"https://h/","timeout_ms":null}"#).is_empty());
-    let w = warnings(&map(serde_json::json!({"timeout_ms": 60000, "x": 1})));
-    assert_eq!(w.len(), 2, "{w:?}");
 }
 
 #[test]

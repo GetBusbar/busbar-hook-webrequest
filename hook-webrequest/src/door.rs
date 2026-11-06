@@ -161,7 +161,7 @@ impl Live {
             plain,
             sealed,
             timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
-            secrets: Parts(crate::net_guard::secret_parts(&target.url)),
+            secrets: Parts::new(crate::net_guard::secret_parts(&target.url)),
             target,
         })
     }
@@ -315,6 +315,8 @@ pub(crate) fn status_phrase(live: &Live, phrase: Option<&str>) -> Option<String>
 /// words may quote the URL.
 pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
     let raw = Text::new(failure.to_string());
+    #[cfg(all(test, target_os = "linux"))]
+    crate::owner_custody_tests::observe(raw.as_bytes());
     let cause = crate::net_guard::scrub(&raw, &live.secrets);
     format!("{}: {cause}", reply::request_failed())
 }
@@ -482,8 +484,8 @@ pub struct Open;
 
 impl HookOpen for Open {
     fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
-        let target = config::open(settings.as_bytes())?;
-        config::log_warnings_in(settings.as_bytes());
+        let (target, diagnostics) = config::open_with_diagnostics(settings.as_bytes())?;
+        diagnostics.log();
         Ok(Box::new(Forwarder::over(Live::new(target))))
     }
 }
