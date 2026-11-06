@@ -2018,7 +2018,15 @@ fn real_connector(
     busbar_core_connector::io::install_process_reactor(io.clone());
     static TRANSPORT_DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
     let transport_dispatcher = Arc::clone(TRANSPORT_DISPATCHER.get_or_init(|| {
-        let dispatcher = Arc::new(Dispatcher::new(Default::default()));
+        // The nested transport doors consume request-head deadlines through CLOCK_NOW.
+        // Give them the same real kernel clock services as the outer hook dispatcher.
+        let dispatcher = Arc::new(Dispatcher::with_services(
+            Default::default(),
+            Arc::new(
+                busbar_kernel::host_services::KernelServices::new()
+                    .with_mono_clock(Arc::new(now_ns)),
+            ),
+        ));
         dispatcher.install_runtime(io);
         dispatcher.install_io(busbar_core_connector::hostio::process());
         dispatcher
