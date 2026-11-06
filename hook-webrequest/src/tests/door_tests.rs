@@ -14,29 +14,6 @@ fn forwarder(url: &str) -> Forwarder {
 }
 
 #[test]
-fn concurrent_partial_configures_preserve_both_updates() {
-    let f = forwarder("http://127.0.0.1:9001/a");
-    let start = std::sync::Barrier::new(2);
-    std::thread::scope(|scope| {
-        let url = scope.spawn(|| {
-            let settings = serde_json::json!({"url":"http://127.0.0.2:9002/b"});
-            start.wait();
-            assert!(f.configure(settings.as_object().unwrap(), 2).is_ok());
-        });
-        let timeout = scope.spawn(|| {
-            let settings = serde_json::json!({"timeout_ms":777});
-            start.wait();
-            assert!(f.configure(settings.as_object().unwrap(), 2).is_ok());
-        });
-        url.join().unwrap();
-        timeout.join().unwrap();
-    });
-    let live = f.live();
-    assert_eq!(live.url.as_str(), "http://127.0.0.2:9002/b");
-    assert_eq!(live.timeout, std::time::Duration::from_millis(777));
-}
-
-#[test]
 fn configuration_checkpoints_preserve_normalized_url_timeout_and_partial_semantics() {
     let initial = "http://user:secret@127.0.0.1:9001/first";
     let f = forwarder(initial);

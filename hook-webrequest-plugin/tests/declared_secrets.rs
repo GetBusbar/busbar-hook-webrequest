@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The hook declares `url` as reference-capable and non-secret; other references are refused.
+//! The hook declares `url` as reference-capable and non-secret: a reference there resolves in place,
+//! a literal passes as written, and a reference at any other field is refused.
 
 use std::sync::Arc;
 
@@ -25,6 +26,8 @@ fn resolve_settings(
     )?;
     Ok(settings.to_string().into_bytes())
 }
+
+const LITERAL_URL: &str = "https://hooks.example/route";
 
 fn linked() -> (Plugin<Hook>, Arc<Dispatcher>) {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -63,4 +66,26 @@ fn a_reference_at_an_undeclared_field_is_refused() {
     )
     .expect_err("`timeout_ms` is not a declared field");
     assert!(e.contains("did not declare it as a secret"), "{e}");
+}
+
+#[test]
+fn the_url_is_not_declared_secret() {
+    let (p, _d) = linked();
+    assert!(
+        !p.secret_refs().iter().any(|f| f == "url"),
+        "{:?}",
+        p.secret_refs()
+    );
+}
+
+#[test]
+fn a_literal_url_passes_as_written() {
+    let (p, _d) = linked();
+    let settings = format!(r#"{{"url":"{LITERAL_URL}"}}"#);
+    let out = resolve_settings(&p, settings.as_bytes(), |_, _| {
+        Err("a literal url resolves nothing".to_string())
+    })
+    .expect("a literal url passes as written");
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    assert_eq!(v["url"], LITERAL_URL);
 }

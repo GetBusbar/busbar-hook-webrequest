@@ -122,6 +122,7 @@ pub use busbar_contract::spans::exceeds_max_depth;
 /// other final status fails the call so the host applies `on_error`. An EMPTY body is a failure
 /// whatever the status, a `204` included: an abstain is a deliberate `{}` or `{"abstain":true}`,
 /// never a missing body.
+///
 /// A body that is not JSON (or is too deep) fails; any JSON value is returned as is, and busbar's
 /// reply lowering reads its meaning.
 ///

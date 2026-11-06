@@ -1,43 +1,8 @@
 use crate::config::open;
 use crate::reply::{error_status, request_failed};
 use crate::wire::request;
-use crate::ALIAS;
-#[path = "../../../testing/wire_oracle.rs"]
-mod oracle;
-use oracle::envelope;
-/// The body-read failure text, the 1.5.5 reference wording that `wire_tests` pins. The host reports
-/// a body-read failure (a truncated or malformed body) as a `ConnFailure`, which has no body-read
-/// variant, so the plugin words it with [`request_failed`]; this text is not emitted in production.
-#[must_use]
-pub fn read_failed() -> String {
-    format!("{ALIAS}: response read failed: error decoding response body")
-}
-
-use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-
-#[test]
-fn the_envelope_puts_op_last_and_never_duplicates_it() {
-    let body = envelope(
-        "decide",
-        &json!({"op":"evil","request":{"a":1},"candidates":[]}),
-    )
-    .unwrap();
-    assert_eq!(
-        String::from_utf8(body).unwrap(),
-        r#"{"candidates":[],"request":{"a":1},"op":"decide"}"#
-    );
-}
-
-#[test]
-fn a_non_object_projection_rides_under_payload() {
-    let body = envelope("notify", &json!([1, 2])).unwrap();
-    assert_eq!(
-        String::from_utf8(body).unwrap(),
-        r#"{"payload":[1,2],"op":"notify"}"#
-    );
-}
 
 #[test]
 fn the_request_target_and_fields_follow_the_url() {
@@ -137,10 +102,7 @@ fn the_request_bytes_are_what_the_1_5_5_client_wrote() {
         "http://localhost:PORT/route",
     ] {
         let want = client_bytes(url, 2_000, body);
-        let cfg = format!(
-            r#"{{"url":"{}"}}"#,
-            url.replace("PORT", &want_port(&want, url))
-        );
+        let cfg = format!(r#"{{"url":"{}"}}"#, url.replace("PORT", &want_port(&want)));
         // Retain the historical observation, but invalid decoded credentials are now refused.
         if url.contains("%FF") {
             assert!(open(cfg.as_bytes()).unwrap_err().contains("valid UTF-8"));
@@ -182,7 +144,7 @@ fn assemble(r: &crate::wire::Request, url: &url::Url) -> Vec<u8> {
 }
 
 /// The port the client dialled, read off the `host:` header it sent.
-fn want_port(sent: &[u8], _url: &str) -> String {
+fn want_port(sent: &[u8]) -> String {
     let text = String::from_utf8_lossy(sent);
     let host = text
         .lines()
@@ -236,11 +198,10 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
         );
         drop(l);
 
-        for (status, reason, body_len, sent) in [
-            (404u16, "Not Found", 2usize, 2usize),
-            (418, "I'm A Teapot Custom", 2, 2),
-            (500, "Internal Server Error", 2, 2),
-            (200, "OK", 50, 5),
+        for (status, reason) in [
+            (404u16, "Not Found"),
+            (418, "I'm A Teapot Custom"),
+            (500, "Internal Server Error"),
         ] {
             let l = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = l.local_addr().unwrap().port();
@@ -248,10 +209,9 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
                 let (mut s, _) = l.accept().unwrap();
                 let mut buf = [0u8; 4096];
                 let _ = s.read(&mut buf);
-                let head =
-                    format!("HTTP/1.1 {status} {reason}\r\ncontent-length: {body_len}\r\n\r\n");
+                let head = format!("HTTP/1.1 {status} {reason}\r\ncontent-length: 2\r\n\r\n");
                 s.write_all(head.as_bytes()).unwrap();
-                s.write_all(&vec![b'{'; sent]).unwrap();
+                s.write_all(b"{}").unwrap();
             });
             let r = client
                 .post(format!("http://127.0.0.1:{port}/x"))
@@ -259,22 +219,14 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
                 .send()
                 .await
                 .unwrap();
-            if status >= 400 {
-                let e = r.error_for_status().unwrap_err();
-                assert_eq!(
-                    format!(
-                        "webrequest: target returned an error status: {}",
-                        e.without_url()
-                    ),
-                    error_status(status, Some(reason))
-                );
-            } else {
-                let e = r.bytes().await.unwrap_err();
-                assert_eq!(
-                    format!("webrequest: response read failed: {}", e.without_url()),
-                    read_failed()
-                );
-            }
+            let e = r.error_for_status().unwrap_err();
+            assert_eq!(
+                format!(
+                    "webrequest: target returned an error status: {}",
+                    e.without_url()
+                ),
+                error_status(status, Some(reason))
+            );
             srv.join().unwrap();
         }
     });

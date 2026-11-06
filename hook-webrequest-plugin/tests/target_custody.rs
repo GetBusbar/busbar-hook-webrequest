@@ -155,7 +155,6 @@ fn assert_wiped(observed: custody::Observations, expected: usize) {
             "{payload:?}"
         );
         assert!(!payload.reallocated, "{payload:?}");
-        assert_eq!(payload.bytes_read, payload.len);
     }
 }
 

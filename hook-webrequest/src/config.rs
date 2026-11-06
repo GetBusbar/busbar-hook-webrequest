@@ -174,7 +174,7 @@ impl Target {
 }
 
 /// The warning for a `timeout_ms` outside `[1, MAX_TIMEOUT_MS]`, which is still clamped.
-fn clamp_warning(ms: u64) -> Option<String> {
+pub(crate) fn clamp_warning(ms: u64) -> Option<String> {
     let clamped = clamp_timeout(ms).as_millis();
     (u128::from(ms) != clamped).then(|| {
         format!(

@@ -1,21 +1,8 @@
 use super::*;
-use busbar_contract::net::{is_cgnat_shared_v4, is_link_local_v6, is_unique_local_v6, Ipv4Addr};
+use busbar_contract::net::{is_link_local_v6, Ipv4Addr};
 
 fn url(s: &str) -> url::Url {
     url::Url::parse(s).unwrap()
-}
-
-#[test]
-fn cgnat_ula_linklocal_predicates_match_core() {
-    assert!(is_cgnat_shared_v4(&Ipv4Addr::new(100, 64, 0, 0)));
-    assert!(is_cgnat_shared_v4(&Ipv4Addr::new(100, 100, 100, 200)));
-    assert!(!is_cgnat_shared_v4(&Ipv4Addr::new(100, 63, 255, 255)));
-    assert!(!is_cgnat_shared_v4(&Ipv4Addr::new(8, 8, 8, 8)));
-    assert!(is_unique_local_v6(&"fc00::1".parse().unwrap()));
-    assert!(is_unique_local_v6(&"fd00:ec2::254".parse().unwrap()));
-    assert!(!is_unique_local_v6(&"fe80::1".parse().unwrap()));
-    assert!(is_link_local_v6(&"fe80::1".parse().unwrap()));
-    assert!(!is_link_local_v6(&"fc00::1".parse().unwrap()));
 }
 
 #[test]

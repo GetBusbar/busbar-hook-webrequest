@@ -25,9 +25,6 @@
 //! THE BAN ([`net_ban`]): the plugin's shipped closure holds no socket crate and no TLS stack (THE
 //! DESIGN §5: no plugin opens a socket, dials, binds or does TLS), with its RED arm.
 
-#[path = "../../testing/wire_oracle.rs"]
-mod wire_oracle;
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -650,7 +647,7 @@ fn decide_frame() -> Arc<DecideFrame> {
 }
 
 /// The 1.5.5 op envelope for `op`: the projection 1.5.5's host built, enveloped as 1.5.5's
-/// forwarder did.
+/// forwarder did (the projection's keys in order, then `op` last).
 fn envelope_155(op: &'static str) -> Vec<u8> {
     let cands = if op == "notify" {
         Vec::new()
@@ -664,7 +661,19 @@ fn envelope_155(op: &'static str) -> Vec<u8> {
         &context(),
     ))
     .expect("the projection serializes");
-    wire_oracle::envelope(op, &projection).expect("the envelope serializes")
+    let Value::Object(projection) = projection else {
+        panic!("the projection is an object")
+    };
+    // 1.5.5 dropped any projected `op` and wrote its own last.
+    let projection: serde_json::Map<String, Value> = projection
+        .into_iter()
+        .filter(|(key, _)| key != "op")
+        .collect();
+    assert!(!projection.is_empty(), "the projection carries the request");
+    let mut body = serde_json::to_vec(&projection).expect("the envelope serializes");
+    assert_eq!(body.pop(), Some(b'}'));
+    body.extend_from_slice(format!(r#","op":"{op}"}}"#).as_bytes());
+    body
 }
 
 /// The request every op must put on the wire for `op`: the 1.5.5 client's.
@@ -1238,7 +1247,11 @@ fn an_oversized_reply_is_refused_before_its_remaining_body_is_read() {
             failure.contains(&format!("response exceeded {cap} byte cap")),
             "{failure}"
         );
-        assert!(b.upstream.body_bytes_read.load(Ordering::SeqCst) < body.len());
+        let read = b.upstream.body_bytes_read.load(Ordering::SeqCst);
+        assert!(
+            read <= 2 * cap,
+            "{read} body bytes read past a {cap} byte cap"
+        );
         assert!(b.upstream.reads.lock().unwrap().is_empty());
     }
 }
@@ -1260,7 +1273,11 @@ fn error_statuses_keep_their_meaning_when_the_body_exceeds_the_cap() {
             b.upstream.answer(status, reason, &body);
             let failure = decide_failure(&b);
             assert!(failure.contains(expected), "{failure}");
-            assert!(b.upstream.body_bytes_read.load(Ordering::SeqCst) < body.len());
+            let read = b.upstream.body_bytes_read.load(Ordering::SeqCst);
+            assert!(
+                read <= 2 * busbar_hook_webrequest::reply::MAX_REPLY_BYTES,
+                "{read} body bytes read past the cap"
+            );
             assert!(b.upstream.reads.lock().unwrap().is_empty());
         }
     }
@@ -1515,6 +1532,13 @@ fn red_a_clamped_timeout_is_warned() {
             warned(&b, &["timeout_ms", "99999", "clamp"]),
             "{:?}",
             b.recorder.warns()
+        );
+        b.upstream.answer(200, "OK", b"{}");
+        assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
+        assert_eq!(
+            b.upstream.last().timeout_ms,
+            busbar_hook_webrequest::config::MAX_TIMEOUT_MS,
+            "the exchange carries the clamped timeout, not the written one"
         );
         assert_eq!(b.configure(r#"{"timeout_ms": 0}"#, 2), Ok(2));
         assert!(
@@ -1923,7 +1947,10 @@ fn bare_query_values_and_path_keys_never_escape_any_operation_or_the_pending_tar
     }
 }
 
-/// The real HTTP framer and connector must honor the settings timeout after a prompt head;
+/// The real HTTP framer and connector must honor the settings timeout after a prompt head: a reply
+/// head followed by a silent partial body fails `decide` and `transform` at the configured 1000 ms
+/// whole-request expiry (well before the dispatcher's own deadline), and the expired exchange
+/// closes its socket.
 #[test]
 fn the_real_connector_cuts_a_silent_partial_body_at_the_configured_whole_timeout() {
     use std::io::{Read, Write};
@@ -2081,7 +2108,7 @@ fn real_connector(
         Some(
             dest.to_socket_addrs()
                 .ok()
-                .and_then(|mut addresses| addresses.find(|a| a.ip().is_loopback()))
+                .and_then(|mut addresses| addresses.find(|a| a.is_ipv4() && a.ip().is_loopback()))
                 .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE),
         )
     };
@@ -2126,7 +2153,9 @@ fn tls_hook_response() -> (String, String, std::thread::JoinHandle<bool>) {
         rustls::pki_types::PrivatePkcs8KeyDer::from(leaf_key.serialize_der()).into(),
     )
     .unwrap();
-    let listener = TcpListener::bind(("localhost", 0)).unwrap();
+    // Bound to the IPv4 loopback the unguarded judge dials for `localhost`, so a host whose
+    // `localhost` also resolves to an unbindable `::1` cannot split server and client.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let addr = format!(
         "https://localhost:{}",
         listener.local_addr().unwrap().port()

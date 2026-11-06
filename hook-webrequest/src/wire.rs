@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The HTTP request method, target and fields, in their fixed wire order.
-//! The SDK writes each operation's projection directly into its request body.
+//! What the forwarder hands the host's `http` framer for each op: the method, the request target and
+//! the fields it sets, in a fixed order. The op envelope itself is written by the SDK
+//! (`write_projection`), and the framer writes the bytes.
 
 use busbar_contract::abi::sdk::url::{self as sdk_url, Userinfo};
 
