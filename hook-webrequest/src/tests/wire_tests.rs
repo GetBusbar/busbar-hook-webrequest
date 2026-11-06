@@ -8,19 +8,22 @@ use std::net::TcpListener;
 fn the_request_target_and_fields_follow_the_url() {
     let t = open(br#"{"url":"https://api.example.com"}"#).unwrap();
     let r = request(&t, b"{}".to_vec());
-    assert_eq!(r.method, "POST");
-    assert_eq!(r.target, "/");
+    assert_eq!(r.method, b"POST");
+    assert_eq!(r.target, b"/");
     assert_eq!(
         r.fields,
         vec![
-            ("content-type", "application/json".to_string()),
-            ("accept", "*/*".to_string())
+            (b"content-type".to_vec(), b"application/json".to_vec()),
+            (b"accept".to_vec(), b"*/*".to_vec())
         ]
     );
     let t = open(br#"{"url":"https://u:p@api.example.com:8443/a?b=1"}"#).unwrap();
     let r = request(&t, b"{}".to_vec());
-    assert_eq!(r.target, "/a?b=1");
-    assert_eq!(r.fields[0], ("authorization", "Basic dTpw".to_string()));
+    assert_eq!(r.target, b"/a?b=1");
+    assert_eq!(
+        r.fields[0],
+        (b"authorization".to_vec(), b"Basic dTpw".to_vec())
+    );
 }
 
 /// What a raw listener received from the 1.5.5 client (reqwest as 1.5.5 built it) for one POST.
@@ -132,9 +135,17 @@ fn host_header(url: &url::Url) -> String {
 /// The bytes the http framer writes for `r`: the request line, the forwarder's fields in order, then
 /// what the framer adds itself (`host` from the authority, then `content-length` from the body).
 fn assemble(r: &crate::wire::Request, url: &url::Url) -> Vec<u8> {
-    let mut head = format!("{} {} HTTP/1.1\r\n", r.method, r.target);
+    let mut head = format!(
+        "{} {} HTTP/1.1\r\n",
+        std::str::from_utf8(&r.method).unwrap(),
+        std::str::from_utf8(&r.target).unwrap()
+    );
     for (k, v) in &r.fields {
-        head.push_str(&format!("{k}: {v}\r\n"));
+        head.push_str(&format!(
+            "{}: {}\r\n",
+            std::str::from_utf8(k).unwrap(),
+            std::str::from_utf8(v).unwrap()
+        ));
     }
     head.push_str(&format!("host: {}\r\n", host_header(url)));
     head.push_str(&format!("content-length: {}\r\n\r\n", r.body.len()));

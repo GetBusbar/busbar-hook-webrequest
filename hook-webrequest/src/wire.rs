@@ -10,44 +10,7 @@ use busbar_contract::abi::sdk::url::{self as sdk_url, Userinfo};
 use crate::config::Target;
 use url::Position;
 
-/// One framed http exchange's request: what the exchange is handed (the http framer writes the
-/// bytes). The framer adds `content-length` from the body and `host` from the origin the exchange is
-/// dialled to; the fields here are the ones the forwarder itself sets.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Request {
-    /// Always `POST`.
-    pub method: &'static str,
-    /// The request target: the URL's path and query (`/` when it has neither).
-    pub target: String,
-    /// The fields, in order (`Debug` redacts the target and the `authorization` value):
-    /// `authorization` (only when the URL carries userinfo), `content-type`,
-    /// `accept`.
-    pub fields: Vec<(&'static str, String)>,
-    /// The op envelope.
-    pub body: Vec<u8>,
-}
-
-impl std::fmt::Debug for Request {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fields: Vec<(&str, &str)> = self
-            .fields
-            .iter()
-            .map(|(n, v)| {
-                if n.eq_ignore_ascii_case("authorization") {
-                    (*n, "<redacted>")
-                } else {
-                    (*n, v.as_str())
-                }
-            })
-            .collect();
-        f.debug_struct("Request")
-            .field("method", &self.method)
-            .field("target", &"<redacted>")
-            .field("fields", &fields)
-            .field("body_len", &self.body.len())
-            .finish()
-    }
-}
+pub use busbar_contract::abi::sdk::exchange::Request;
 
 /// The request for `body` to `target`.
 #[must_use]
@@ -56,15 +19,21 @@ pub fn request(target: &Target, body: Vec<u8>) -> Request {
     let path = &url[Position::BeforePath..Position::AfterQuery];
     let mut fields = Vec::with_capacity(3);
     if let Some(auth) = basic_authorization(url) {
-        fields.push(("authorization", auth));
+        fields.push((b"authorization".to_vec(), auth.into_bytes()));
     }
-    fields.push(("content-type", "application/json".to_string()));
-    fields.push(("accept", "*/*".to_string()));
+    fields.push((b"content-type".to_vec(), b"application/json".to_vec()));
+    fields.push((b"accept".to_vec(), b"*/*".to_vec()));
     Request {
-        method: "POST",
-        target: if path.is_empty() { "/" } else { path }.to_string(),
+        method: b"POST".to_vec(),
+        target: if path.is_empty() {
+            b"/"
+        } else {
+            path.as_bytes()
+        }
+        .to_vec(),
         fields,
         body,
+        timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
     }
 }
 

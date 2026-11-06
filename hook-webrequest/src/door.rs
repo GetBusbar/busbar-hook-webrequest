@@ -110,16 +110,13 @@ pub struct Forwarder {
 pub(crate) struct Live {
     target: Target,
     pub(crate) origin: String,
-    method: Vec<u8>,
-    request_target: Vec<u8>,
-    /// The fields that carry no credential, in order (`content-type`, `accept`).
-    pub(crate) plain: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The SDK owns and wipes the request template; its fields carry no credential.
+    pub(crate) request: Request,
     /// The fields that do (the `authorization` the userinfo became): each goes in before the plain
     /// field `at` (their count: first), held as a [`Cred`] required to go out secured when the url
     /// names a secure scheme, so the SDK frames and wipes the value and a formatted exchange shows
     /// `<sealed>`.
     pub(crate) sealed: Vec<(usize, Vec<u8>, Cred)>,
-    timeout_ms: u64,
     /// What a failure's text is scrubbed of ([`crate::net_guard::secret_parts`]), computed once with
     /// the target rather than for every failed op.
     secrets: Parts,
@@ -141,26 +138,22 @@ impl std::fmt::Debug for Live {
 
 impl Live {
     pub(crate) fn new(target: Target) -> Arc<Self> {
-        let r = wire::request(&target, Vec::new());
+        let mut request = wire::request(&target, Vec::new());
         let (mut plain, mut sealed) = (Vec::new(), Vec::new());
-        for (name, value) in r.fields {
-            if name.eq_ignore_ascii_case("authorization") {
-                let mut v = serde_json::Value::String(value);
-                let cred = Cred::take(&mut v)
-                    .unwrap_or_else(Cred::empty)
+        for (name, value) in std::mem::take(&mut request.fields) {
+            if name.eq_ignore_ascii_case(b"authorization") {
+                let cred = Cred::captured(zeroize::Zeroizing::new(value))
                     .require_secure_if(target.url.scheme() == "https");
-                sealed.push((plain.len(), name.as_bytes().to_vec(), cred));
+                sealed.push((plain.len(), name, cred));
             } else {
-                plain.push((name.as_bytes().to_vec(), value.into_bytes()));
+                plain.push((name, value));
             }
         }
+        request.fields = plain;
         Arc::new(Self {
             origin: target.url.origin().ascii_serialization(),
-            method: r.method.as_bytes().to_vec(),
-            request_target: r.target.into_bytes(),
-            plain,
+            request,
             sealed,
-            timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
             secrets: Parts::new(crate::net_guard::secret_parts(&target.url)),
             target,
         })
@@ -168,27 +161,14 @@ impl Live {
 
     /// The exchange's request for `body`, and the sealed fields it carries beside it.
     fn request(&self, body: Vec<u8>) -> (Request, Vec<SealedField>) {
-        let request = Request {
-            method: self.method.clone(),
-            target: self.request_target.clone(),
-            fields: self.plain.clone(),
-            body,
-            timeout_ms: self.timeout_ms,
-        };
+        let mut request = self.request.clone();
+        request.body = body;
         let sealed = self
             .sealed
             .iter()
             .map(|(at, name, c)| (*at, name.clone(), c.field()))
             .collect();
         (request, sealed)
-    }
-}
-
-impl Drop for Live {
-    fn drop(&mut self) {
-        drop(busbar_contract::abi::sdk::cred::Held::new(std::mem::take(
-            &mut self.request_target,
-        )));
     }
 }
 
@@ -232,7 +212,7 @@ impl Forwarder {
             Ok(live) => live,
             Err(why) => return Poll::Ready(Err(why.to_owned())),
         };
-        on.set_timeout_ms(live.timeout_ms);
+        on.set_timeout_ms(live.request.timeout_ms);
         let answer = on.exchange_sealed_bounded_with_head(
             NEED,
             Some(&live.origin),

@@ -244,7 +244,8 @@ fn the_userinfo_authorization_is_sealed_and_never_a_plain_field() {
     let target = config::open(br#"{"url":"https://user:pa%20ss@hooks.example/x"}"#).unwrap();
     let live = Live::new(target);
     assert!(!live
-        .plain
+        .request
+        .fields
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(b"authorization")));
     assert_eq!(live.sealed.len(), 1);
@@ -254,7 +255,7 @@ fn the_userinfo_authorization_is_sealed_and_never_a_plain_field() {
     let target = config::open(br#"{"url":"https://hooks.example/x"}"#).unwrap();
     let live = Live::new(target);
     assert!(live.sealed.is_empty());
-    assert_eq!(live.plain.len(), 2);
+    assert_eq!(live.request.fields.len(), 2);
 }
 
 /// The checkpoint buffer is bounded by what a checkpoint may carry, not by the url's worst-case

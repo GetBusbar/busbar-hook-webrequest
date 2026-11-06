@@ -29,12 +29,7 @@ fn target() -> Target {
 
 /// The Basic value the userinfo becomes, which must not render either.
 fn basic() -> String {
-    wire::request(&target(), Vec::new())
-        .fields
-        .into_iter()
-        .find(|(n, _)| *n == "authorization")
-        .map(|(_, v)| v)
-        .expect("the userinfo becomes an authorization")
+    wire::basic_authorization(&target().url).expect("the userinfo becomes an authorization")
 }
 
 #[test]
