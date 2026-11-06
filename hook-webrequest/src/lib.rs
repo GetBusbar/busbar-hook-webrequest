@@ -12,7 +12,7 @@
 //! ports refused), and the door drives it with these functions:
 //!
 //! * [`config`] — the settings document, the [`config::Target`], and `configure`'s commit-on-ack merge;
-//! * [`wire`] — the request's method, target and fields, and the 1.5.5 op envelope;
+//! * [`wire`] — the request's method, target and fields;
 //! * [`reply`] — the response reader: the status rule, the 64 KiB body cap, the depth guard, and the
 //!   per-op meaning of a failure (`decide` and `transform` fail, so the operator's `on_error`
 //!   applies; `notify` swallows);

@@ -36,16 +36,6 @@ pub fn unknown_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Ve
         .collect()
 }
 
-/// [`unknown_keys`] over a settings document as `open` reads it; none for a document that is not
-/// a JSON object (`open` refuses those).
-#[must_use]
-pub fn unknown_keys_in(settings: &[u8]) -> Vec<String> {
-    match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
-        Ok(value) => value.as_object().map_or_else(Vec::new, unknown_keys),
-        _ => Vec::new(),
-    }
-}
-
 /// The plugin's settings (the operator-owned `settings:` map, passed at `open` and re-pushed on
 /// `configure`).
 #[derive(Deserialize, Default)]
@@ -120,7 +110,9 @@ impl Target {
 }
 
 /// The warning for a `timeout_ms` outside `[1, MAX_TIMEOUT_MS]`, which is still clamped.
-fn clamp_warning(settings: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+pub(crate) fn clamp_warning(
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
     let ms = settings.get("timeout_ms")?.as_u64()?;
     let clamped = clamp_timeout(ms).as_millis();
     (u128::from(ms) != clamped).then(|| {
@@ -130,17 +122,9 @@ fn clamp_warning(settings: &serde_json::Map<String, serde_json::Value>) -> Optio
     })
 }
 
-/// Everything the door logs at `open`/`refresh`/an acknowledged `configure` about a settings map
-/// that is accepted: a key not read ([`unknown_keys`]) and a `timeout_ms` clamped into range.
-#[must_use]
-pub fn warnings(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
-    let mut all = unknown_keys(settings);
-    all.extend(clamp_warning(settings));
-    all
-}
-
-/// Log what [`warnings`] returns, each as its own warn: a clamped `timeout_ms` carries its declared
-/// code ([`TIMEOUT_CLAMPED`]), an unread key none.
+/// Log everything the door warns about at `open`/`refresh`/an acknowledged `configure` for a
+/// settings map that is accepted, each as its own warn: a key not read ([`unknown_keys`]) with no
+/// code, and a `timeout_ms` clamped into range with its declared code ([`TIMEOUT_CLAMPED`]).
 pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
     for warning in unknown_keys(settings) {
         tracing::warn!("{warning}");
@@ -157,16 +141,6 @@ pub fn log_warnings_in(settings: &[u8]) {
         if let Some(map) = value.as_object() {
             log_warnings(map);
         }
-    }
-}
-
-/// [`warnings`] over a settings document as `open` reads it; none for a document that is not a JSON
-/// object (`open` refuses those).
-#[must_use]
-pub fn warnings_in(settings: &[u8]) -> Vec<String> {
-    match serde_json::from_slice::<serde_json::Value>(settings).map(SettingsValue) {
-        Ok(value) => value.as_object().map_or_else(Vec::new, warnings),
-        _ => Vec::new(),
     }
 }
 

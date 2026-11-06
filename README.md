@@ -154,8 +154,9 @@ settings and `configure`, `door_tests.rs` the configure merge, its checkpoints a
 pushes, the sealed request parts and how a reply head is read, `echo_tests.rs`
 the credential-echo canaries, `custody_tests.rs` canonical URL redaction, `owner_custody_tests.rs`
 the actual door's owned error and lossy-phrase wiping on Linux, `reply_tests.rs` the reply rules and the per-op meaning of a
-failure, `report_tests.rs` the `status`/`describe` documents, `wire_tests.rs` the envelope and
-the request bytes against the 1.5.5 client, and `net_guard_tests.rs` the SSRF predicates) and the
+failure, `report_tests.rs` the `status`/`describe` documents, `settings_schema_tests.rs` the published
+settings schema against the native parser, `wire_tests.rs` the request parts and error wording against
+the 1.5.5 client, and `net_guard_tests.rs` the SSRF predicates) and the
 plugin crate's integration tests
 (`hook-webrequest-plugin/tests/`):
 
@@ -175,8 +176,9 @@ plugin crate's integration tests
   url-replacing `configure` supersedes) and the response reader's
   reason/body/field allocations, and checks initialized bytes before
   deallocation on return and unwind, with an unwiped control;
-- `declared_secrets.rs` and `reference_url.rs`: `url` is declared reference-capable and not a
-  secret, so a `{env:}` reference there resolves in place and a literal passes as written.
+- `declared_secrets.rs`: `url` is declared reference-capable and not a secret, so a `{env:}`
+  reference there resolves in place, a literal passes as written, and a reference at any other
+  field is refused.
 
 `cargo test` builds the cdylib as part of the run.
 

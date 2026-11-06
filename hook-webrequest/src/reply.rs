@@ -31,14 +31,6 @@ pub fn request_failed() -> String {
     format!("{ALIAS}: request failed: error sending request")
 }
 
-/// The body-read failure text, the 1.5.5 reference wording that `wire_tests` pins. The host reports
-/// a body-read failure (a truncated or malformed body) as a `ConnFailure`, which has no body-read
-/// variant, so the plugin words it with [`request_failed`]; this text is not emitted in production.
-#[must_use]
-pub fn read_failed() -> String {
-    format!("{ALIAS}: response read failed: error decoding response body")
-}
-
 /// The failure for a body past [`MAX_REPLY_BYTES`].
 #[must_use]
 pub fn cap_exceeded() -> String {
@@ -130,6 +122,7 @@ pub use busbar_contract::spans::exceeds_max_depth;
 /// other final status fails the call so the host applies `on_error`. An EMPTY body is a failure
 /// whatever the status, a `204` included: an abstain is a deliberate `{}` or `{"abstain":true}`,
 /// never a missing body.
+///
 /// A body that is not JSON (or is too deep) fails; any JSON value is returned as is, and busbar's
 /// reply lowering reads its meaning.
 ///

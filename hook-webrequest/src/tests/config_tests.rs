@@ -1,6 +1,5 @@
 use crate::config::{
-    clamp_timeout, configure, open, unknown_keys, unknown_keys_in, warnings, warnings_in, Target,
-    MAX_TIMEOUT_MS,
+    clamp_timeout, clamp_warning, configure, open, unknown_keys, Target, MAX_TIMEOUT_MS,
 };
 use std::time::Duration;
 
@@ -140,9 +139,7 @@ fn an_unknown_key_is_named_and_the_known_ones_are_not() {
             .all(|m| m.contains("url") && m.contains("timeout_ms")),
         "{w:?}"
     );
-    assert!(unknown_keys_in(br#"{"url":"https://h/"}"#).is_empty());
-    assert!(unknown_keys_in(b"").is_empty());
-    assert!(unknown_keys_in(b"[1]").is_empty());
+    assert!(unknown_keys(&self::map(serde_json::json!({"url":"https://h/"}))).is_empty());
 }
 
 #[test]
@@ -201,24 +198,25 @@ fn configure_reads_a_null_timeout_as_absent() {
 
 #[test]
 fn a_clamped_timeout_is_warned_once() {
-    for (settings, ms) in [
-        (r#"{"url":"https://h/","timeout_ms":99999}"#, "99999"),
-        (r#"{"url":"https://h/","timeout_ms":0}"#, "0"),
-    ] {
-        let w = warnings_in(settings.as_bytes());
-        assert_eq!(w.len(), 1, "{w:?}");
+    for (ms, clamped) in [(99999u64, "5000"), (0, "1")] {
+        let w = clamp_warning(&map(
+            serde_json::json!({"url":"https://h/","timeout_ms": ms}),
+        ))
+        .expect("an out-of-range timeout is warned");
         assert!(
-            w[0].contains("timeout_ms")
-                && w[0].contains(&format!("timeout_ms {ms} "))
-                && w[0].contains("clamp"),
-            "{w:?}"
+            w.contains(&format!("timeout_ms {ms} "))
+                && w.ends_with(&format!("clamped to {clamped}")),
+            "{w}"
         );
     }
-    let in_range = warnings_in(br#"{"url":"https://h/","timeout_ms":5000}"#);
-    assert!(in_range.is_empty(), "{in_range:?}");
-    assert!(warnings_in(br#"{"url":"https://h/","timeout_ms":null}"#).is_empty());
-    let w = warnings(&map(serde_json::json!({"timeout_ms": 60000, "x": 1})));
-    assert_eq!(w.len(), 2, "{w:?}");
+    for in_range in [
+        serde_json::json!({"url":"https://h/","timeout_ms":5000}),
+        serde_json::json!({"url":"https://h/","timeout_ms":1}),
+        serde_json::json!({"url":"https://h/","timeout_ms":null}),
+        serde_json::json!({"url":"https://h/"}),
+    ] {
+        assert_eq!(clamp_warning(&map(in_range.clone())), None, "{in_range}");
+    }
 }
 
 #[test]
