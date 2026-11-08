@@ -24,25 +24,25 @@
 #![cfg_attr(not(all(test, target_os = "linux")), forbid(unsafe_code))]
 #![deny(missing_docs)]
 
-pub mod config;
-pub mod door;
-pub mod net_guard;
+pub(crate) mod config;
+pub(crate) mod door;
+pub(crate) mod net_guard;
 mod owners;
-pub mod reply;
-pub mod report;
-pub mod wire;
+pub(crate) mod reply;
+pub(crate) mod report;
+pub(crate) mod wire;
 
 /// The package name a signed tarball of this plugin states (`manifest.name`).
 pub const NAME: &str = "busbar-hook-webrequest";
 
 /// The catalogue code a failed `decide` or `transform` is raised under (declared in `declares.json`).
-pub const FORWARD_FAILED: &str = "BUSBAR-7151";
+pub(crate) const FORWARD_FAILED: &str = "BUSBAR-7151";
 /// The catalogue code a dropped `notify` is raised under.
-pub const NOTIFY_DROPPED: &str = "BUSBAR-7152";
+pub(crate) const NOTIFY_DROPPED: &str = "BUSBAR-7152";
 /// The catalogue code a refused `configure` is raised under.
-pub const CONFIGURE_REFUSED: &str = "BUSBAR-7153";
+pub(crate) const CONFIGURE_REFUSED: &str = "BUSBAR-7153";
 /// The catalogue code a clamped `timeout_ms` is raised under.
-pub const TIMEOUT_CLAMPED: &str = "BUSBAR-7154";
+pub(crate) const TIMEOUT_CLAMPED: &str = "BUSBAR-7154";
 
 /// The alias a hook reference names this plugin by (`module: webrequest`).
 pub const ALIAS: &str = "webrequest";
@@ -72,3 +72,10 @@ mod wire_tests;
 #[cfg(all(test, target_os = "linux"))]
 #[path = "tests/owner_custody_tests.rs"]
 mod owner_custody_tests;
+
+/// The validated entry and generated registration descriptor.
+pub use door::{door, MACRO_DOOR};
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "tests/target_custody.rs"]
+mod target_custody;

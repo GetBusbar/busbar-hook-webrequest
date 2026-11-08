@@ -35,3 +35,4 @@ jsonschema = { workspace = true }
 # client (reqwest, the version 1.5.5 shipped) put on the wire to a raw listener. Dev only.
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }
+busbar-contract = { workspace = true, features = ["test-seal"] }

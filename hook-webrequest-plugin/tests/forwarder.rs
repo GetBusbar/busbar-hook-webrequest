@@ -86,7 +86,7 @@ fn cdylib() -> PathBuf {
 
 /// The door's Statement rendering, as the pack tool signs it into the manifest.
 fn stated() -> Vec<u8> {
-    rendering_of(busbar_hook_webrequest::door::door).expect("the door renders its Statement")
+    rendering_of(busbar_hook_webrequest::door).expect("the door renders its Statement")
 }
 
 /// One request as the host's framer was handed it.
@@ -382,6 +382,7 @@ impl Arm {
                 busbar_kernel::host_services::KernelServices::new()
                     .with_mono_clock(Arc::new(now_ns)),
             ),
+            busbar_contract::services::test_caller_binding(),
         ));
         let upstream = Upstream::new();
         *upstream.wake.lock().unwrap() = Some(dispatcher.conn_waker());
@@ -400,7 +401,7 @@ impl Arm {
         };
         let plugin = match self {
             Arm::Linked => load_linked::<Hook>(
-                &LinkedRow::of(busbar_hook_webrequest::door::door).expect("the row renders"),
+                &LinkedRow::of(busbar_hook_webrequest::door).expect("the row renders"),
                 bind,
             ),
             Arm::Dropped(path) => load_dropped::<Hook>(path, &stated(), bind),
@@ -444,8 +445,8 @@ impl Bound {
 
     /// Op `s` on a fresh ticket, through the dispatcher: it may pend, and is resumed on its wake.
     fn submit<I: InFrame, O: OutFrame>(&self, s: u32, input: I, out: O) -> Done<I, O> {
-        let entered = self.plugin.inner.crossings.load(Ordering::Relaxed);
-        let resumed = self.plugin.inner.resumes.load(Ordering::Relaxed);
+        let entered = self.plugin.test_invocations().0;
+        let resumed = self.plugin.test_invocations().1;
         let ticket = self.dispatcher.mint(0).expect("a ticket");
         let reply = self.dispatcher.submit(
             &self.plugin,
@@ -459,8 +460,8 @@ impl Bound {
             .wait(Duration::from_secs(30))
             .expect("the op completes");
         self.dispatcher.recycle(ticket);
-        let entries = self.plugin.inner.crossings.load(Ordering::Relaxed) - entered;
-        let resumes = self.plugin.inner.resumes.load(Ordering::Relaxed) - resumed;
+        let entries = self.plugin.test_invocations().0 - entered;
+        let resumes = self.plugin.test_invocations().1 - resumed;
         assert_eq!(
             entries - resumes,
             1,
@@ -854,18 +855,6 @@ fn red_every_actionable_line_carries_its_declared_code() {
         })
         .collect();
     assert_eq!(declared, [7151, 7152, 7153, 7154]);
-    use busbar_hook_webrequest::{
-        CONFIGURE_REFUSED, FORWARD_FAILED, NOTIFY_DROPPED, TIMEOUT_CLAMPED,
-    };
-    assert_eq!(
-        [
-            FORWARD_FAILED,
-            NOTIFY_DROPPED,
-            CONFIGURE_REFUSED,
-            TIMEOUT_CLAMPED
-        ],
-        ["BUSBAR-7151", "BUSBAR-7152", "BUSBAR-7153", "BUSBAR-7154"]
-    );
     for arm in arms() {
         let b = arm.bind();
         b.open(&format!(r#"{{"url": "{URL}", "timeout_ms": 99999}}"#))
@@ -1230,7 +1219,7 @@ fn a_cancelled_op_does_not_pin_the_next_fresh_op_to_its_old_target() {
 
 #[test]
 fn an_oversized_reply_is_refused_before_its_remaining_body_is_read() {
-    let cap = busbar_hook_webrequest::reply::MAX_REPLY_BYTES;
+    let cap = 64 * 1024;
     let mut body = vec![b' '; cap * 4];
     body[..2].copy_from_slice(b"{}");
     for arm in arms() {
@@ -1258,7 +1247,7 @@ fn an_oversized_reply_is_refused_before_its_remaining_body_is_read() {
 
 #[test]
 fn error_statuses_keep_their_meaning_when_the_body_exceeds_the_cap() {
-    let body = vec![b'x'; busbar_hook_webrequest::reply::MAX_REPLY_BYTES * 4];
+    let body = vec![b'x'; (64 * 1024) * 4];
     for arm in arms() {
         for (status, reason, expected) in [
             (503, "Busy", "HTTP status server error (503 Busy)"),
@@ -1275,7 +1264,7 @@ fn error_statuses_keep_their_meaning_when_the_body_exceeds_the_cap() {
             assert!(failure.contains(expected), "{failure}");
             let read = b.upstream.body_bytes_read.load(Ordering::SeqCst);
             assert!(
-                read <= 2 * busbar_hook_webrequest::reply::MAX_REPLY_BYTES,
+                read <= 2 * (64 * 1024),
                 "{read} body bytes read past the cap"
             );
             assert!(b.upstream.reads.lock().unwrap().is_empty());
@@ -1285,7 +1274,7 @@ fn error_statuses_keep_their_meaning_when_the_body_exceeds_the_cap() {
 
 #[test]
 fn a_notify_reads_the_status_without_collecting_the_response_body() {
-    let body = vec![b'x'; busbar_hook_webrequest::reply::MAX_REPLY_BYTES * 4];
+    let body = vec![b'x'; (64 * 1024) * 4];
     for arm in arms() {
         for (status, reason) in [(200, "OK"), (503, "Busy")] {
             let b = arm.bind();
@@ -1537,7 +1526,7 @@ fn red_a_clamped_timeout_is_warned() {
         assert_eq!(decide_verbs(&b), VERB_ABSTAIN);
         assert_eq!(
             b.upstream.last().timeout_ms,
-            busbar_hook_webrequest::config::MAX_TIMEOUT_MS,
+            5_000,
             "the exchange carries the clamped timeout, not the written one"
         );
         assert_eq!(b.configure(r#"{"timeout_ms": 0}"#, 2), Ok(2));
@@ -2056,6 +2045,7 @@ fn real_connector(
                 busbar_kernel::host_services::KernelServices::new()
                     .with_mono_clock(Arc::new(now_ns)),
             ),
+            busbar_contract::services::test_caller_binding(),
         ));
         dispatcher.install_runtime(io);
         dispatcher.install_io(busbar_core_connector::hostio::process());
@@ -2064,7 +2054,7 @@ fn real_connector(
     let mut entries = Vec::new();
     for (name, door) in [
         ("tcp", busbar_transport_tcp::linked::MACRO_DOOR),
-        ("http", busbar_transport_http::door::MACRO_DOOR),
+        ("http", busbar_transport_http::MACRO_DOOR),
     ] {
         let row = LinkedRow::of_macro(door).expect("actual transport row states");
         let transport = load_linked::<Transport>(
@@ -2366,8 +2356,8 @@ fn actual_hook_short_order_answer_is_recalled_once_on_its_same_ticket() {
             };
             let first = DecideFrame::new(Arc::clone(&view), caps);
             let ticket = b.dispatcher.mint(0).unwrap();
-            let entered = b.plugin.inner.crossings.load(Ordering::SeqCst);
-            let resumed = b.plugin.inner.resumes.load(Ordering::SeqCst);
+            let entered = b.plugin.test_invocations().0;
+            let resumed = b.plugin.test_invocations().1;
             let deadline = now_ns() + 10_000_000_000;
             let short = b
                 .dispatcher
@@ -2407,11 +2397,8 @@ fn actual_hook_short_order_answer_is_recalled_once_on_its_same_ticket() {
                 )
                 .wait_done();
             b.dispatcher.recycle(ticket);
-            let resumes = b.plugin.inner.resumes.load(Ordering::SeqCst) - resumed;
-            assert_eq!(
-                b.plugin.inner.crossings.load(Ordering::SeqCst) - entered - resumes,
-                2
-            );
+            let resumes = b.plugin.test_invocations().1 - resumed;
+            assert_eq!(b.plugin.test_invocations().0 - entered - resumes, 2);
             assert!(resumes > 0);
             assert_eq!(answer.lease, 0);
             if short_again {
@@ -2440,11 +2427,11 @@ fn counted_sync<I: InFrame, O: OutFrame>(
     operation: u32,
     frame: &mut Frame<I, O>,
 ) -> Called {
-    let entered = b.plugin.inner.crossings.load(Ordering::SeqCst);
-    let resumed = b.plugin.inner.resumes.load(Ordering::SeqCst);
+    let entered = b.plugin.test_invocations().0;
+    let resumed = b.plugin.test_invocations().1;
     let answer = b.plugin.call(operation, frame);
-    assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst) - entered, 1);
-    assert_eq!(b.plugin.inner.resumes.load(Ordering::SeqCst) - resumed, 0);
+    assert_eq!(b.plugin.test_invocations().0 - entered, 1);
+    assert_eq!(b.plugin.test_invocations().1 - resumed, 0);
     answer
 }
 
@@ -2454,14 +2441,14 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
     use busbar_contract::abi::mechanism::lifecycle::{TickIn, TickOut, ValidateIn};
     for arm in arms() {
         let b = arm.bind();
-        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        let before = b.plugin.test_invocations().0;
         assert_eq!(
             b.plugin.kind(),
             busbar_contract::abi::mechanism::KindCode::Hook
         );
         assert!(!b.plugin.name().is_empty());
         assert!(b.plugin.max_inflight() > 0);
-        assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst), before);
+        assert_eq!(b.plugin.test_invocations().0, before);
         for bad in [
             "not json",
             "{}",
@@ -2470,7 +2457,7 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             r#"{"url":"http://169.254.169.254/"}"#,
             r#"{"url":"https://169.254.169.254/"}"#,
         ] {
-            let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+            let before = b.plugin.test_invocations().0;
             let mut reason = [0u8; 1024];
             let mut frame: Frame<ValidateIn, OutHead> = Frame::new(
                 ValidateIn {
@@ -2485,7 +2472,7 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             assert_eq!(answer.outcome, Outcome::Failed);
             assert_eq!(answer.lease, 0);
             assert!(!answer.error.as_deref().unwrap_or_default().is_empty());
-            assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst) - before, 1);
+            assert_eq!(b.plugin.test_invocations().0 - before, 1);
             assert!(b.open(bad).is_err());
         }
         let inline = b
@@ -2494,7 +2481,7 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             .expect("an authenticated inline ticket");
         let ticket = inline.ticket();
         let view = decide_frame();
-        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        let before = b.plugin.test_invocations().0;
         let mut unopened = Frame::new(view.input(), blank_out::<DecideOut>());
         assert_ne!(
             b.plugin
@@ -2502,7 +2489,7 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
                 .outcome,
             Outcome::Ready
         );
-        assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst), before);
+        assert_eq!(b.plugin.test_invocations().0, before);
         drop(inline);
         let mut valid: Frame<ValidateIn, OutHead> = Frame::new(
             ValidateIn {
@@ -2517,32 +2504,29 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             counted_sync(&b, life::VALIDATE, &mut valid).outcome,
             Outcome::Ready
         );
-        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        let before = b.plugin.test_invocations().0;
         b.plugin
             .ready(&b.dispatcher, Duration::from_secs(10))
             .unwrap();
         assert_eq!(
-            b.plugin.inner.crossings.load(Ordering::SeqCst) - before,
+            b.plugin.test_invocations().0 - before,
             u64::from(b.plugin.has_ready())
         );
-        let opened_before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        let opened_before = b.plugin.test_invocations().0;
         b.open(URL_SETTINGS).unwrap();
-        assert_eq!(
-            b.plugin.inner.crossings.load(Ordering::SeqCst) - opened_before,
-            1
-        );
-        let managed_before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        assert_eq!(b.plugin.test_invocations().0 - opened_before, 1);
+        let managed_before = b.plugin.test_invocations().0;
         assert!(b.describe()["schema"].is_object());
         assert!(b.status()["status"]["settings"].is_object());
         assert_eq!(
-            b.plugin.inner.crossings.load(Ordering::SeqCst) - managed_before,
+            b.plugin.test_invocations().0 - managed_before,
             4,
             "status and describe each cross once and release their lease once"
         );
-        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        let before = b.plugin.test_invocations().0;
         assert!(b.open(URL_SETTINGS).is_err());
         assert_eq!(
-            b.plugin.inner.crossings.load(Ordering::SeqCst),
+            b.plugin.test_invocations().0,
             before,
             "duplicate open is a host refusal"
         );
@@ -2617,7 +2601,7 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             counted_sync(&b, life::CLOSE, &mut close).outcome,
             Outcome::Ready
         );
-        let before = b.plugin.inner.crossings.load(Ordering::SeqCst);
+        let before = b.plugin.test_invocations().0;
         let inline = b
             .dispatcher
             .inline_ticket()
@@ -2632,7 +2616,7 @@ fn actual_hook_lifecycle_refusals_ready_refresh_tick_and_close_keep_the_original
             Outcome::Ready
         );
         drop(inline);
-        assert_eq!(b.plugin.inner.crossings.load(Ordering::SeqCst), before);
+        assert_eq!(b.plugin.test_invocations().0, before);
         assert_eq!(b.dispatcher.stats().deadline_without_wake, 0);
     }
 }

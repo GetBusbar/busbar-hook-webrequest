@@ -202,6 +202,7 @@ pub fn log_warnings(settings: &serde_json::Map<String, serde_json::Value>) {
 ///
 /// # Errors
 /// The refusal text.
+#[cfg(test)]
 pub fn open(settings: &[u8]) -> Result<Target, String> {
     open_with_diagnostics(settings).map(|(target, _)| target)
 }

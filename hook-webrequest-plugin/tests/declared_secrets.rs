@@ -30,7 +30,10 @@ fn resolve_settings(
 const LITERAL_URL: &str = "https://hooks.example/route";
 
 fn linked() -> (Plugin<Hook>, Arc<Dispatcher>) {
-    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let bind = Bind {
         instance: Arc::from("webrequest-declared-secrets"),
         max_inflight_cap: 64,
@@ -38,7 +41,7 @@ fn linked() -> (Plugin<Hook>, Arc<Dispatcher>) {
         dispatcher: d.adopter(),
         conns: ConnTable::Probe,
     };
-    let row = LinkedRow::of(busbar_hook_webrequest::door::door).expect("the row renders");
+    let row = LinkedRow::of(busbar_hook_webrequest::door).expect("the row renders");
     (load_linked::<Hook>(&row, bind).expect("the door loads"), d)
 }
 

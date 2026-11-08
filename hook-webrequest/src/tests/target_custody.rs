@@ -4,15 +4,11 @@
 //! Initialized owner-byte custody observed immediately before actual System deallocation.
 
 #[cfg(target_os = "linux")]
-use busbar_hook_webrequest::config;
+use crate::config;
 #[cfg(target_os = "linux")]
-use custody::CustodyAllocator;
+use crate::owner_custody_tests::custody;
 #[cfg(target_os = "linux")]
 use custody::{stop_watching, watch_allocations_of, watch_owner_prefix, OwnerProbe};
-
-#[cfg(target_os = "linux")]
-#[global_allocator]
-static ALLOCATOR: CustodyAllocator = CustodyAllocator::new();
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -131,7 +127,7 @@ fn the_forwarders_response_reader_wipes_its_initialized_echo_buffers_on_return_a
             unsafe { watch_owner_prefix(bytes) };
         }
         let outcome = std::panic::catch_unwind(|| {
-            busbar_hook_webrequest::reply::read_response(response, |response| {
+            crate::reply::read_response(response, |response| {
                 assert_eq!(response.status, 503);
                 assert!(response
                     .reason
@@ -157,7 +153,3 @@ fn assert_wiped(observed: custody::Observations, expected: usize) {
         assert!(!payload.reallocated, "{payload:?}");
     }
 }
-
-#[cfg(target_os = "linux")]
-#[path = "../../hook-webrequest/src/tests/support/custody.rs"]
-mod custody;

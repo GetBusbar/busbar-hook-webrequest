@@ -191,7 +191,10 @@ impl Forwarder {
 
     /// The SDK retains the original target with this operation through pending re-entries and
     /// configuration changes, and releases it on cancellation or completion.
-    pub(crate) fn entry_live(&self, on: &Op<'_>) -> Result<Arc<Live>, &'static str> {
+    pub(crate) fn entry_live(
+        &self,
+        on: &Op<'_, busbar_contract::plugin::markers::HookKind>,
+    ) -> Result<Arc<Live>, &'static str> {
         on.context(|| self.live())
     }
 
@@ -203,7 +206,7 @@ impl Forwarder {
     /// the exchange pends; READY with the reply, or the failure text.
     fn post(
         &self,
-        on: &Op<'_>,
+        on: &Op<'_, busbar_contract::plugin::markers::HookKind>,
         head_only: bool,
         payload: impl FnOnce(&mut Vec<u8>) -> Result<(), serde_json::Error>,
         read: Reading,
@@ -302,7 +305,11 @@ pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
 }
 
 impl Hook for Forwarder {
-    fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+    fn decide(
+        &self,
+        view: &Decoded<'_>,
+        op: &Op<'_, busbar_contract::plugin::markers::HookKind>,
+    ) -> Poll<Verdict> {
         self.post(
             op,
             false,
@@ -312,7 +319,11 @@ impl Hook for Forwarder {
         .map(|r| lower_decide_reply(reply::decide(r)))
     }
 
-    fn transform(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
+    fn transform(
+        &self,
+        view: &Decoded<'_>,
+        op: &Op<'_, busbar_contract::plugin::markers::HookKind>,
+    ) -> Poll<RewriteVerdict> {
         self.post(
             op,
             false,
@@ -322,7 +333,11 @@ impl Hook for Forwarder {
         .map(|r| lower_transform_reply(reply::transform(r)))
     }
 
-    fn notify(&self, tap: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
+    fn notify(
+        &self,
+        tap: &DecodedTap<'_>,
+        op: &Op<'_, busbar_contract::plugin::markers::HookKind>,
+    ) -> Poll<()> {
         self.post(
             op,
             true,

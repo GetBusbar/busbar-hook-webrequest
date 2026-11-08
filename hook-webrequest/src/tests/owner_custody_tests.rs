@@ -11,7 +11,7 @@ type ReplyReader = fn(u16, Option<&str>, &[u8]) -> Result<serde_json::Value, Str
 
 #[path = "support/custody.rs"]
 #[allow(dead_code)]
-mod custody;
+pub(super) mod custody;
 
 #[global_allocator]
 static ALLOCATOR: custody::CustodyAllocator = custody::CustodyAllocator::new();
@@ -159,12 +159,13 @@ fn builder_failure() -> busbar_contract::abi::sdk::exchange::ExchangeFailure {
     }
     struct Builder;
     impl SafeSlot for Builder {
+        type Kind = busbar_contract::plugin::markers::HookKind;
         type In = ValidateIn;
         type Out = OutHead;
         type State = ();
 
         fn call(
-            instance: Instance<'_, ()>,
+            instance: Instance<'_, (), busbar_contract::plugin::markers::HookKind>,
             _: Lent<'_, ValidateIn>,
             _: Out<'_, OutHead>,
         ) -> Outcome {
