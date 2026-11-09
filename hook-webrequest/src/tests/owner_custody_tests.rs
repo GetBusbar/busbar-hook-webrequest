@@ -175,7 +175,7 @@ fn builder_failure() -> busbar_contract::abi::sdk::exchange::ExchangeFailure {
             let mut tables: HostTables = unsafe { std::mem::zeroed() };
             tables.size = std::mem::size_of::<HostTables>() as u32;
             // SAFETY: every nested table is NULL and there are no callable function pointers.
-            let host = unsafe { Host::from_raw(&tables) };
+            let host = unsafe { Host::test_from_raw(&tables) };
             let op = Op::new(&instance, Some(&host));
             let result = op.exchange_sealed_bounded_with_head(0, None, 1024, false, || {
                 Err("UNBUILT-CUSTODY-CANARY".to_owned())
