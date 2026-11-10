@@ -397,7 +397,13 @@ impl Arm {
             max_inflight_cap: 64,
             sink: recorder.clone(),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::Host(conns),
+            conns: ConnTable::Host(
+                busbar_contract::conn::admissions::AdmissionAuthority::issue(
+                    &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+                    conns,
+                    busbar_contract::secret_ref::Sugars::default(),
+                ),
+            ),
         };
         let plugin = match self {
             Arm::Linked => load_linked::<Hook>(
