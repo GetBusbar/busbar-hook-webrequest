@@ -185,7 +185,7 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
         return Err(format!(
             "settings.url must be an http:// or https:// URL (got '{}')",
-            loggable_url(&url)
+            echo_of(&echoable_scheme(url.scheme()), "://***")
         ));
     }
     if url
