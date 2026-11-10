@@ -52,3 +52,6 @@ busbar-transport-http = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 serde_json = { workspace = true }
 busbar-contract = { workspace = true, features = ["test-seal"] }
+
+[package.metadata.busbar.test-artifacts]
+cdylib = ["BUSBAR_TEST_WEBREQUEST_CDYLIB"]
