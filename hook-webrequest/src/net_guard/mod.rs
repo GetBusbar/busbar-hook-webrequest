@@ -42,23 +42,25 @@ pub fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfec0
 }
 
-/// True iff `host` is an alternate (non-dotted-quad) IPv4 encoding that unambiguously denotes the
-/// loopback address `127.0.0.1` (decimal `2130706433`, hex `0x7f000001`, octal `017700000001`, or a
-/// short-dotted `127.1` / `127.0.1`). Used to permit the loopback-sidecar exception while still
-/// blocking every OTHER alternate-encoded internal target. Conservative: anything it cannot positively
-/// confirm as loopback is treated as non-loopback (and therefore blocked).
+/// True iff `host` is an alternate (non-dotted-quad) IPv4 encoding that unambiguously denotes a
+/// loopback address in `127.0.0.0/8` (decimal `2130706433`, hex `0x7f000001`, octal `017700000001`,
+/// or a short-dotted `127.1` / `127.0.1`). Used to permit the loopback-sidecar exception while
+/// still blocking every OTHER alternate-encoded internal target. Conservative: anything it cannot
+/// positively confirm as loopback is treated as non-loopback (and therefore blocked).
 pub fn is_alternate_loopback_v4(host: &str) -> bool {
     if !host.contains('.') {
         if let Some(hex) = host.strip_prefix("0x").or_else(|| host.strip_prefix("0X")) {
-            return u32::from_str_radix(hex, 16).ok() == Some(0x7f00_0001);
+            return u32::from_str_radix(hex, 16)
+                .ok()
+                .is_some_and(|v| (v >> 24) == 127);
         }
         if let Some(oct) = host.strip_prefix('0').filter(|_| host.len() > 1) {
             if let Ok(v) = u32::from_str_radix(oct, 8) {
-                return v == 0x7f00_0001;
+                return (v >> 24) == 127;
             }
         }
         if let Ok(v) = host.parse::<u32>() {
-            return v == 0x7f00_0001;
+            return (v >> 24) == 127;
         }
         return false;
     }

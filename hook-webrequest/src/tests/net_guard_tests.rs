@@ -15,10 +15,14 @@ fn alternate_encoding_flags_obfuscated_forms() {
     assert!(!is_alternate_ipv4_encoding("example.com"));
     assert!(is_alternate_loopback_v4("2130706433"));
     assert!(is_alternate_loopback_v4("127.1"));
-    assert!(!is_alternate_loopback_v4("2130706434"));
+    // The full 127.0.0.0/8 range is loopback (RFC 1122), not just 127.0.0.1.
+    assert!(is_alternate_loopback_v4("2130706434"));
     assert!(is_alternate_loopback_v4("0x7f000001"));
     assert!(is_alternate_loopback_v4("017700000001"));
-    assert!(!is_alternate_loopback_v4("0x7f000002"));
+    assert!(is_alternate_loopback_v4("0x7f000002"));
+    // Outside the 127/8 range: still blocked as non-loopback alternate encodings.
+    assert!(!is_alternate_loopback_v4("2852039166")); // 169.254.169.254
+    assert!(!is_alternate_loopback_v4("0xa9fea9fe")); // 169.254.169.254
 }
 
 #[test]
