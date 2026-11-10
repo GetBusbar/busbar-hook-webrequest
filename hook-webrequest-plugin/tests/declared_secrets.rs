@@ -10,22 +10,10 @@ use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink, Plugin,
 };
-fn resolve_settings(
-    plugin: &Plugin<Hook>,
-    settings: &[u8],
-    resolver: impl FnMut(&str, &busbar_contract::secret_ref::SecretRef) -> Result<String, String>,
-) -> Result<Vec<u8>, String> {
-    let mut settings: serde_json::Value =
-        serde_json::from_slice(settings).map_err(|error| error.to_string())?;
-    busbar_contract::secret_fields::resolve_declared_fields(
-        &mut settings,
-        plugin.secret_refs(),
-        plugin.reference_fields(),
-        plugin.name(),
-        resolver,
-    )?;
-    Ok(settings.to_string().into_bytes())
-}
+
+#[path = "support/settings.rs"]
+mod settings;
+use settings::resolve_settings;
 
 const LITERAL_URL: &str = "https://hooks.example/route";
 
@@ -51,7 +39,10 @@ fn a_reference_at_the_declared_url_resolves_as_the_kernel_resolves_it() {
     let out = resolve_settings(
         &p,
         br#"{"url":{"env":"WEBREQUEST_URL_FOR_TEST"},"timeout_ms":500}"#,
-        |_, _| Ok("https://user:pw@hooks.example/route".to_string()),
+        |reference| {
+            assert_eq!(reference.source_module(), Some("fixture-environment"));
+            Ok("https://user:pw@hooks.example/route".to_string())
+        },
     )
     .expect("`url` is declared reference-capable");
     let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
@@ -65,7 +56,7 @@ fn a_reference_at_an_undeclared_field_is_refused() {
     let e = resolve_settings(
         &p,
         br#"{"url":"https://hooks.example/route","timeout_ms":{"env":"X"}}"#,
-        |_, _| Ok("500".to_string()),
+        |_| panic!("an undeclared reference must be refused before resolution"),
     )
     .expect_err("`timeout_ms` is not a declared field");
     assert!(e.contains("did not declare it as a secret"), "{e}");
@@ -85,7 +76,7 @@ fn the_url_is_not_declared_secret() {
 fn a_literal_url_passes_as_written() {
     let (p, _d) = linked();
     let settings = format!(r#"{{"url":"{LITERAL_URL}"}}"#);
-    let out = resolve_settings(&p, settings.as_bytes(), |_, _| {
+    let out = resolve_settings(&p, settings.as_bytes(), |_| {
         Err("a literal url resolves nothing".to_string())
     })
     .expect("a literal url passes as written");

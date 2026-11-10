@@ -298,19 +298,27 @@ fn the_shared_predicate_agrees_with_the_literal_text_guard() {
     }
 }
 
-/// Every refusal echoes the url as a log line names it: the path (which may carry the key) is cut.
+/// Refusals redact HTTP URL paths and mask unsupported schemes in full.
 #[test]
 fn refusal_texts_never_show_the_url_path() {
-    for raw in [
-        "ftp://hooks.example.com/v1/KEY123",
-        "https://10.0.0.1/v1/KEY123",
-        "http://hooks.example.com/v1/KEY123",
+    for (raw, masked) in [
+        ("ftp://hooks.example.com/v1/KEY123?t=SECRET", "got '***'"),
+        ("https://10.0.0.1/v1/KEY123?t=SECRET", "/***?<redacted>"),
+        (
+            "http://hooks.example.com/v1/KEY123?t=SECRET",
+            "/***?<redacted>",
+        ),
     ] {
         let err = validate_target_url(raw).unwrap_err();
+        assert!(!err.contains("/v1/"), "{raw}: {err}");
         assert!(!err.contains("KEY123"), "{raw}: {err}");
-        assert!(err.contains("/***"), "{raw}: {err}");
+        assert!(!err.contains("SECRET"), "{raw}: {err}");
+        assert!(err.contains(masked), "{raw}: {err}");
     }
     let err = validate_target_url("https://svc:pw@10.0.0.1:8443/v1/KEY123?t=SECRET").unwrap_err();
+    for secret in ["svc", "pw", "/v1/", "KEY123", "SECRET"] {
+        assert!(!err.contains(secret), "{err}");
+    }
     assert!(
         err.contains("got 'https://***@10.0.0.1:8443/***?<redacted>'"),
         "{err}"
