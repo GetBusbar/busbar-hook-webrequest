@@ -81,4 +81,3 @@ pub use door::{door, MACRO_DOOR};
 mod target_custody;
 
 // Owner-controlled source paths are consumed only by the assembled application tests.
-include!(concat!(env!("OUT_DIR"), "/context_test_source.rs"));
