@@ -339,6 +339,8 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-transport-http",
  "busbar-transport-tcp",
+ "ed25519-dalek",
+ "hex",
  "rcgen",
  "rustls",
  "serde_json",
