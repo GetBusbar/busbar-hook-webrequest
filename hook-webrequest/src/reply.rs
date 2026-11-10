@@ -45,15 +45,16 @@ pub const MAX_PHRASE_CHARS: usize = 128;
 /// or send terminal control bytes. An apostrophe stays as is (the 1.5.5 client showed it so).
 fn loggable_phrase(phrase: &str) -> String {
     let mut out = String::new();
-    for c in phrase.chars().take(MAX_PHRASE_CHARS) {
+    for (i, c) in phrase.chars().enumerate() {
+        if i >= MAX_PHRASE_CHARS {
+            out.push('\u{2026}');
+            break;
+        }
         if c == '\'' {
             out.push(c);
         } else {
             out.extend(c.escape_debug());
         }
-    }
-    if phrase.chars().nth(MAX_PHRASE_CHARS).is_some() {
-        out.push('\u{2026}');
     }
     out
 }
