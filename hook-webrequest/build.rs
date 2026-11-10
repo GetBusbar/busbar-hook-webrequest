@@ -29,11 +29,18 @@ fn main() -> std::io::Result<()> {
         ));
         println!("cargo::rerun-if-changed={}", source.display());
     }
+    let migration = manifest.join("tests/root/migration_table.rs");
+    if migration.canonicalize()? != migration {
+        return Err(std::io::Error::other(
+            "test source must remain in its owner",
+        ));
+    }
+    println!("cargo::rerun-if-changed={}", migration.display());
     std::fs::write(
         output.join("context_test_source.rs"),
         format!(
             "#[doc(hidden)]\n#[macro_export]\nmacro_rules! __busbar_context_tests {{\n    \
-             (admin_application, {package:?}) => {{\n{body}    }};\n}}\n"
+             (admin_application, {package:?}) => {{\n{body}    }};\n    (migration_table_hook, {package:?}) => {{ include!({migration:?}); }};\n}}\n"
         ),
     )?;
     println!(
