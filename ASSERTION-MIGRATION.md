@@ -28,3 +28,31 @@ Retired framework-only checks: perturbing the retired recorder's counts; plane-o
 Monday audit histories are both preserved. The actual applied mutex and full checkpoints retain serial configuration composition; the donor repeated-race test is adapted to the current typed API. Status preserves desired URL spelling and timeout values, while Target::drop and early-return Text/ParsedUrl guards wipe both raw and parsed URL owners. Checkpoints replay that spelling while deriving the same clamped effective timeout. The object-only guard retains original typed Config/Text parsing so partially parsed credentials remain guarded on syntax/type errors. The donor SSRF embedded-loopback fix, per-part and decoded canaries, clamp/refusal assertions and shared contract depth scanner remain.
 
 Native source qualification follows on the frozen SHA and reconciled authored lock. Final SDK/CI composition remains separately qualified; no pin or oracle registry was retargeted here. Raw status Value/lease custody in the current SDK was reported to its production owner for final SDK closure.
+
+## Webrequest application scenarios
+
+The eight application scenario files below move byte-for-byte from core
+`c8b257e7fcf44e2f5d2c6b2e5e5d78414ea93006` into
+`hook-webrequest/tests/admin_application/`. The owner's build script exports
+`__busbar_context_tests!(admin_application, "busbar-hook-webrequest")`; the
+assembled host invokes that declaration through its generic source context.
+The original `admin_application_<file>` module names, child-process witnesses,
+real signed Webrequest fixture, settings/schema/refusal cases, and every
+assertion remain intact. The replacement scenario also retains its real signed
+Ranking replacement and distinct-product assertions. No neutral substitute or
+new runtime/support package is introduced.
+
+| Source file | Tests | Assertions |
+|---|---:|---:|
+| `admin_config_history_and_overlay.rs` | 3 | 47 |
+| `admin_hook_crud_contracts.rs` | 7 | 73 |
+| `admin_hook_overlay_reset.rs` | 1 | 11 |
+| `admin_hook_read_metadata.rs` | 3 | 49 |
+| `admin_hook_replacement.rs` | 1 | 17 |
+| `admin_hook_settings_ack.rs` | 1 | 13 |
+| `admin_hook_timeout.rs` | 1 | 33 |
+| `admin_scope_ladder.rs` | 1 | 14 |
+| Total | 18 | 257 |
+
+This records source ownership and preservation, not a claim that the assembled
+application scenarios have been executed against a newly built product cohort.

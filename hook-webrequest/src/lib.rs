@@ -79,3 +79,6 @@ pub use door::{door, MACRO_DOOR};
 #[cfg(all(test, target_os = "linux"))]
 #[path = "tests/target_custody.rs"]
 mod target_custody;
+
+// Owner-controlled source paths are consumed only by the assembled application tests.
+include!(concat!(env!("OUT_DIR"), "/context_test_source.rs"));
