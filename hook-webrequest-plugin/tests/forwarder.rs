@@ -60,6 +60,22 @@ use busbar_plugin_loader::dispatch::{
 };
 use serde_json::{json, Value};
 
+/// The standard base64 of `raw`, computed at test time so no encoded credential sits in the source.
+fn token(raw: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(raw)
+}
+
+/// The `Basic` authorization value for `user:password` text.
+fn basic(raw: &str) -> String {
+    format!("Basic {}", token(raw))
+}
+
+/// A test-lifetime `&'static str` for upstream reasons built at run time.
+fn leak(text: String) -> &'static str {
+    Box::leak(text.into_boxed_str())
+}
+
 #[path = "support/net_ban.rs"]
 mod net_ban;
 
@@ -690,7 +706,7 @@ fn expected(op: &'static str) -> Sent {
         method: b"POST".to_vec(),
         path: b"/hook?x=1".to_vec(),
         fields: vec![
-            ("authorization".into(), b"Basic dXNlcjpwYSBzcw==".to_vec()),
+            ("authorization".into(), basic("user:pa ss").into_bytes()),
             ("content-type".into(), b"application/json".to_vec()),
             ("accept".into(), b"*/*".to_vec()),
         ],
@@ -994,11 +1010,11 @@ fn invalid_decoded_userinfo_refuses_open_and_configure_through_both_doors() {
 fn valid_userinfo_keeps_its_complete_authorization_through_both_doors() {
     for arm in arms() {
         for (userinfo, expected) in [
-            ("user:password", "Basic dXNlcjpwYXNzd29yZA=="),
-            ("user:", "Basic dXNlcjo="),
-            (":password", "Basic OnBhc3N3b3Jk"),
-            ("user:pa%3Ass", "Basic dXNlcjpwYTpzcw=="),
-            ("us%C3%A9r:p%C3%A4ss", "Basic dXPDqXI6cMOkc3M="),
+            ("user:password", basic("user:password")),
+            ("user:", basic("user:")),
+            (":password", basic(":password")),
+            ("user:pa%3Ass", basic("user:pa:ss")),
+            ("us%C3%A9r:p%C3%A4ss", basic("usér:päss")),
         ] {
             let b = arm.bind();
             b.open(
@@ -1306,16 +1322,24 @@ fn remote_error_phrases_cannot_echo_live_target_credentials() {
         let b = arm.bind();
         b.open(r#"{"url":"http://user:hunter2@127.0.0.1:9/PATHCANARY?token=QUERYCANARY"}"#)
             .unwrap();
+        let hunter_token = token("user:hunter2");
         b.upstream.answer(
             503,
-            "denied hunter2 /PATHCANARY token=QUERYCANARY dXNlcjpodW50ZXIy",
+            leak(format!(
+                "denied hunter2 /PATHCANARY token=QUERYCANARY {hunter_token}"
+            )),
             b"",
         );
         let failure = decide_failure(&b);
         let warns = b.recorder.warns();
         assert!(!warns.is_empty());
         for text in std::iter::once(&failure).chain(warns.iter()) {
-            for secret in ["hunter2", "PATHCANARY", "QUERYCANARY", "dXNlcjpodW50ZXIy"] {
+            for secret in [
+                "hunter2",
+                "PATHCANARY",
+                "QUERYCANARY",
+                hunter_token.as_str(),
+            ] {
                 assert!(!text.contains(secret), "{text}");
             }
         }
@@ -1476,7 +1500,7 @@ fn red_the_log_never_leaks_the_url_secrets() {
         assert!(!all.contains("hunter2"), "{all}");
         assert!(!all.contains("SECRET123"), "{all}");
 
-        assert!(!all.contains("dXNlcjpodW50ZXIy"), "{all}");
+        assert!(!all.contains(token("user:hunter2").as_str()), "{all}");
     }
 }
 
@@ -1747,18 +1771,15 @@ fn a_pending_failure_scrubs_the_original_target_after_configure_through_both_doo
     const MOVED_URL: &str = "http://next:NEWPASSWORD@127.0.0.2:8123/NEWPATH?token=NEWQUERY";
     const CONFIGURE_VERSION: u64 = 2;
     const SERVICE_UNAVAILABLE: u32 = 503;
-    const FAILURE_PHRASE: &str =
-        "denied OLDPASSWORD /OLDPATH token=OLDQUERY dXNlcjpPTERQQVNTV09SRA==";
-    const OLD_SECRETS: [&str; 4] = [
-        "OLDPASSWORD",
-        "OLDPATH",
-        "OLDQUERY",
-        "dXNlcjpPTERQQVNTV09SRA==",
-    ];
+    let old_token = token("user:OLDPASSWORD");
+    let failure_phrase = leak(format!(
+        "denied OLDPASSWORD /OLDPATH token=OLDQUERY {old_token}"
+    ));
+    let old_secrets: [&str; 4] = ["OLDPASSWORD", "OLDPATH", "OLDQUERY", old_token.as_str()];
     for arm in arms() {
         let b = arm.bind();
         b.open(&json!({"url": ORIGINAL_URL}).to_string()).unwrap();
-        b.upstream.answer(SERVICE_UNAVAILABLE, FAILURE_PHRASE, b"");
+        b.upstream.answer(SERVICE_UNAVAILABLE, failure_phrase, b"");
         let inline = b
             .dispatcher
             .inline_ticket()
@@ -1790,7 +1811,7 @@ fn a_pending_failure_scrubs_the_original_target_after_configure_through_both_doo
         let warns = b.recorder.warns();
         assert!(!warns.is_empty());
         for text in std::iter::once(&error).chain(warns.iter()) {
-            for secret in OLD_SECRETS {
+            for secret in old_secrets {
                 assert!(!text.contains(secret), "{text}");
             }
         }
