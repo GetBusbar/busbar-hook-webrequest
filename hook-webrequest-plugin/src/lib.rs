@@ -12,8 +12,8 @@
 
 pub use busbar_hook_webrequest::{door, MACRO_DOOR};
 
-/// The exported door, behind `dropped-in` (the cdylib build only): the macro's `#[no_mangle]` symbol is
-/// the one exemption.
+/// The exported door, behind `dropped-in` (the cdylib build only): the macro's `#[unsafe(no_mangle)]` symbol
+/// is the one export, and needs no `unsafe_code` allowance.
 #[cfg(feature = "dropped-in")]
 // busbar:request-path
 #[cfg_attr(
@@ -30,10 +30,6 @@ pub use busbar_hook_webrequest::{door, MACRO_DOOR};
         clippy::allow_attributes,
         clippy::allow_attributes_without_reason
     )
-)]
-#[expect(
-    unsafe_code,
-    reason = "boot: the macro's #[no_mangle] symbol is the one exemption"
 )]
 mod exported {
     busbar_contract::export_door!(busbar_hook_webrequest::door);
