@@ -37,7 +37,7 @@ impl Deref for ParsedUrl {
 impl Drop for ParsedUrl {
     fn drop(&mut self) {
         if let Some(url) = self.0.take() {
-            drop(Held::new(url.into_string()));
+            drop(Held::<String>::new(url.into()));
         }
     }
 }
