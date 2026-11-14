@@ -37,7 +37,7 @@ impl Deref for ParsedUrl {
 impl Drop for ParsedUrl {
     fn drop(&mut self) {
         if let Some(url) = self.0.take() {
-            drop(Held::new(String::from(url)));
+            drop(Held::new(url.into_string()));
         }
     }
 }
@@ -51,13 +51,21 @@ pub(crate) fn wipe_url(url: &mut url::Url) {
 pub(crate) struct Phrase<'a>(Cow<'a, str>);
 
 impl<'a> Phrase<'a> {
-    #[allow(clippy::let_and_return)] // The test-only observer borrows the initialized owner.
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
-        let phrase = Self(String::from_utf8_lossy(bytes));
-        #[cfg(all(test, target_os = "linux"))]
+        Self::observed(Self(String::from_utf8_lossy(bytes)))
+    }
+
+    /// The test-only observer borrows the initialized owner.
+    #[cfg(all(test, target_os = "linux"))]
+    fn observed(phrase: Self) -> Self {
         if let Cow::Owned(text) = &phrase.0 {
             crate::owner_custody_tests::observe(text.as_bytes());
         }
+        phrase
+    }
+
+    #[cfg(not(all(test, target_os = "linux")))]
+    fn observed(phrase: Self) -> Self {
         phrase
     }
 }

@@ -36,7 +36,7 @@ use busbar_contract::abi::sdk::hook::{
 };
 use busbar_contract::hook_wire::{OP_DECIDE, OP_NOTIFY, OP_TRANSFORM};
 
-use crate::config::{self, Target};
+use crate::config::{self, Json, JsonMap, Target};
 use crate::owners::{FailedResponse, Parts, Phrase, Text};
 use crate::{reply, report, wire};
 
@@ -150,6 +150,10 @@ impl Live {
             }
         }
         request.fields = plain;
+        debug_assert!(
+            sealed.len() <= 1,
+            "the request template frames at most one authorization"
+        );
         Arc::new(Self {
             origin: target.url.origin().ascii_serialization(),
             request,
@@ -159,25 +163,24 @@ impl Live {
         })
     }
 
-    /// The exchange's request for `body`, and the sealed fields it carries beside it.
-    fn request(&self, body: Vec<u8>) -> (Request, Vec<SealedField>) {
-        let mut request = self.request.clone();
-        request.body = body;
-        let sealed = self
-            .sealed
-            .iter()
-            .map(|(at, name, c)| (*at, name.clone(), c.field()))
-            .collect();
+    /// The exchange's request, its body still empty for the op's envelope to be written into, and the
+    /// sealed fields it carries beside it (the template frames at most the one `authorization`).
+    fn request(&self) -> (Request, Vec<SealedField>) {
+        let request = self.request.clone();
+        let sealed = match self.sealed.first() {
+            Some((at, name, c)) => vec![(*at, name.clone(), c.field())],
+            None => Vec::new(),
+        };
         (request, sealed)
     }
 }
 
 /// What an op makes of the target's answer: its status, reason phrase and body.
-type Reading = fn(u16, Option<&str>, &[u8]) -> Result<serde_json::Value, String>;
+type Reading = fn(u16, Option<&str>, &[u8]) -> Result<Json, String>;
 
 /// A `notify` reads no reply: delivered, or the error status.
-fn delivery(status: u16, phrase: Option<&str>, _body: &[u8]) -> Result<serde_json::Value, String> {
-    reply::delivered(status, phrase).map(|()| serde_json::Value::Null)
+fn delivery(status: u16, phrase: Option<&str>, _body: &[u8]) -> Result<Json, String> {
+    reply::delivered(status, phrase).map(|()| Json::Null)
 }
 
 impl Forwarder {
@@ -210,7 +213,11 @@ impl Forwarder {
         head_only: bool,
         payload: impl FnOnce(&mut Vec<u8>) -> Result<(), serde_json::Error>,
         read: Reading,
-    ) -> Poll<Result<serde_json::Value, String>> {
+    ) -> Poll<Result<Json, String>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the failure text of an op that finds no live target, copied once per failed op"
+        )]
         let live = match self.entry_live(on) {
             Ok(live) => live,
             Err(why) => return Poll::Ready(Err(why.to_owned())),
@@ -222,11 +229,15 @@ impl Forwarder {
             reply::MAX_REPLY_BYTES,
             head_only,
             || {
-                let mut body = Vec::new();
-                payload(&mut body).map_err(|e| {
+                let (mut request, sealed) = live.request();
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the failure text of an envelope that cannot be serialized, built once per failed op"
+                )]
+                payload(&mut request.body).map_err(|e| {
                     format!("{}: failed to serialize op envelope: {e}", crate::ALIAS)
                 })?;
-                Ok(live.request(body))
+                Ok((request, sealed))
             },
         );
         answer.map(|r| match r {
@@ -280,7 +291,7 @@ pub(crate) fn read_head(
     read: Reading,
     head: &ExchangeResponse,
     body: &[u8],
-) -> Result<serde_json::Value, String> {
+) -> Result<Json, String> {
     let phrase = shown_reason(head.status, head.reason.as_deref()).map(Phrase::new);
     let phrase = status_phrase(live, phrase.as_deref());
     read(head.status, phrase.as_deref(), body)
@@ -297,11 +308,20 @@ pub(crate) fn status_phrase(live: &Live, phrase: Option<&str>) -> Option<String>
 /// credential-bearing part of the target (userinfo, path, query) cut from it, since the host's
 /// words may quote the URL.
 pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the host's cause text of a failed exchange, rendered once per failed op and wiped on drop"
+    )]
     let raw = Text::new(failure.to_string());
     #[cfg(all(test, target_os = "linux"))]
     crate::owner_custody_tests::observe(raw.as_bytes());
     let cause = crate::net_guard::scrub(&raw, &live.secrets);
-    format!("{}: {cause}", reply::request_failed())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of a failed exchange, built once per failed op"
+    )]
+    let text = format!("{}: {cause}", reply::REQUEST_FAILED);
+    text
 }
 
 impl Hook for Forwarder {
@@ -347,17 +367,13 @@ impl Hook for Forwarder {
         .map(reply::notify)
     }
 
-    fn configure(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-        version: u64,
-    ) -> Result<(), String> {
+    fn configure(&self, settings: &JsonMap, version: u64) -> Result<(), String> {
         self.configure_checkpoint(settings, version).map(|_| ())
     }
 
     fn configure_checkpoint(
         &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
+        settings: &JsonMap,
         version: u64,
     ) -> Result<Option<ConfigureCheckpoint>, String> {
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
@@ -378,6 +394,10 @@ impl Hook for Forwarder {
         };
         let settings_version = if stale { applied.0 } else { version };
         let target = next.as_deref().unwrap_or(&current);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text of an exhausted checkpoint revision, copied once"
+        )]
         let checkpoint = if stale {
             Some(applied.1)
         } else {
@@ -413,11 +433,11 @@ impl Hook for Forwarder {
         Ok(Some(checkpoint))
     }
 
-    fn status(&self) -> serde_json::Value {
+    fn status(&self) -> Json {
         report::status(&self.live())
     }
 
-    fn describe(&self) -> serde_json::Value {
+    fn describe(&self) -> Json {
         report::describe()
     }
 }
@@ -425,14 +445,29 @@ impl Hook for Forwarder {
 /// The fixed bytes of a checkpoint's settings object around its url text and timeout.
 const SNAPSHOT_FRAMING: usize = r#"{"url":"","timeout_ms":}"#.len();
 
+/// Counts the bytes written to it and keeps none.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The capacity [`checkpoint_settings`] writes into: the framing, the timeout as written, and the url
 /// text at its worst-case JSON escaping (`\u00XX`, six bytes, for each byte), but never more than a
 /// checkpoint may carry ([`configure_checkpoint::MAX_BYTES`]), so a long url costs no more than the
 /// bound however it escapes.
 pub(crate) fn snapshot_capacity(target: &Target) -> Result<usize, String> {
-    let timeout = serde_json::to_vec(&target.timeout_text)
-        .map_err(|_| "cannot encode complete hook configuration")?
-        .len();
+    let mut counted = ByteCount(0);
+    serde_json::to_writer(&mut counted, &target.timeout_text)
+        .map_err(|_| "cannot encode complete hook configuration")?;
+    let timeout = counted.0;
     Ok(target
         .url_text
         .len()
@@ -449,7 +484,7 @@ pub(crate) fn checkpoint_settings(target: &Target) -> Result<Vec<u8>, String> {
     #[derive(serde::Serialize)]
     struct Snapshot<'a> {
         url: &'a str,
-        timeout_ms: &'a serde_json::Value,
+        timeout_ms: &'a Json,
     }
     let mut bytes = vec![0; snapshot_capacity(target)?];
     let mut rest = bytes.as_mut_slice();
@@ -468,7 +503,12 @@ pub(crate) fn checkpoint_settings(target: &Target) -> Result<Vec<u8>, String> {
         }
         Err(_) => {
             drop(busbar_contract::abi::sdk::cred::Held::new(bytes));
-            Err("cannot encode complete hook configuration".to_owned())
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text of settings that cannot be encoded, copied once"
+            )]
+            let why = "cannot encode complete hook configuration".to_owned();
+            Err(why)
         }
     }
 }

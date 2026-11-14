@@ -27,7 +27,7 @@
 //! the resolved-address check and the address pin (DNS rebinding) belong to the host's
 //! loopback-allowed egress class, which every connection this plugin opens goes through.
 
-use crate::owners::{ParsedUrl, Parts, Text};
+use crate::owners::{ParsedUrl, Parts};
 use crate::ALIAS;
 use busbar_contract::abi::sdk::url as sdk_url;
 use busbar_contract::net::{
@@ -64,14 +64,13 @@ pub fn is_alternate_loopback_v4(host: &str) -> bool {
         }
         return false;
     }
-    let parts: Vec<&str> = host.split('.').collect();
-    if parts.len() >= 4 || parts.is_empty() {
+    if host.split('.').count() >= 4 {
         return false;
     }
-    let Some(first) = parts.first().and_then(|p| p.parse::<u32>().ok()) else {
+    let Some(first) = host.split('.').next().and_then(|p| p.parse::<u32>().ok()) else {
         return false;
     };
-    first == 127 && parts.iter().all(|p| p.parse::<u32>().is_ok())
+    first == 127 && host.split('.').all(|p| p.parse::<u32>().is_ok())
 }
 
 /// True iff the target URL's host is the loopback/localhost target the forwarder MAY reach — the exact
@@ -81,8 +80,8 @@ pub fn host_is_loopback(url: &url::Url) -> bool {
     let Some(host) = host_of(url) else {
         return false;
     };
-    if is_alternate_ipv4_encoding(&host) {
-        return is_alternate_loopback_v4(&host);
+    if is_alternate_ipv4_encoding(host) {
+        return is_alternate_loopback_v4(host);
     }
     match host.parse::<IpAddr>() {
         Ok(ip) => ip_is_loopback(&ip),
@@ -121,8 +120,8 @@ pub fn host_is_blocked(url: &url::Url) -> bool {
     if METADATA_HOSTS.iter().any(|m| host.eq_ignore_ascii_case(m)) {
         return true;
     }
-    if is_alternate_ipv4_encoding(&host) {
-        return !is_alternate_loopback_v4(&host);
+    if is_alternate_ipv4_encoding(host) {
+        return !is_alternate_loopback_v4(host);
     }
     match host.parse::<IpAddr>() {
         Ok(ip) => ip_is_internal(&ip),
@@ -150,12 +149,12 @@ fn ip_is_internal(ip: &IpAddr) -> bool {
 
 /// The URL's host with the IPv6 `[...]` brackets and a single trailing FQDN-root `.` stripped, so the
 /// predicates see the same canonical form the OTLP/webhook guard did. `None` for a hostless URL.
-fn host_of(url: &url::Url) -> Option<String> {
+fn host_of(url: &url::Url) -> Option<&str> {
     let host = url.host_str()?;
     let host = host.strip_prefix('[').unwrap_or(host);
     let host = host.strip_suffix(']').unwrap_or(host);
     let host = host.strip_suffix('.').unwrap_or(host);
-    Some(host.to_string())
+    Some(host)
 }
 
 /// Case-insensitive equality of a URL's scheme to `want` (an ASCII-lowercase literal).
@@ -169,7 +168,14 @@ fn scheme_is(url: &url::Url, want: &str) -> bool {
 /// hop must stay on loopback so a payload — which may carry granted prompt/user content — is never sent
 /// in cleartext to a remote host). Any embedded `user:pass@` userinfo is masked out of every error.
 pub fn validate_target_url(raw: &str) -> Result<url::Url, String> {
-    refuse_target_url(raw).map_err(|reason| format!("{ALIAS}: {reason}"))
+    refuse_target_url(raw).map_err(|reason| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text of a refused url, built once at open or configure"
+        )]
+        let text = format!("{ALIAS}: {reason}");
+        text
+    })
 }
 
 /// [`validate_target_url`] with the refusal's reason WITHOUT the `webrequest: ` prefix, for a caller
@@ -181,11 +187,19 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
     if let Some(refusal) = ambiguous_url(raw) {
         return Err(refusal);
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal text of an unparsable url, built once at open or configure"
+    )]
     let url = ParsedUrl::parse(raw).map_err(|e| format!("settings.url is not a valid URL: {e}"))?;
     if !(scheme_is(&url, "https") || scheme_is(&url, "http")) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text of a url with another scheme, built once at open or configure"
+        )]
         return Err(format!(
             "settings.url must be an http:// or https:// URL (got '{}')",
-            echo_of(&echoable_scheme(url.scheme()), "://***")
+            echo_of(echoable_scheme(url.scheme()), true)
         ));
     }
     if url
@@ -194,6 +208,10 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
         .windows(3)
         .any(|w| w.eq_ignore_ascii_case(b"%3a"))
     {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text of an unusable user name, built once at open or configure"
+        )]
         return Err(
             "settings.url userinfo names a user containing an encoded ':', which Basic \
              authorization cannot carry (RFC 7617); the password goes after the first ':'"
@@ -205,6 +223,10 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
         let valid_utf8 = std::str::from_utf8(&decoded).is_ok();
         drop(busbar_contract::abi::sdk::cred::Held::new(decoded));
         if !valid_utf8 {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text of undecodable userinfo, built once at open or configure"
+            )]
             return Err(
                 "settings.url userinfo must decode to valid UTF-8; credentials cannot be omitted or shortened"
                     .to_string(),
@@ -212,6 +234,10 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
         }
     }
     if host_is_blocked(&url) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text of a blocked host, built once at open or configure"
+        )]
         return Err(format!(
             "settings.url must not target a link-local/private/CGNAT/cloud-metadata host \
              (SSRF guard; loopback sidecars are allowed); got '{}'",
@@ -219,6 +245,10 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
         ));
     }
     if scheme_is(&url, "http") && !host_is_loopback(&url) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text of a plaintext remote url, built once at open or configure"
+        )]
         return Err(format!(
             "settings.url must use https:// for a non-loopback target (plaintext http:// is \
              only permitted for a loopback sidecar; the payload could otherwise be sent in cleartext); \
@@ -240,43 +270,59 @@ pub fn refuse_target_url(raw: &str) -> Result<url::Url, String> {
 /// plugin's shape, `settings.url ...`.
 #[must_use]
 pub fn ambiguous_url(raw: &str) -> Option<String> {
-    let (shown, from_path) = match ParsedUrl::parse(raw) {
-        Ok(parsed) => (
-            echo_of(&echoable_scheme(parsed.scheme()), "://***"),
-            Text::new(parsed[url::Position::BeforePath..].to_string()),
+    let parsed = ParsedUrl::parse(raw);
+    let (shown, from_path) = match &parsed {
+        Ok(url) => (
+            echo_of(echoable_scheme(url.scheme()), true),
+            &url[url::Position::BeforePath..],
         ),
-        Err(_) => (echo_of(&scheme_of(raw), ":***"), Text::new(raw.to_string())),
+        Err(_) => (echo_of(scheme_of(raw), false), raw),
     };
+    if !from_path.contains('@') {
+        return None;
+    }
 
-    let refusal = sdk_url::ambiguous_url(&shown, &from_path)?;
+    let refusal = sdk_url::ambiguous_url(shown, from_path)?;
     Some(match refusal.strip_prefix("settings: url ") {
-        Some(rest) => format!("settings.url {rest}"),
+        Some(rest) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text of an ambiguous url, built once at open or configure"
+            )]
+            let text = format!("settings.url {rest}");
+            text
+        }
         None => refusal,
     })
 }
 
-/// The echo `scheme` + `rest`, or `***` alone when the scheme is not one that may be shown.
-fn echo_of(scheme: &str, rest: &str) -> String {
-    if scheme == "***" {
-        scheme.to_string()
-    } else {
-        format!("{scheme}{rest}")
+/// The echo of an echoable `scheme` (`scheme://***` for a url that parses, `scheme:***` for one that
+/// does not), or `***` alone when the scheme is not one that may be shown.
+fn echo_of(scheme: &str, parsed: bool) -> &'static str {
+    match (scheme, parsed) {
+        ("http", true) => "http://***",
+        ("https", true) => "https://***",
+        ("http", false) => "http:***",
+        ("https", false) => "https:***",
+        _ => "***",
     }
 }
 
 /// `scheme` when it is `http` or `https`, else `***`: a schemeless `admin:secret@host/x` parses
 /// with scheme `admin`, which is credential, so no other scheme is echoed.
-fn echoable_scheme(scheme: &str) -> String {
-    if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
-        scheme.to_ascii_lowercase()
+fn echoable_scheme(scheme: &str) -> &'static str {
+    if scheme.eq_ignore_ascii_case("http") {
+        "http"
+    } else if scheme.eq_ignore_ascii_case("https") {
+        "https"
     } else {
-        "***".to_string()
+        "***"
     }
 }
 
 /// The scheme `raw` starts with (up to its first `:`), echoable per [`echoable_scheme`]; a url
 /// that does not parse echoes no more than this.
-fn scheme_of(raw: &str) -> String {
+fn scheme_of(raw: &str) -> &'static str {
     echoable_scheme(raw.split_once(':').map_or("", |(scheme, _)| scheme))
 }
 
@@ -331,6 +377,7 @@ fn display_url(url: &url::Url, cut_path: bool, cut_query: bool, cut_fragment: bo
         + path.len()
         + query.map_or(0, |q| q.len() + 1)
         + fragment.map_or(0, |f| f.len() + 1);
+    // busbar:expect(bp::fresh_buffer, reason = "error: the echoed url text is built once, at its exact size, for a refusal, a log line or the per-target scrub list, never for a served op")
     let mut out = String::with_capacity(capacity);
     out.push_str(prefix);
     out.push_str(userinfo);
@@ -354,28 +401,32 @@ fn display_url(url: &url::Url, cut_path: bool, cut_query: bool, cut_fragment: bo
 #[must_use]
 pub fn secret_parts(url: &url::Url) -> Vec<String> {
     let mut parts = Parts::new(vec![
-        url.as_str().to_string(),
+        owned(url.as_str()),
         mask_userinfo(url),
         reportable_url(url),
     ]);
     if !matches!(url.path(), "" | "/") {
-        parts.push(url.path().to_string());
+        parts.push(owned(url.path()));
 
         parts.extend(
             url.path()
                 .split('/')
                 .filter(|part| !part.is_empty())
-                .map(str::to_owned),
+                .map(owned),
         );
     }
     if let Some(q) = url.query().filter(|q| !q.is_empty()) {
-        parts.push(q.to_string());
+        parts.push(owned(q));
         for field in q.split('&') {
             if let Some((_, value)) = field.split_once('=') {
                 if !value.is_empty() {
-                    parts.push(value.to_string());
+                    parts.push(owned(value));
 
                     if value.contains('+') {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: each scrub part is built once per target, at open or configure"
+                        )]
                         parts.push(value.replace('+', " "));
                     }
                 }
@@ -383,22 +434,37 @@ pub fn secret_parts(url: &url::Url) -> Vec<String> {
         }
     }
     if let Some(p) = url.password() {
-        parts.push(p.to_string());
+        parts.push(owned(p));
     }
-    parts.push(url.username().to_string());
+    parts.push(owned(url.username()));
 
     if let Some(value) = crate::wire::basic_authorization(url) {
-        parts.extend(value.strip_prefix("Basic ").map(str::to_owned));
+        parts.extend(value.strip_prefix("Basic ").map(owned));
         parts.push(value);
     }
     sdk_url::and_decoded(std::mem::take(&mut *parts))
+}
+
+/// An owned copy of one part of the target, for the scrub list.
+fn owned(text: &str) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: each scrub part is copied once per target, at open or configure"
+    )]
+    let copy = text.to_owned();
+    copy
 }
 
 /// `text` (the host's words, which may quote the target) with every one of `parts`
 /// ([`secret_parts`], computed once per target) replaced by `***` ([`sdk_url::scrub`], unquoted).
 #[must_use]
 pub fn scrub(text: &str, parts: &[String]) -> String {
-    sdk_url::scrub(text, parts.to_vec(), false)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the SDK scrub consumes its list, copied once per failed exchange text"
+    )]
+    let list = parts.to_vec();
+    sdk_url::scrub(text, list, false)
 }
 
 #[cfg(test)]

@@ -5,8 +5,8 @@
 //! parse error, and what a failure MEANS per op. The framed http exchange hands back its status,
 //! reason phrase and body; [`interpret`] is what the plugin makes of them.
 
+use crate::config::Json;
 use crate::{ALIAS, FORWARD_FAILED, NOTIFY_DROPPED};
-use serde_json::Value;
 
 /// Read an SDK response while retaining its raw body, reason and fields in wiping custody.
 pub fn read_response<T>(
@@ -28,35 +28,57 @@ pub const MAX_REPLY_DEPTH: usize = busbar_contract::spans::MAX_JSON_DEPTH;
 /// URL removed so a `?token=` never reaches the engine's log.
 #[must_use]
 pub fn request_failed() -> String {
-    format!("{ALIAS}: request failed: error sending request")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of a failed exchange, copied once from its fixed text"
+    )]
+    let text = REQUEST_FAILED.to_owned();
+    text
 }
+
+/// The transport failure text, fixed.
+pub(crate) const REQUEST_FAILED: &str =
+    concat!(alias_lit!(), ": request failed: error sending request");
 
 /// The failure for a body past [`MAX_REPLY_BYTES`].
 #[must_use]
 pub fn cap_exceeded() -> String {
-    format!("{ALIAS}: response exceeded {MAX_REPLY_BYTES} byte cap")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of an oversize reply, copied once from its fixed text"
+    )]
+    let text = CAP_EXCEEDED.to_owned();
+    text
 }
+
+/// The oversize-reply failure text, fixed; [`MAX_REPLY_BYTES`] is written out and pinned below.
+const CAP_EXCEEDED: &str = concat!(alias_lit!(), ": response exceeded 65536 byte cap");
+const _: () = assert!(MAX_REPLY_BYTES == 65536);
 
 /// The longest remote reason phrase a failure text shows, in characters.
 pub const MAX_PHRASE_CHARS: usize = 128;
 
 /// The remote's reason phrase as a log line may carry it: cut to [`MAX_PHRASE_CHARS`] characters
 /// (marked with `\u{2026}`) and `Debug`-escaped, so a hostile target cannot flood the log, forge a line
-/// or send terminal control bytes. An apostrophe stays as is (the 1.5.5 client showed it so).
-fn loggable_phrase(phrase: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in phrase.chars().enumerate() {
-        if i >= MAX_PHRASE_CHARS {
-            out.push('\u{2026}');
-            break;
+/// or send terminal control bytes. An apostrophe stays as is (the 1.5.5 client showed it so). Written
+/// straight into the failure text being formatted.
+struct LoggablePhrase<'a>(&'a str);
+
+impl std::fmt::Display for LoggablePhrase<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
+        for (i, c) in self.0.chars().enumerate() {
+            if i >= MAX_PHRASE_CHARS {
+                return f.write_char('\u{2026}');
+            }
+            if c == '\'' {
+                f.write_char(c)?;
+            } else {
+                write!(f, "{}", c.escape_debug())?;
+            }
         }
-        if c == '\'' {
-            out.push(c);
-        } else {
-            out.extend(c.escape_debug());
-        }
+        Ok(())
     }
-    out
 }
 
 /// The failure for an error status (4xx/5xx), worded without the URL. `phrase` is the reason phrase
@@ -69,11 +91,21 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
         Ok(c) => ("server", c),
         Err(_) => ("server", http::StatusCode::INTERNAL_SERVER_ERROR),
     };
-    let shown = match phrase.filter(|p| !p.is_empty()) {
-        Some(p) => format!("{} {}", status.as_u16(), loggable_phrase(p)),
-        None => status.to_string(),
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of an error status, built once per failed op"
+    )]
+    let text = match phrase.filter(|p| !p.is_empty()) {
+        Some(p) => format!(
+            "{ALIAS}: target returned an error status: HTTP status {class} error ({} {})",
+            status.as_u16(),
+            LoggablePhrase(p)
+        ),
+        None => format!(
+            "{ALIAS}: target returned an error status: HTTP status {class} error ({status})"
+        ),
     };
-    format!("{ALIAS}: target returned an error status: HTTP status {class} error ({shown})")
+    text
 }
 
 /// Whether `status` fits the three-digit HTTP status field. This is a syntax check, not a success
@@ -85,31 +117,56 @@ fn is_status_code(status: u16) -> bool {
 /// The failure for a reply whose status is no three-digit HTTP status code.
 #[must_use]
 pub fn not_a_status(code: u16) -> String {
-    format!("{ALIAS}: target answered no valid HTTP status (got {code})")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of a status that is no status, built once per failed op"
+    )]
+    let text = format!("{ALIAS}: target answered no valid HTTP status (got {code})");
+    text
 }
 
 /// The failure for a final response outside the operation's accepted status classes.
 #[must_use]
 pub fn non_success_status(code: u16) -> String {
-    format!("{ALIAS}: target answered a non-success HTTP status ({code})")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of a non-success status, built once per failed op"
+    )]
+    let text = format!("{ALIAS}: target answered a non-success HTTP status ({code})");
+    text
 }
 
 /// The failure for a redirect (3xx), which is never followed.
 #[must_use]
 pub fn redirect_not_followed(code: u16) -> String {
-    format!("{ALIAS}: target answered a redirect that was not followed (HTTP status {code})")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of a redirect, built once per failed op"
+    )]
+    let text =
+        format!("{ALIAS}: target answered a redirect that was not followed (HTTP status {code})");
+    text
 }
 
-/// Parse a reply body into a `Value`, rejecting a pathologically nested body BEFORE building the value.
-pub fn parse_reply(bytes: &[u8]) -> Result<Value, String> {
+/// Parse a reply body into a `Json`, rejecting a pathologically nested body BEFORE building the value.
+pub fn parse_reply(bytes: &[u8]) -> Result<Json, String> {
     if exceeds_max_depth(bytes, MAX_REPLY_DEPTH) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the failure text of an over-deep reply, built once per failed op"
+        )]
         return Err(format!(
             "{ALIAS}: reply exceeded max nesting depth ({} bytes)",
             bytes.len()
         ));
     }
-    serde_json::from_slice(bytes)
-        .map_err(|_| format!("{ALIAS}: invalid JSON reply ({} bytes)", bytes.len()))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of an unparsable reply, built once per failed op"
+    )]
+    let parsed: Result<Json, String> = serde_json::from_slice(bytes)
+        .map_err(|_| format!("{ALIAS}: invalid JSON reply ({} bytes)", bytes.len()));
+    parsed
 }
 
 /// The nesting-depth scanner is busbar's own (one copy, so a core fix or a changed floor reaches this
@@ -129,7 +186,7 @@ pub use busbar_contract::spans::exceeds_max_depth;
 ///
 /// # Errors
 /// The failure text.
-pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value, String> {
+pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Json, String> {
     if !is_status_code(status) {
         return Err(not_a_status(status));
     }
@@ -146,6 +203,10 @@ pub fn interpret(status: u16, phrase: Option<&str>, body: &[u8]) -> Result<Value
         return Err(cap_exceeded());
     }
     if body.is_empty() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the failure text of an empty reply, built once per failed op"
+        )]
         return Err(format!("{ALIAS}: empty reply (HTTP status {status})"));
     }
     parse_reply(body)
@@ -178,7 +239,7 @@ pub fn delivered(status: u16, phrase: Option<&str>) -> Result<(), String> {
 ///
 /// # Errors
 /// The failure text, passed through.
-pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
+pub fn decide(reply: Result<Json, String>) -> Result<Json, String> {
     reply.inspect_err(
         |e| tracing::warn!(diag = %FORWARD_FAILED, "{e}; decide failed (on_error applies)"),
     )
@@ -190,7 +251,7 @@ pub fn decide(reply: Result<Value, String>) -> Result<Value, String> {
 ///
 /// # Errors
 /// The failure text, passed through.
-pub fn transform(reply: Result<Value, String>) -> Result<Value, String> {
+pub fn transform(reply: Result<Json, String>) -> Result<Json, String> {
     reply.inspect_err(
         |e| tracing::warn!(diag = %FORWARD_FAILED, "{e}; transform failed (on_error applies)"),
     )
@@ -199,7 +260,7 @@ pub fn transform(reply: Result<Value, String>) -> Result<Value, String> {
 /// `notify`: fire-and-forget. The reply is not read for meaning and every error is dropped from the
 /// verdict: a tap can NEVER delay or fail the served request. A failure is logged to the plugin's log
 /// (a warn).
-pub fn notify(reply: Result<Value, String>) {
+pub fn notify(reply: Result<Json, String>) {
     if let Err(e) = reply {
         tracing::warn!(diag = %NOTIFY_DROPPED, "{e}; notify dropped");
     }

@@ -17,13 +17,11 @@ pub use busbar_contract::abi::sdk::exchange::Request;
 pub fn request(target: &Target, body: Vec<u8>) -> Request {
     let url = &target.url;
     let path = &url[Position::BeforePath..Position::AfterQuery];
-    let mut fields = Vec::with_capacity(3);
-    if let Some(auth) = basic_authorization(url) {
-        fields.push((b"authorization".to_vec(), auth.into_bytes()));
-    }
-    fields.push((b"content-type".to_vec(), b"application/json".to_vec()));
-    fields.push((b"accept".to_vec(), b"*/*".to_vec()));
-    Request {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the request template is built once per target, at open or configure, and the SDK's Request owns its bytes"
+    )]
+    let request = Request {
         method: b"POST".to_vec(),
         target: if path.is_empty() {
             b"/"
@@ -31,10 +29,21 @@ pub fn request(target: &Target, body: Vec<u8>) -> Request {
             path.as_bytes()
         }
         .to_vec(),
-        fields,
+        fields: match basic_authorization(url) {
+            Some(auth) => vec![
+                (b"authorization".to_vec(), auth.into_bytes()),
+                (b"content-type".to_vec(), b"application/json".to_vec()),
+                (b"accept".to_vec(), b"*/*".to_vec()),
+            ],
+            None => vec![
+                (b"content-type".to_vec(), b"application/json".to_vec()),
+                (b"accept".to_vec(), b"*/*".to_vec()),
+            ],
+        },
         body,
         timeout_ms: u64::try_from(target.timeout.as_millis()).unwrap_or(u64::MAX),
-    }
+    };
+    request
 }
 
 /// `Basic base64(user:pass)` from the validated URL's percent-decoded UTF-8 userinfo. Target

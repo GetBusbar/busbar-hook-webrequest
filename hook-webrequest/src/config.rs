@@ -17,6 +17,14 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 /// hook, never past it.
 pub const MAX_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_MS;
 
+/// The contract's JSON document, which the `Hook` trait and the SDK's reply lowering fix in their
+/// signatures (`status`, `describe`, `configure`, `lower_decide_reply`). The alias names that type once,
+/// here in the configuration code, so the request-path modules carry it only where the contract does.
+pub(crate) type Json = serde_json::Value;
+
+/// The contract's JSON settings object, as `Hook::configure` receives it.
+pub(crate) type JsonMap = serde_json::Map<String, serde_json::Value>;
+
 /// The settings keys the forwarder reads. Any other key is ignored (refusing it would break
 /// existing documents), and never silently: the door logs it ([`unknown_keys`]).
 pub const KEYS: [&str; 2] = ["url", "timeout_ms"];

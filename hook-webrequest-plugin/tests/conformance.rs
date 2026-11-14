@@ -262,7 +262,7 @@ fn declared_needs_and_requested_profile_match_the_actual_images() {
             .map(|need| need.transport.as_str())
             .filter(|name| !name.is_empty())
             .collect();
-        needs.sort();
+        needs.sort_unstable();
         needs.dedup();
         assert_eq!(needs, ["http"]);
     }
