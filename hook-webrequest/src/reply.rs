@@ -29,6 +29,17 @@ pub const MAX_REPLY_DEPTH: usize = busbar_contract::spans::MAX_JSON_DEPTH;
 pub(crate) const REQUEST_FAILED: &str =
     concat!(alias_lit!(), ": request failed: error sending request");
 
+/// [`REQUEST_FAILED`] with the host's `cause` after it, written once.
+#[must_use]
+pub(crate) fn request_failed_with(cause: &str) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the failure text of a failed exchange, built once per failed op"
+    )]
+    let text = format!("{REQUEST_FAILED}: {cause}");
+    text
+}
+
 /// The failure for a body past [`MAX_REPLY_BYTES`].
 #[must_use]
 pub fn cap_exceeded() -> String {
@@ -49,13 +60,13 @@ pub const MAX_PHRASE_CHARS: usize = 128;
 
 /// The remote's reason phrase as a log line may carry it: cut to [`MAX_PHRASE_CHARS`] characters
 /// (marked with `\u{2026}`) and `Debug`-escaped, so a hostile target cannot flood the log, forge a line
-/// or send terminal control bytes. An apostrophe stays as is (the 1.5.5 client showed it so). Written
-/// straight into the failure text being formatted.
+/// or send terminal control bytes. An apostrophe stays as is (the 1.5.5 client showed it so).
+/// Written straight into the failure text, with no intermediate string.
 struct LoggablePhrase<'a>(&'a str);
 
 impl std::fmt::Display for LoggablePhrase<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use std::fmt::Write;
+        use std::fmt::Write as _;
         for (i, c) in self.0.chars().enumerate() {
             if i >= MAX_PHRASE_CHARS {
                 return f.write_char('\u{2026}');
@@ -63,7 +74,9 @@ impl std::fmt::Display for LoggablePhrase<'_> {
             if c == '\'' {
                 f.write_char(c)?;
             } else {
-                write!(f, "{}", c.escape_debug())?;
+                for e in c.escape_debug() {
+                    f.write_char(e)?;
+                }
             }
         }
         Ok(())
@@ -80,21 +93,22 @@ pub fn error_status(code: u16, phrase: Option<&str>) -> String {
         Ok(c) => ("server", c),
         Err(_) => ("server", http::StatusCode::INTERNAL_SERVER_ERROR),
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the failure text of an error status, built once per failed op"
-    )]
-    let text = match phrase.filter(|p| !p.is_empty()) {
-        Some(p) => format!(
-            "{ALIAS}: target returned an error status: HTTP status {class} error ({} {})",
-            status.as_u16(),
-            LoggablePhrase(p)
-        ),
-        None => format!(
-            "{ALIAS}: target returned an error status: HTTP status {class} error ({status})"
-        ),
+    use std::fmt::Write as _;
+    let phrase = phrase.filter(|p| !p.is_empty());
+    // The words around the status, and the phrase as sent (escaping may grow it).
+    // busbar:expect(bp::fresh_buffer, reason = "error: the failure text of an error status, written once per failed op into one allocation")
+    let mut out = String::with_capacity(
+        ALIAS.len() + 80 + phrase.map_or(32, |p| p.len().min(MAX_PHRASE_CHARS * 4) + 8),
+    );
+    let _ = write!(
+        out,
+        "{ALIAS}: target returned an error status: HTTP status {class} error ("
+    );
+    let _ = match phrase {
+        Some(p) => write!(out, "{} {})", status.as_u16(), LoggablePhrase(p)),
+        None => write!(out, "{status})"),
     };
-    text
+    out
 }
 
 /// Whether `status` fits the three-digit HTTP status field. This is a syntax check, not a success

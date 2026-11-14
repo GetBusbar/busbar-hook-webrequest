@@ -455,16 +455,106 @@ fn owned(text: &str) -> String {
     copy
 }
 
-/// `text` (the host's words, which may quote the target) with every one of `parts`
-/// ([`secret_parts`], computed once per target) replaced by `***` ([`sdk_url::scrub`], unquoted).
+/// `parts` in the order [`sdk_url::scrub`] cuts them, as it orders them: empty parts dropped,
+/// longest first (a stable sort), and a part equal to the one before it dropped. Done once per
+/// target so a failure's scrub has fewer parts to try; the SDK orders what it is handed again, which
+/// leaves this order as it is. Every dropped part is wiped.
 #[must_use]
-pub fn scrub(text: &str, parts: &[String]) -> String {
+pub fn cut_order(parts: Vec<String>) -> Parts {
+    let mut parts = Parts::new(parts);
     #[expect(
         clippy::disallowed_methods,
-        reason = "error: the SDK scrub consumes its list, copied once per failed exchange text"
+        reason = "config: the scrub parts are filtered once per target, at open or configure"
     )]
-    let list = parts.to_vec();
-    sdk_url::scrub(text, list, false)
+    parts.retain(|p| !p.is_empty());
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the scrub parts are ordered once per target, at open or configure, stably as the SDK scrub orders them"
+    )]
+    parts.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    parts.dedup_by(|removed, kept| {
+        if removed == kept {
+            zeroize::Zeroize::zeroize(removed);
+            true
+        } else {
+            false
+        }
+    });
+    parts
+}
+
+/// Whether `text` holds `part`. A failure's words are short, where finding `part`'s first byte
+/// (`str::find` of an ASCII char is a `memchr`) and comparing there costs less than setting up
+/// `str::contains`'s searcher for every part. A longer text, whose scan could take `text` times
+/// `part` steps, or a part that starts outside ASCII goes to `str::contains`.
+fn holds(text: &str, part: &str) -> bool {
+    const SHORT: usize = 256;
+    let Some(&first) = part.as_bytes().first() else {
+        return true;
+    };
+    if part.len() > text.len() {
+        return false;
+    }
+    if text.len() > SHORT || !first.is_ascii() {
+        return text.contains(part);
+    }
+    let last = text.len() - part.len();
+    let mut from = 0;
+    // `from` is always just past an ASCII byte (or 0), so a char boundary.
+    while let Some(found) = text[from..].find(char::from(first)) {
+        let at = from + found;
+        if at > last {
+            return false;
+        }
+        if &text.as_bytes()[at..at + part.len()] == part.as_bytes() {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// `text` (the host's words, which may quote the target) with every one of `parts`
+/// ([`secret_parts`] in [`cut_order`], computed once per target) replaced by `***`
+/// ([`sdk_url::scrub`], unquoted).
+///
+/// Only the parts that can be cut are handed over (copied, so the SDK wipes them): one `text`
+/// holds, or one holding a `*`, which an earlier cut's `***` may complete. Any other part matches
+/// at no step of the SDK's cuts (a cut joins what was around it with `***`, so a match a cut makes
+/// spans a `*`), so leaving it out leaves every cut as it was, with one exception the loop keeps:
+/// the SDK drops a part equal to the one before it, so two equal parts that only a left-out part
+/// kept apart (in `parts` they are not adjacent) are kept apart by that part, which is as long as
+/// they are (the order is by length) and cuts nothing. A failure then copies a few parts rather
+/// than all of them. That reasoning needs `parts` in [`cut_order`] (what a [`crate::door::Live`]
+/// holds); `parts` in any other order are all handed over, as written.
+#[must_use]
+pub fn scrub(text: &str, parts: &[String]) -> String {
+    let in_cut_order = parts
+        .windows(2)
+        .all(|w| !w[1].is_empty() && w[0].len() >= w[1].len() && w[0] != w[1]);
+    if !in_cut_order || parts.first().is_some_and(String::is_empty) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the SDK scrub consumes its list, copied once per failed exchange text"
+        )]
+        let list = parts.to_vec();
+        return sdk_url::scrub(text, list, false);
+    }
+    // busbar:expect(bp::fresh_buffer, reason = "error: the parts a failure text can be cut by, gathered once per failed exchange text for the SDK scrub to consume")
+    let mut cuttable: Vec<String> = Vec::new();
+    let mut left_out: Option<&String> = None;
+    for part in parts {
+        if !part.is_empty() && (part.contains('*') || holds(text, part)) {
+            if let Some(between) = left_out.filter(|_| cuttable.last() == Some(part)) {
+                cuttable.push(between.clone());
+            }
+            cuttable.push(part.clone());
+            left_out = None;
+        } else {
+            left_out = Some(part);
+        }
+    }
+    sdk_url::scrub(text, cuttable, false)
 }
 
 #[cfg(test)]

@@ -118,7 +118,8 @@ pub(crate) struct Live {
     /// `<sealed>`.
     pub(crate) sealed: Vec<(usize, Vec<u8>, Cred)>,
     /// What a failure's text is scrubbed of ([`crate::net_guard::secret_parts`]), computed once with
-    /// the target rather than for every failed op.
+    /// the target rather than for every failed op, in the order the scrub cuts them
+    /// ([`crate::net_guard::cut_order`]).
     secrets: Parts,
 }
 
@@ -158,20 +159,32 @@ impl Live {
             origin: target.url.origin().ascii_serialization(),
             request,
             sealed,
-            secrets: Parts::new(crate::net_guard::secret_parts(&target.url)),
+            secrets: crate::net_guard::cut_order(crate::net_guard::secret_parts(&target.url)),
             target,
         })
     }
 
-    /// The exchange's request, its body still empty for the op's envelope to be written into, and the
-    /// sealed fields it carries beside it (the template frames at most the one `authorization`).
-    fn request(&self) -> (Request, Vec<SealedField>) {
-        let request = self.request.clone();
+    /// The exchange's request carrying the op envelope `payload` writes, into a body sized at
+    /// `hint` ([`wire::projection_hint`]), and the sealed fields it carries beside it (the template
+    /// frames at most the one `authorization`).
+    pub(crate) fn envelope(
+        &self,
+        payload: impl FnOnce(&mut Vec<u8>) -> Result<(), serde_json::Error>,
+        hint: usize,
+    ) -> Result<(Request, Vec<SealedField>), String> {
+        let mut request = self.request.clone();
+        request.body = Vec::with_capacity(hint);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the failure text of an envelope that cannot be serialized, built once per failed op"
+        )]
+        payload(&mut request.body)
+            .map_err(|e| format!("{}: failed to serialize op envelope: {e}", crate::ALIAS))?;
         let sealed = match self.sealed.first() {
             Some((at, name, c)) => vec![(*at, name.clone(), c.field())],
             None => Vec::new(),
         };
-        (request, sealed)
+        Ok((request, sealed))
     }
 }
 
@@ -212,6 +225,7 @@ impl Forwarder {
         on: &Op<'_, busbar_contract::plugin::markers::HookKind>,
         head_only: bool,
         payload: impl FnOnce(&mut Vec<u8>) -> Result<(), serde_json::Error>,
+        hint: impl FnOnce() -> usize,
         read: Reading,
     ) -> Poll<Result<Json, String>> {
         #[expect(
@@ -228,17 +242,7 @@ impl Forwarder {
             Some(&live.origin),
             reply::MAX_REPLY_BYTES,
             head_only,
-            || {
-                let (mut request, sealed) = live.request();
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the failure text of an envelope that cannot be serialized, built once per failed op"
-                )]
-                payload(&mut request.body).map_err(|e| {
-                    format!("{}: failed to serialize op envelope: {e}", crate::ALIAS)
-                })?;
-                Ok((request, sealed))
-            },
+            || live.envelope(payload, hint()),
         );
         answer.map(|r| match r {
             Ok(got) => reply::read_response(got, |got| read_head(&live, read, got, &got.body)),
@@ -316,12 +320,7 @@ pub(crate) fn transport_failure(live: &Live, failure: &ConnFailure) -> String {
     #[cfg(all(test, target_os = "linux"))]
     crate::owner_custody_tests::observe(raw.as_bytes());
     let cause = crate::net_guard::scrub(&raw, &live.secrets);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the failure text of a failed exchange, built once per failed op"
-    )]
-    let text = format!("{}: {cause}", reply::REQUEST_FAILED);
-    text
+    reply::request_failed_with(&cause)
 }
 
 impl Hook for Forwarder {
@@ -334,6 +333,7 @@ impl Hook for Forwarder {
             op,
             false,
             |body| view.write_projection(OP_DECIDE, None, body),
+            || wire::projection_hint(view, OP_DECIDE),
             reply::interpret,
         )
         .map(|r| lower_decide_reply(reply::decide(r)))
@@ -348,6 +348,7 @@ impl Hook for Forwarder {
             op,
             false,
             |body| view.write_projection(OP_TRANSFORM, None, body),
+            || wire::projection_hint(view, OP_TRANSFORM),
             reply::interpret,
         )
         .map(|r| lower_transform_reply(reply::transform(r)))
@@ -362,6 +363,7 @@ impl Hook for Forwarder {
             op,
             true,
             |body| tap.write_projection(OP_NOTIFY, None, body),
+            || wire::tap_hint(tap, OP_NOTIFY),
             delivery,
         )
         .map(reply::notify)

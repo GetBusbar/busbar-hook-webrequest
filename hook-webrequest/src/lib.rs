@@ -163,6 +163,9 @@ mod door_tests;
 #[path = "tests/echo_tests.rs"]
 mod echo_tests;
 #[cfg(test)]
+#[path = "tests/perf_tests.rs"]
+mod perf_tests;
+#[cfg(test)]
 #[path = "tests/reply_tests.rs"]
 mod reply_tests;
 #[cfg(test)]
