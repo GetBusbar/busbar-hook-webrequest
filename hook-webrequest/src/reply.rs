@@ -26,17 +26,6 @@ pub const MAX_REPLY_DEPTH: usize = busbar_contract::spans::MAX_JSON_DEPTH;
 
 /// The transport failure text: connect, send, timeout and a malformed head all read as this, with the
 /// URL removed so a `?token=` never reaches the engine's log.
-#[must_use]
-pub fn request_failed() -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the failure text of a failed exchange, copied once from its fixed text"
-    )]
-    let text = REQUEST_FAILED.to_owned();
-    text
-}
-
-/// The transport failure text, fixed.
 pub(crate) const REQUEST_FAILED: &str =
     concat!(alias_lit!(), ": request failed: error sending request");
 

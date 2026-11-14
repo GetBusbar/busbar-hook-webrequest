@@ -1,5 +1,5 @@
 use crate::config::open;
-use crate::reply::{error_status, request_failed};
+use crate::reply::{error_status, REQUEST_FAILED};
 use crate::wire::request;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -192,7 +192,7 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
             .unwrap_err();
         assert_eq!(
             format!("webrequest: request failed: {}", e.without_url()),
-            request_failed()
+            REQUEST_FAILED
         );
 
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -205,7 +205,7 @@ fn the_failure_texts_are_what_the_1_5_5_client_said() {
             .unwrap_err();
         assert_eq!(
             format!("webrequest: request failed: {}", e.without_url()),
-            request_failed()
+            REQUEST_FAILED
         );
         drop(l);
 
