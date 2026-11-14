@@ -34,6 +34,17 @@ repository = "https://github.com/GetBusbar/busbar-hook-webrequest"
 # today trips as needless_update. Members take it with `[lints] workspace = true`.
 [workspace.lints.clippy]
 needless_update = "allow"
+disallowed_macros = "allow"
+disallowed_methods = "allow"
+disallowed_types = "allow"
+assigning_clones = "deny"
+cloned_instead_of_copied = "deny"
+stable_sort_primitive = "deny"
+unnecessary_to_owned = "deny"
+mutex_atomic = "deny"
+rc_buffer = "deny"
+large_stack_arrays = "deny"
+large_futures = "deny"
 
 [workspace.dependencies]
 busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "87b5d5fa1042d26aa1fcfece65f036fe8ee254ec" }

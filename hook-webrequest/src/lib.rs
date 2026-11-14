@@ -24,12 +24,115 @@
 #![cfg_attr(not(all(test, target_os = "linux")), forbid(unsafe_code))]
 #![deny(missing_docs)]
 
+/// The alias as a literal, so a fixed text can `concat!` it.
+macro_rules! alias_lit {
+    () => {
+        "webrequest"
+    };
+}
+
 pub(crate) mod config;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub(crate) mod door;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub(crate) mod net_guard;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 mod owners;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub(crate) mod reply;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub(crate) mod report;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub(crate) mod wire;
 
 /// The package name a signed tarball of this plugin states (`manifest.name`).
@@ -45,7 +148,7 @@ pub(crate) const CONFIGURE_REFUSED: &str = "BUSBAR-7153";
 pub(crate) const TIMEOUT_CLAMPED: &str = "BUSBAR-7154";
 
 /// The alias a hook reference names this plugin by (`module: webrequest`).
-pub const ALIAS: &str = "webrequest";
+pub const ALIAS: &str = alias_lit!();
 
 #[cfg(test)]
 #[path = "tests/config_tests.rs"]
